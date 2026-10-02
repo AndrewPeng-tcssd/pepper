@@ -251,7 +251,7 @@ input:focus { border-color: var(--accent); }
 .pack-stage[data-phase="revealed"] .demo-pack { display: none; }
 .reveal-cards { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; min-width: 0; padding: 0 24px; }
 .reveal-cards[hidden] { display: none; }
-.reveal-card { flex: 0 1 86px; min-width: 0; height: 125px; border: 1px solid #d7d2c9; border-radius: 6px; background: #fff; box-shadow: 4px 8px 14px #33282020; opacity: 0; transform: translateY(32px) scale(.9); }
+.reveal-card { flex: 0 1 86px; min-width: 0; aspect-ratio: 86 / 125; height: auto; border: 1px solid #d7d2c9; border-radius: 6px; background: #fff; box-shadow: 4px 8px 14px #33282020; opacity: 0; transform: translateY(32px) scale(.9); }
 .reveal-card:nth-child(1) { --card-tilt: -8deg; }
 .reveal-card:nth-child(2) { --card-tilt: -4deg; }
 .reveal-card:nth-child(3) { --card-tilt: 0deg; }
@@ -348,7 +348,6 @@ dialog::backdrop { background: var(--dialog-backdrop); }
   .pack-stage::before { inset: 13px; }
   .pack-stage-status { right: 22px; bottom: 20px; }
   .reveal-cards { gap: 5px; padding: 0 15px; }
-  .reveal-card { height: 100px; }
   footer { flex-wrap: wrap; min-height: 74px; padding: 20px; font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) {
