@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f4ef">
+  <title>Pepper TCG — Development</title>
+  <link rel="stylesheet" href="/styles.css?v=18">
+  <script src="/app.js?v=18" defer></script>
+</head>
+<body class="auth-loading">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="chat-overlay" id="chatOverlay" hidden></div>
+  <aside class="chat-sidebar" id="chat" aria-label="Chat">
+    <div class="chat-heading">
+      <div class="chat-sidebar-top"><span>PEPPER TCG</span><button class="chat-close" id="chatClose" type="button" aria-label="Close chat">×</button></div>
+      <h2>Chat</h2>
+      <p>Messages are visible to everyone with access to this site.</p>
+    </div>
+    <div class="chat-board">
+      <div class="chat-board-top">Recent messages</div>
+      <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
+      <div class="chat-join" id="chatLoggedOut" hidden>
+        <span>Log in to send a message.</span>
+        <button class="button" id="chatJoin" type="button">Sign up or log in</button>
+      </div>
+      <div id="chatLoggedIn" hidden>
+        <div class="chat-identity">Posting as <strong id="chatUsername"></strong></div>
+        <form class="chat-form" id="chatForm">
+          <label class="sr-only" for="chatInput">Message</label>
+          <input id="chatInput" name="message" maxlength="400" placeholder="Write a message" required>
+          <button class="button" type="submit">Send</button>
+        </form>
+        <p class="form-message" id="chatMessage" role="status"></p>
+      </div>
+    </div>
+  </aside>
+
+  <div class="topline">DEVELOPMENT BUILD</div>
+  <header class="site-header">
+    <a class="brand" href="/">Pepper TCG</a>
+    <nav class="main-nav" aria-label="Main navigation">
+      <a href="/">Overview</a>
+      <a href="/profile">Profile</a>
+      <a href="/packs/test">Packs</a>
+      <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat</button>
+    </nav>
+    <div class="header-actions">
+      <button class="button" id="accountButton" type="button">Sign up</button>
+      <details class="account-menu" id="accountMenu" hidden>
+        <summary class="button">Account</summary>
+        <div class="account-dropdown">
+          <div class="account-menu-info"><strong id="menuUsername"></strong><span><span id="menuBalance">0</span> tokens</span></div>
+          <a href="/profile">Profile</a>
+          <button id="accountDetailsButton" type="button">Account details</button>
+          <button id="headerLogoutButton" type="button">Sign out</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="section-wrap dev-overview" id="home" aria-labelledby="overviewTitle">
+      <h1 id="overviewTitle">Pepper TCG</h1>
+      <p>This is the current development version of the site. You can create an account, claim tokens, and use chat. Cards will be added later.</p>
+      <div class="dev-status">
+        <div><h2>Available now</h2><p>Accounts, hourly token claims, balances, and chat.</p></div>
+        <div><h2>In development</h2><p>Card designs, packs, and token purchases.</p></div>
+      </div>
+    </section>
+
+    <section class="section-wrap profile-overview" id="profileIntro" aria-labelledby="profileTitle" hidden>
+      <h1 id="profileTitle">Profile</h1>
+      <p id="profileDescription">Sign up or log in to claim hourly tokens.</p>
+      <div class="profile-details" id="profileDetails" hidden>
+        <div class="profile-info-card">
+          <h2>Account</h2>
+          <dl>
+            <dt>Username</dt><dd id="profileUsername"></dd>
+            <dt>Joined</dt><dd id="profileJoined"></dd>
+          </dl>
+        </div>
+        <div class="profile-info-card">
+          <h2>Tokens</h2>
+          <div class="profile-token-balance"><strong id="profileBalance">0</strong><span>tokens</span></div>
+          <dl>
+            <dt>Last claim</dt><dd id="profileLastClaim"></dd>
+            <dt>Next claim</dt><dd id="profileNextClaim"></dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section class="tokens-section" id="tokens" aria-labelledby="tokensTitle">
+      <div class="section-wrap">
+        <div class="tokens-heading">
+          <div><h2 id="tokensTitle">Tokens</h2><p id="tokensIntro">Claim 5 tokens once per hour after Cloudflare verification. Your balance is saved to your account.</p></div>
+        </div>
+        <div class="token-grid">
+          <div class="claim-panel">
+            <h3 id="claimTitle">Hourly tokens</h3>
+            <p id="claimDescription">Create an account to claim tokens.</p>
+            <div id="loggedOutClaim">
+              <button class="button" id="claimJoin" type="button">Sign up or log in</button>
+            </div>
+            <div id="loggedInClaim" hidden>
+              <div class="balance-card"><span>Your balance</span><strong><span id="panelBalance">0</span> tokens</strong></div>
+              <div id="claimReady" hidden>
+                <div id="turnstileWidget" class="turnstile-widget"></div>
+                <form id="claimForm">
+                  <button class="button" type="submit" disabled>Claim 5 tokens</button>
+                </form>
+                <button class="refresh-button" id="resetTurnstile" type="button">Reset verification</button>
+              </div>
+              <div id="claimCooldown" hidden>
+                <p>Next claim in</p><div class="cooldown-clock" id="cooldownClock">00:00:00</div>
+              </div>
+            </div>
+            <p class="form-message" id="claimMessage" role="status"></p>
+          </div>
+          <div class="future-panels">
+            <div class="future-panel"><h3>Card packs</h3><p>Planned price: ~50 tokens per pack. Packs cannot be bought yet.</p></div>
+            <div class="future-panel"><h3>Extra tokens</h3><p>Token purchases are not available yet.</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="pack-section" id="cards" aria-labelledby="cardsTitle">
+      <div class="section-wrap pack-section-inner">
+        <div class="pack-intro">
+          <h1 id="cardsTitle">Pack opening test</h1>
+          <p>Open the demo pack to preview the animation. This does not use tokens or add cards to an account.</p>
+          <div class="pack-controls">
+            <button class="button" id="openPack" type="button">Open pack</button>
+            <button class="button" id="replayPack" type="button" hidden>Reset</button>
+          </div>
+          <p class="pack-help" id="packHelp">Click the pack or use the button.</p>
+        </div>
+        <div class="pack-stage" id="packStage" data-phase="sealed" aria-label="Pack opening test">
+          <button class="demo-pack" id="demoPack" type="button" aria-label="Open pack">
+            <span class="demo-pack-top"></span>
+            <span class="demo-pack-body">
+              <span class="demo-pack-title">PEPPER TCG</span>
+              <span class="demo-pack-mark" aria-hidden="true">P</span>
+              <span class="demo-pack-count">DEMO PACK · 5 CARDS</span>
+            </span>
+            <span class="demo-pack-bottom"></span>
+          </button>
+          <div class="reveal-cards" id="revealCards" aria-label="Five demo cards" hidden></div>
+          <div class="pack-stage-status" id="packStatus" role="status" aria-live="polite">Ready</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer><span>Pepper TCG · Development build</span><span>© <span id="year"></span></span></footer>
+
+  <dialog id="authDialog" aria-labelledby="authTitle">
+    <div class="dialog-content">
+      <button class="dialog-close" id="closeDialog" type="button" aria-label="Close">×</button>
+      <h2 id="authTitle">Create account</h2>
+      <div class="auth-tabs"><button class="active" id="signupTab" type="button">Sign up</button><button id="loginTab" type="button">Log in</button></div>
+      <p id="authHint">Create an account with a username and password.</p>
+      <form id="authForm">
+        <div id="usernameField"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required></div>
+        <div id="identifierField" hidden><label for="identifier">Username or email</label><input id="identifier" name="identifier" autocomplete="username"></div>
+        <div><label for="password">Password (at least 8 characters)</label><input id="password" name="password" type="password" minlength="8" autocomplete="new-password" required></div>
+        <button class="button auth-submit" id="authSubmit" type="submit">Create account</button>
+        <p class="form-message" id="authMessage" role="status"></p>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="account-dialog" id="accountDialog" aria-labelledby="accountTitle">
+    <div class="account-dialog-inner">
+      <button class="dialog-close" id="closeAccount" type="button" aria-label="Close">×</button>
+      <h2 id="accountTitle">Account</h2>
+      <dl class="account-dialog-details">
+        <dt>Username</dt><dd id="accountName"></dd>
+        <dt id="accountEmailLabel">Email</dt><dd id="accountEmail"></dd>
+        <dt>Joined</dt><dd id="accountJoined"></dd>
+        <dt>Last claim</dt><dd id="accountLastClaim"></dd>
+      </dl>
+      <div class="account-balance"><small>Token balance</small><strong><span id="accountBalance">0</span> tokens</strong></div>
+      <a class="button" id="goToTokens" href="/profile">View profile</a>
+      <button class="logout-button" id="logoutButton" type="button">Sign out</button>
+      <p class="form-message" id="accountMessage" role="status"></p>
+    </div>
+  </dialog>
+</body>
+</html>

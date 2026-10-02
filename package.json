@@ -1,0 +1,22 @@
+{
+  "name": "pepper-tcg",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Early home for a pepper-themed trading card game",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "migrate": "node scripts/migrate-sqlite.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "dotenv": "^18.0.4",
+    "express": "^5.1.0",
+    "mongodb": "^7.6.0",
+    "nodemailer": "^10.0.11"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
+  }
+}
