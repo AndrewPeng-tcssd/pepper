@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { ObjectId } = require('mongodb');
 const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory, resolveChangelogOwner, createAccountId, ensureAccountId } = require('./mongo');
 const { createMailer } = require('./mailer');
 
@@ -346,9 +347,12 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, s
     version: entry.version,
     createdAt: entry.createdAt.toISOString()
   });
-  app.get('/api/changelog', async (req, res) => {
+  async function changelogSnapshot() {
     const entries = await changelog.find().sort({ createdAt: -1, _id: -1 }).toArray();
-    res.json({ entries: entries.map(publicChangelogEntry), latestVersion: entries[0]?.version ?? DEFAULT_BUILD_VERSION });
+    return { entries: entries.map(publicChangelogEntry), latestVersion: entries[0]?.version ?? DEFAULT_BUILD_VERSION };
+  }
+  app.get('/api/changelog', async (req, res) => {
+    res.json(await changelogSnapshot());
   });
   app.post('/api/changelog', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can publish updates.');
@@ -363,7 +367,14 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, s
     const entry = { title, description, version, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
     await changelog.insertOne(entry);
     const latest = await changelog.findOne({}, { sort: { createdAt: -1, _id: -1 }, projection: { version: 1 } });
-    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: latest.version });
+    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: latest?.version ?? DEFAULT_BUILD_VERSION });
+  });
+  app.delete('/api/changelog/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can delete updates.');
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This changelog entry ID is invalid.');
+    const result = await changelog.deleteOne({ _id: new ObjectId(req.params.id) });
+    if (!result.deletedCount) return sendError(res, 404, 'Changelog entry not found.');
+    res.json(await changelogSnapshot());
   });
 
   const publicMessage = (message, username = message.username) => ({

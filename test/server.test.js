@@ -566,6 +566,76 @@ test('changelog owner permission follows the original account ID across renames 
   assert.equal((await reconnected.siteSettings.findOne({ _id: 'changelog' })).ownerAccountId, boundAccountId);
 });
 
+test('changelog deletion requires the permanent owner and rejects invalid or missing entries without changes', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const password = '12345678';
+  const owner = await api('/api/register', { username: '675', password });
+  const member = await api('/api/register', { username: 'ordinary_deleter', password });
+  const published = await api('/api/changelog', { title: 'Keep this update', description: 'Only its owner can delete it.', version: '0.5.0' }, owner.cookie);
+  const route = `/api/changelog/${published.data.entry.id}`;
+  const original = (await api('/api/changelog')).data;
+  assert.equal((await api(route, undefined, undefined, 'DELETE')).status, 401);
+  assert.equal((await api(route, { canManageChangelog: true, accountId: owner.data.user.accountId }, member.cookie, 'DELETE')).status, 403);
+  for (const invalid of ['invalid', 'a'.repeat(23), 'a'.repeat(25), 'z'.repeat(24), '123456789012']) {
+    assert.equal((await api(`/api/changelog/${invalid}`, undefined, owner.cookie, 'DELETE')).status, 400);
+  }
+  assert.equal((await api(`/api/changelog/${new ObjectId()}`, undefined, owner.cookie, 'DELETE')).status, 404);
+  assert.deepEqual((await api('/api/changelog')).data, original);
+  assert.equal(await isolated.changelog.countDocuments(), 1);
+
+  const renamedOwner = await api('/api/account/username', { username: 'renamed_deletion_owner', currentPassword: password }, owner.cookie, 'PATCH');
+  assert.equal(renamedOwner.status, 200);
+  assert.equal(renamedOwner.data.user.accountId, owner.data.user.accountId);
+  assert.equal(renamedOwner.data.user.canManageChangelog, true);
+  const impostor = await api('/api/account/username', { username: '675', currentPassword: password }, member.cookie, 'PATCH');
+  assert.equal(impostor.status, 200);
+  assert.equal(impostor.data.user.canManageChangelog, false);
+  assert.equal((await api(route, undefined, member.cookie, 'DELETE')).status, 403);
+  assert.deepEqual((await api('/api/changelog')).data, original);
+  const deleted = await api(`/api/changelog/${published.data.entry.id.toUpperCase()}`, undefined, owner.cookie, 'DELETE');
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(deleted.data, { entries: [], latestVersion: '0.4.0' });
+  assert.equal((await api(route, undefined, owner.cookie, 'DELETE')).status, 404);
+});
+
+test('deleting older, newest, and final changelog entries updates the public version and persists', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  const entries = [];
+  for (const version of ['0.5.0', '0.6.0', '0.7.0']) {
+    const published = await api('/api/changelog', { title: `Update ${version}`, description: 'A saved release note.', version }, owner.cookie);
+    assert.equal(published.status, 201);
+    entries.push(published.data.entry);
+  }
+  const deleteEntry = (entry, requestApi = api) => requestApi(`/api/changelog/${entry.id}`, undefined, owner.cookie, 'DELETE');
+  const older = await deleteEntry(entries[0]);
+  assert.equal(older.status, 200);
+  assert.equal(older.data.latestVersion, '0.7.0');
+  assert.deepEqual(older.data.entries, [entries[2], entries[1]]);
+  assert.equal(await isolated.changelog.findOne({ _id: new ObjectId(entries[0].id) }), null);
+  assert.equal(await isolated.changelog.countDocuments(), 2);
+
+  const newest = await deleteEntry(entries[2]);
+  assert.equal(newest.status, 200);
+  assert.deepEqual(newest.data, { entries: [entries[1]], latestVersion: '0.6.0' });
+  assert.deepEqual((await api('/api/changelog')).data, newest.data);
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const freshApi = accountApi(t, reconnected);
+  assert.deepEqual((await freshApi('/api/changelog')).data, newest.data);
+
+  const final = await deleteEntry(entries[1], freshApi);
+  assert.equal(final.status, 200);
+  assert.deepEqual(final.data, { entries: [], latestVersion: '0.4.0' });
+  assert.deepEqual((await api('/api/changelog')).data, final.data);
+  assert.equal(await isolated.changelog.countDocuments(), 0);
+  const restarted = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => restarted.client.close());
+  assert.deepEqual((await accountApi(t, restarted)('/api/changelog')).data, final.data);
+});
+
 test('new account IDs are random, unique, public, immutable, and ignore supplied IDs', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);

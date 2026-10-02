@@ -7,8 +7,8 @@
   <title>Pepper TCG — Development</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=1"></script>
-  <link rel="stylesheet" href="/styles.css?v=28">
-  <script src="/app.js?v=28" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=29">
+  <script src="/app.js?v=29" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -164,6 +164,10 @@
     <section class="section-wrap changelog-overview" id="changelogPage" aria-labelledby="changelogTitleHeading" hidden>
       <h1 id="changelogTitleHeading">Changelog</h1>
       <p>The latest updates</p>
+      <div class="changelog-tools" id="changelogTools" hidden>
+        <button class="button" id="changelogPreviewToggle" type="button" aria-pressed="false">View as visitor</button>
+        <p class="changelog-preview-notice" id="changelogPreviewNotice" role="status" hidden>Visitor preview — editing controls are hidden.</p>
+      </div>
       <section class="changelog-editor" id="changelogEditor" aria-labelledby="changelogEditorTitle" hidden>
         <h2 id="changelogEditorTitle">Add an update</h2>
         <p>The date is set automatically when you publish. This version also updates the development build shown at the bottom of the site.</p>

@@ -6,12 +6,13 @@ const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : 
 const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog' }[pageKind];
 const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
 document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogEntries: null, chatSignature: null, chatFollowLatest: true };
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
 let chatLoadPromise;
 let claimRewardAnimation;
 let changelogLoadPromise;
 let changelogRevision = 0;
+let changelogLoadFailed = false;
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -441,19 +442,56 @@ function setAccountSubmitting(submitting) {
 
 function renderChangelogEditor() {
   const canManage = state.user?.canManageChangelog === true;
-  $('changelogEditor').hidden = !canManage;
+  if (!canManage) state.changelogVisitorPreview = false;
+  const showControls = canManage && !state.changelogVisitorPreview;
+  $('changelogTools').hidden = !canManage;
+  $('changelogPreviewNotice').hidden = !state.changelogVisitorPreview;
+  $('changelogPreviewToggle').textContent = state.changelogVisitorPreview ? 'Back to editing' : 'View as visitor';
+  $('changelogPreviewToggle').setAttribute('aria-pressed', String(state.changelogVisitorPreview));
+  $('changelogEditor').hidden = !showControls;
+  $('changelogEntries').querySelectorAll('.changelog-entry-actions').forEach(actions => {
+    actions.hidden = !showControls;
+    if (!showControls) {
+      actions.querySelector('.changelog-delete-confirm').hidden = true;
+      actions.querySelector('.changelog-delete-button').hidden = false;
+    }
+  });
   if (!canManage) {
     $('changelogForm').reset();
     message($('changelogFormMessage'), '');
   }
 }
 
+$('changelogPreviewToggle').addEventListener('click', () => {
+  if (!state.user?.canManageChangelog || state.changelogSubmitting || state.accountSubmitting) return;
+  state.changelogVisitorPreview = !state.changelogVisitorPreview;
+  renderChangelogEditor();
+});
+
+function changelogActionButton(label, action) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'button';
+  button.dataset.changelogAction = action;
+  button.textContent = label;
+  button.disabled = state.changelogSubmitting;
+  return button;
+}
+
 function renderChangelog(entries, latestVersion) {
   $('siteVersion').textContent = latestVersion;
+  const signature = JSON.stringify(entries);
+  if (signature === state.changelogSignature) {
+    renderChangelogEditor();
+    $('changelogRetry').hidden = true;
+    return;
+  }
+  state.changelogSignature = signature;
   const fragment = document.createDocumentFragment();
   for (const entry of entries) {
     const article = document.createElement('article');
     article.className = 'changelog-entry';
+    article.dataset.entryId = entry.id;
     const meta = document.createElement('div');
     meta.className = 'changelog-entry-meta';
     const version = document.createElement('span');
@@ -469,11 +507,26 @@ function renderChangelog(entries, latestVersion) {
     const description = document.createElement('p');
     description.className = 'changelog-entry-description';
     description.textContent = entry.description;
+    const actions = document.createElement('div');
+    actions.className = 'changelog-entry-actions';
+    actions.hidden = true;
+    const deleteButton = changelogActionButton('Delete', 'delete');
+    deleteButton.classList.add('changelog-delete-button');
+    deleteButton.setAttribute('aria-label', `Delete ${entry.title}`);
+    const confirmation = document.createElement('span');
+    confirmation.className = 'changelog-delete-confirm';
+    confirmation.hidden = true;
+    const prompt = document.createElement('span');
+    prompt.textContent = 'Delete this entry?';
+    confirmation.append(prompt, changelogActionButton('Confirm delete', 'confirm'), changelogActionButton('Cancel', 'cancel'));
+    actions.append(deleteButton, confirmation);
     meta.append(version, date);
-    article.append(meta, title, description);
+    article.append(meta, title, description, actions);
     fragment.append(article);
   }
   $('changelogEntries').replaceChildren(fragment);
+  renderChangelogEditor();
+  changelogLoadFailed = false;
   message($('changelogMessage'), entries.length ? '' : 'No changelog entries yet.');
   $('changelogRetry').hidden = true;
 }
@@ -491,10 +544,15 @@ async function loadChangelog(refresh = false) {
       // Ignore an older read that finishes after a newly published entry.
       if (revision !== changelogRevision) return;
       state.changelogEntries = data.entries;
+      if (changelogLoadFailed) {
+        message($('changelogMessage'), data.entries.length ? '' : 'No changelog entries yet.');
+        changelogLoadFailed = false;
+      }
       renderChangelog(data.entries, data.latestVersion);
     } catch (error) {
       if (revision !== changelogRevision) return;
       if (pageKind === 'changelog') {
+        changelogLoadFailed = true;
         message($('changelogMessage'), 'The changelog could not load. Please try again.');
         $('changelogRetry').hidden = false;
       }
@@ -504,12 +562,81 @@ async function loadChangelog(refresh = false) {
   finally { changelogLoadPromise = null; }
 }
 
+function setChangelogSubmitting(submitting) {
+  state.changelogSubmitting = submitting;
+  setAccountSubmitting(submitting);
+  $('changelogSubmit').disabled = submitting;
+  $('changelogPreviewToggle').disabled = submitting;
+  $('changelogEntries').querySelectorAll('.changelog-entry-actions button').forEach(button => { button.disabled = submitting; });
+}
+
+function changelogPermissionError(error) {
+  if (error.status !== 401 && error.status !== 403) return false;
+  if (error.status === 401) setUser(null);
+  else { state.user.canManageChangelog = false; renderChangelogEditor(); }
+  changelogLoadFailed = false;
+  message($('changelogMessage'), error.message);
+  if (error.status === 401) $('accountButton').focus();
+  else focusChangelogMessage();
+  return true;
+}
+
+function focusChangelogMessage() {
+  $('changelogMessage').tabIndex = -1;
+  $('changelogMessage').focus();
+}
+
+$('changelogEntries').addEventListener('click', event => {
+  const button = event.target.closest('button[data-changelog-action]');
+  if (!button || !state.user?.canManageChangelog || state.changelogVisitorPreview || state.changelogSubmitting || state.accountSubmitting) return;
+  const article = button.closest('.changelog-entry');
+  const confirmation = article.querySelector('.changelog-delete-confirm');
+  const deleteButton = article.querySelector('.changelog-delete-button');
+  if (button.dataset.changelogAction === 'delete') {
+    deleteButton.hidden = true;
+    confirmation.hidden = false;
+    confirmation.querySelector('button').focus();
+  } else if (button.dataset.changelogAction === 'cancel') {
+    confirmation.hidden = true;
+    deleteButton.hidden = false;
+    deleteButton.focus();
+  } else if (button.dataset.changelogAction === 'confirm') {
+    void deleteChangelogEntry(article.dataset.entryId);
+  }
+});
+
+async function deleteChangelogEntry(entryId) {
+  if (!state.user?.canManageChangelog || state.changelogVisitorPreview || state.changelogSubmitting || state.accountSubmitting) return;
+  setChangelogSubmitting(true);
+  let deleted = false;
+  try {
+    const data = await api(`changelog/${encodeURIComponent(entryId)}`, { method: 'DELETE' });
+    changelogRevision++;
+    state.changelogEntries = data.entries;
+    renderChangelog(data.entries, data.latestVersion);
+    message($('changelogMessage'), 'Entry deleted. The site version is updated.', true);
+    deleted = true;
+    void loadChangelog(true);
+  } catch (error) {
+    if (!changelogPermissionError(error)) {
+      if (error.status === 404) await loadChangelog(true);
+      changelogLoadFailed = false;
+      message($('changelogMessage'), error.message);
+      if (error.status === 404) focusChangelogMessage();
+    }
+  } finally {
+    setChangelogSubmitting(false);
+    if (deleted) {
+      const nextDelete = $('changelogEntries').querySelector('.changelog-delete-button');
+      (nextDelete || $('changelogPreviewToggle')).focus();
+    }
+  }
+}
+
 $('changelogForm').addEventListener('submit', async event => {
   event.preventDefault();
-  if (state.changelogSubmitting || state.accountSubmitting || !state.user?.canManageChangelog) return;
-  state.changelogSubmitting = true;
-  setAccountSubmitting(true);
-  $('changelogSubmit').disabled = true;
+  if (state.changelogSubmitting || state.accountSubmitting || state.changelogVisitorPreview || !state.user?.canManageChangelog) return;
+  setChangelogSubmitting(true);
   message($('changelogFormMessage'), 'Adding entry…');
   try {
     const data = await api('changelog', { method: 'POST', body: JSON.stringify({
@@ -524,15 +651,9 @@ $('changelogForm').addEventListener('submit', async event => {
     message($('changelogFormMessage'), 'Changelog entry added. The site version is updated.', true);
     void loadChangelog(true);
   } catch (error) {
-    if (error.status === 401 || error.status === 403) {
-      if (error.status === 401) setUser(null);
-      else { state.user.canManageChangelog = false; renderChangelogEditor(); }
-      message($('changelogMessage'), error.message);
-    } else message($('changelogFormMessage'), error.message);
+    if (!changelogPermissionError(error)) message($('changelogFormMessage'), error.message);
   } finally {
-    state.changelogSubmitting = false;
-    $('changelogSubmit').disabled = false;
-    setAccountSubmitting(false);
+    setChangelogSubmitting(false);
   }
 });
 
