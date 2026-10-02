@@ -184,6 +184,13 @@ input:focus { border-color: var(--accent); }
 .refresh-button:hover { color: var(--ink); }
 #claimCooldown p { margin: 3px 0 6px; color: var(--muted); font-size: 13px; }
 .cooldown-clock { font-size: 32px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
+.claim-reward { margin-top: 20px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--accent-soft); }
+.claim-reward-label { color: var(--muted); font-size: 13px; }
+.claim-reward-amount { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--accent); font-size: 44px; font-weight: 750; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.claim-reel-window { display: block; width: 2ch; height: 1.1em; overflow: hidden; }
+.claim-reel-track { display: flex; flex-direction: column; }
+.claim-reel-number { flex: none; height: 1.1em; text-align: center; }
+.claim-reward-unit { align-self: flex-end; margin-bottom: 5px; color: var(--ink); font-size: 16px; font-weight: 600; }
 .form-message { min-height: 20px; margin: 12px 0 0 !important; color: var(--error); font-size: 13px !important; }
 .form-message.success { color: var(--success); }
 .form-message.account-menu-message { margin: 0 !important; }

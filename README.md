@@ -38,7 +38,7 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Account details, username and password changes, and appearance settings at `/settings`, with light or dark mode saved per browser.
 - Persistent MongoDB account balances.
 - Click a username in chat to view that member's public profile, including their username, join date, token balance, and last and next claim details. Clicking your own username opens `/profile`, your account and token claim page. Other public profiles also open directly at `/profile/USERNAME`.
-- Cloudflare Turnstile verification and a 5-token claim once every rolling hour per account. MongoDB enforces the claim timer with an atomic update.
+- Cloudflare Turnstile verification and a random reward of 10–20 tokens once every rolling hour per account. Each whole-number reward is chosen on the server, and MongoDB adds it with an atomic update that also enforces the claim timer.
 - A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 50 messages; signed-in users can post. Messages are saved in MongoDB. Posting has length and speed limits.
 - A pack opening animation test at `/packs/test`. It reveals five blank cards and can be reset. It does not use tokens or save cards.
 

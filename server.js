@@ -5,7 +5,8 @@ const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory } = require('./mongo')
 const { createMailer } = require('./mailer');
 
 const PORT = Number(process.env.PORT || 3000);
-const HOURLY_TOKENS = 5;
+const HOURLY_TOKEN_MIN = 10;
+const HOURLY_TOKEN_MAX = 20;
 const CLAIM_INTERVAL_MS = 60 * 60 * 1000;
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
@@ -34,7 +35,8 @@ const publicUser = (user) => ({
   balance: user.balance,
   lastClaimAt: user.lastClaimAt ?? null,
   nextClaimAt: user.lastClaimAt ? user.lastClaimAt + CLAIM_INTERVAL_MS : null,
-  hourlyTokens: HOURLY_TOKENS
+  hourlyTokenMin: HOURLY_TOKEN_MIN,
+  hourlyTokenMax: HOURLY_TOKEN_MAX
 });
 const sendError = (res, status, message) => res.status(status).json({ error: message });
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
@@ -43,6 +45,7 @@ const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).fi
 function createApp({ users, sessions, messages, verificationTokens }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
+  const randomInt = options.randomInt || crypto.randomInt;
   const emailSendingPaused = options.emailSendingPaused === undefined
     ? process.env.EMAIL_SENDING_PAUSED === 'true' : options.emailSendingPaused;
   const mailer = emailSendingPaused ? null : options.mailer === undefined ? createMailer() : options.mailer;
@@ -297,9 +300,10 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     }
     if (!verified) return sendError(res, 400, 'Cloudflare verification failed or expired. Try again.');
     const now = Date.now();
+    const awarded = randomInt(HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX + 1);
     const user = await users.findOneAndUpdate(
       { _id: req.user._id, $or: [{ lastClaimAt: null }, { lastClaimAt: { $lte: now - CLAIM_INTERVAL_MS } }] },
-      { $inc: { balance: HOURLY_TOKENS }, $set: { lastClaimAt: now } },
+      { $inc: { balance: awarded }, $set: { lastClaimAt: now } },
       { returnDocument: 'after' }
     );
     if (!user) {
@@ -307,7 +311,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
       if (!latest) return sendError(res, 401, 'Please log in first.');
       return res.status(429).json({ error: 'Your next claim is not ready yet.', user: publicUser(latest) });
     }
-    res.json({ user: publicUser(user), awarded: HOURLY_TOKENS });
+    res.json({ user: publicUser(user), awarded });
   });
 
   const publicMessage = (message, username = message.username) => ({
@@ -364,4 +368,4 @@ async function start() {
   createApp(store).listen(PORT, () => console.log(`Pepper TCG running at http://localhost:${PORT}`));
 }
 if (require.main === module) start().catch(error => { console.error('Could not start Pepper TCG:', error.message); process.exitCode = 1; });
-module.exports = { createApp, connectMongo, CLAIM_INTERVAL_MS, HOURLY_TOKENS };
+module.exports = { createApp, connectMongo, CLAIM_INTERVAL_MS, HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX };

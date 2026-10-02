@@ -9,6 +9,7 @@ document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.set
 const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
 let chatLoadPromise;
+let claimRewardAnimation;
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -54,6 +55,7 @@ function renderProfileDetails(profile) {
 }
 
 function setUser(user) {
+  if (!user || (state.user && state.user.username !== user.username)) clearClaimReward();
   state.user = user;
   $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
     author.href = profileHref(author.dataset.username);
@@ -103,7 +105,7 @@ function setUser(user) {
     $('accountBalance').textContent = '0';
     removeTurnstile();
     $('claimTitle').textContent = 'Sign in to claim';
-    $('claimDescription').textContent = 'Sign up or log in to claim 5 tokens each hour.';
+    $('claimDescription').textContent = 'Sign up or log in to claim a random 10–20 tokens each hour.';
     message($('claimMessage'), '');
   }
   renderClaim();
@@ -130,7 +132,7 @@ function renderClaim() {
   $('claimCooldown').hidden = ready;
   $('claimTitle').textContent = ready ? 'Ready to claim' : 'Next claim';
   $('claimDescription').textContent = ready
-    ? 'Complete the check below, then claim 5 tokens.'
+    ? 'Complete the check below, then claim a random 10–20 tokens.'
     : 'You can claim again when the timer ends.';
   if (ready && state.turnstileWidgetId === null && !state.turnstileLoading && !state.turnstileFailed) loadTurnstile();
   if (!ready) { removeTurnstile(); $('cooldownClock').textContent = formatTime(remaining); }
@@ -139,6 +141,39 @@ function renderClaim() {
 function setClaimToken(token) {
   state.turnstileToken = token || null;
   $('claimForm').querySelector('button').disabled = !state.turnstileToken || state.claimSubmitting;
+}
+
+function clearClaimReward() {
+  claimRewardAnimation?.cancel();
+  claimRewardAnimation = null;
+  $('claimReward').hidden = true;
+  $('claimRewardTrack').replaceChildren();
+}
+
+async function revealClaimReward(awarded) {
+  const track = $('claimRewardTrack');
+  const number = value => {
+    const element = document.createElement('span');
+    element.className = 'claim-reel-number';
+    element.textContent = value;
+    return element;
+  };
+  // Moving a reversed reel toward zero brings each number down into view.
+  track.replaceChildren(number(awarded), ...Array.from({ length: 33 }, (_, index) => number(10 + index % 11)));
+  $('claimReward').hidden = false;
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches && track.animate) {
+    const animation = track.animate([
+      { transform: 'translateY(calc(-100% + 1.1em))' },
+      { transform: 'translateY(0)' }
+    ], { duration: 1700, easing: 'cubic-bezier(.12, .65, .16, 1)', fill: 'both' });
+    claimRewardAnimation = animation;
+    try { await animation.finished; } catch { return false; }
+    if (claimRewardAnimation !== animation) return false;
+    animation.cancel();
+    claimRewardAnimation = null;
+  }
+  track.replaceChildren(number(awarded));
+  return true;
 }
 
 function removeTurnstile() {
@@ -274,7 +309,7 @@ if (pageKind === 'profile') {
   document.title = 'Profile — Pepper TCG';
   document.body.classList.add('profile-route');
   $('tokensTitle').textContent = 'Hourly claim';
-  $('tokensIntro').textContent = 'You can claim 5 tokens every hour.';
+  $('tokensIntro').textContent = 'Claim a random 10–20 tokens every hour.';
   $('home').hidden = true;
   $('profileIntro').hidden = false;
   $('cards').hidden = true;
@@ -331,16 +366,25 @@ $('authForm').addEventListener('submit', async (event) => {
 
 $('claimForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (state.claimSubmitting || state.accountSubmitting || !state.user) return;
   if (!state.turnstileToken) { message($('claimMessage'), 'Complete Cloudflare verification first.'); return; }
   const button = $('claimForm').querySelector('button');
   const token = state.turnstileToken;
+  const claimingUser = state.user;
   state.claimSubmitting = true;
   button.disabled = true;
+  clearClaimReward();
+  message($('claimMessage'), 'Claiming tokens…');
   try {
     const data = await api('claim', { method: 'POST', body: JSON.stringify({ turnstileToken: token }) });
+    if (state.user !== claimingUser) return;
     setUser(data.user);
-    message($('claimMessage'), `${data.awarded} tokens added to your balance.`, true);
+    message($('claimMessage'), 'Rolling your reward…', true);
+    if (await revealClaimReward(data.awarded)) {
+      message($('claimMessage'), `${data.awarded} tokens added to your balance.`, true);
+    }
   } catch (error) {
+    if (state.user !== claimingUser) return;
     if (error.user) setUser(error.user);
     message($('claimMessage'), error.message);
     resetTurnstile();

@@ -7,8 +7,8 @@
   <title>Pepper TCG — Development</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=1"></script>
-  <link rel="stylesheet" href="/styles.css?v=25">
-  <script src="/app.js?v=25" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=26">
+  <script src="/app.js?v=26" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -94,7 +94,7 @@
     <section class="tokens-section" id="tokens" aria-labelledby="tokensTitle">
       <div class="section-wrap">
         <div class="tokens-heading">
-          <div><h2 id="tokensTitle">Tokens</h2><p id="tokensIntro">You can claim 5 tokens every hour.</p></div>
+          <div><h2 id="tokensTitle">Tokens</h2><p id="tokensIntro">Claim a random 10–20 tokens every hour.</p></div>
         </div>
         <div class="token-grid">
           <div class="claim-panel">
@@ -108,12 +108,18 @@
               <div id="claimReady" hidden>
                 <div id="turnstileWidget" class="turnstile-widget"></div>
                 <form id="claimForm">
-                  <button class="button" type="submit" disabled>Claim 5 tokens</button>
+                  <button class="button" type="submit" disabled>Claim 10–20 tokens</button>
                 </form>
                 <button class="refresh-button" id="resetTurnstile" type="button">Reset verification</button>
               </div>
               <div id="claimCooldown" hidden>
                 <p>Next claim in</p><div class="cooldown-clock" id="cooldownClock">00:00:00</div>
+              </div>
+              <div class="claim-reward" id="claimReward" aria-hidden="true" hidden>
+                <span class="claim-reward-label">Your hourly reward</span>
+                <div class="claim-reward-amount">
+                  <span>+</span><span class="claim-reel-window"><span class="claim-reel-track" id="claimRewardTrack"></span></span><span class="claim-reward-unit">tokens</span>
+                </div>
               </div>
             </div>
             <p class="form-message" id="claimMessage" role="status"></p>

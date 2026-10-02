@@ -41,8 +41,8 @@ async function request(route, body, cookie, method = body === undefined ? 'GET' 
   return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
 }
 
-function accountApi(t, accountStore = store) {
-  const accountServer = createApp(accountStore, { mailer: null }).listen(0);
+function accountApi(t, accountStore = store, options = {}) {
+  const accountServer = createApp(accountStore, { mailer: null, ...options }).listen(0);
   t.after(() => new Promise(resolve => accountServer.close(resolve)));
   const accountBase = `http://127.0.0.1:${accountServer.address().port}`;
   return (route, body, cookie, method) => request(route, body, cookie, method, accountBase);
@@ -77,20 +77,23 @@ test('eight-character sign-up, MongoDB balance, and hourly claim', async () => {
   assert.equal((await request('/api/claim', { turnstileToken: 'invalid-token' }, cookie)).status, 400);
   const claim = await request('/api/claim', { turnstileToken: 'valid-test-token' }, cookie);
   assert.equal(claim.status, 200);
-  assert.equal(claim.data.awarded, 5);
-  assert.equal(claim.data.user.balance, 5);
+  assert.ok(Number.isInteger(claim.data.awarded));
+  assert.ok(claim.data.awarded >= 10 && claim.data.awarded <= 20);
+  assert.equal(claim.data.user.hourlyTokenMin, 10);
+  assert.equal(claim.data.user.hourlyTokenMax, 20);
+  assert.equal(claim.data.user.balance, claim.data.awarded);
   assert.ok(claim.data.user.nextClaimAt > Date.now());
-  assert.equal((await store.users.findOne({ _id: stored._id })).balance, 5);
+  assert.equal((await store.users.findOne({ _id: stored._id })).balance, claim.data.awarded);
 
   const again = await request('/api/claim', { turnstileToken: 'valid-test-token' }, cookie);
   assert.equal(again.status, 429);
-  assert.equal((await request('/api/me', undefined, cookie)).data.user.balance, 5);
+  assert.equal((await request('/api/me', undefined, cookie)).data.user.balance, claim.data.awarded);
 
   assert.equal((await request('/api/logout', {}, cookie)).status, 200);
   assert.equal((await request('/api/me', undefined, cookie)).data.user, null);
   const login = await request('/api/login', { identifier: username.toUpperCase(), password: '12345678' });
   assert.equal(login.status, 200);
-  assert.equal(login.data.user.balance, 5);
+  assert.equal(login.data.user.balance, claim.data.awarded);
 
   await store.users.updateOne({ _id: stored._id }, { $set: { email: `${username}@example.test`, emailVerifiedAt: new Date() } });
   const beforeEmailLogin = sentEmails.length;
@@ -105,9 +108,77 @@ test('eight-character sign-up, MongoDB balance, and hourly claim', async () => {
   assert.equal((await request('/api/verify-email', { purpose: 'signup', token: loginToken })).status, 400);
   const emailVerified = await request('/api/verify-email', { purpose: 'login', token: loginToken });
   assert.equal(emailVerified.status, 200);
-  assert.equal(emailVerified.data.user.balance, 5);
+  assert.equal(emailVerified.data.user.balance, claim.data.awarded);
   assert.ok(emailVerified.cookie);
   assert.equal((await request('/api/verify-email', { purpose: 'login', token: loginToken })).status, 400);
+});
+
+test('hourly rewards include both 10 and 20 and add to the stored balance', async t => {
+  const rewards = [10, 20];
+  const ranges = [];
+  const api = accountApi(t, store, {
+    verifyTurnstile: async token => token === 'valid-test-token',
+    randomInt: (minimum, maximumExclusive) => {
+      ranges.push([minimum, maximumExclusive]);
+      return rewards.shift();
+    }
+  });
+  const username = `reward_${crypto.randomBytes(3).toString('hex')}`;
+  const register = await api('/api/register', { username, password: '12345678' });
+  assert.equal(register.status, 201);
+  const cookie = register.cookie;
+  await store.users.updateOne({ usernameKey: username.toLowerCase() }, { $set: { balance: 37 } });
+
+  assert.equal((await api('/api/claim', { turnstileToken: 'invalid-token' }, cookie)).status, 400);
+  assert.equal(ranges.length, 0);
+  const minimum = await api('/api/claim', { turnstileToken: 'valid-test-token' }, cookie);
+  assert.equal(minimum.status, 200);
+  assert.equal(minimum.data.awarded, 10);
+  assert.equal(minimum.data.user.balance, 47);
+  assert.equal((await api('/api/claim', { turnstileToken: 'valid-test-token' }, cookie)).status, 429);
+  assert.equal(ranges.length, 1);
+
+  await store.users.updateOne({ usernameKey: username.toLowerCase() }, {
+    $set: { lastClaimAt: Date.now() - CLAIM_INTERVAL_MS }
+  });
+  const maximum = await api('/api/claim', { turnstileToken: 'valid-test-token' }, cookie);
+  assert.equal(maximum.status, 200);
+  assert.equal(maximum.data.awarded, 20);
+  assert.equal(maximum.data.user.balance, 67);
+  assert.deepEqual(ranges, [[10, 21], [10, 21]]);
+  const stored = await store.users.findOne({ usernameKey: username.toLowerCase() });
+  assert.equal(stored.balance, 67);
+  assert.equal(stored.lastClaimAt, maximum.data.user.lastClaimAt);
+});
+
+test('simultaneous random claims award exactly one reward', { timeout: 10000 }, async t => {
+  let verificationCalls = 0;
+  let releaseVerification;
+  const bothVerifying = new Promise(resolve => { releaseVerification = resolve; });
+  const api = accountApi(t, store, {
+    verifyTurnstile: async () => {
+      verificationCalls += 1;
+      if (verificationCalls === 2) releaseVerification();
+      await bothVerifying;
+      return true;
+    }
+  });
+  const username = `claimrace_${crypto.randomBytes(3).toString('hex')}`;
+  const register = await api('/api/register', { username, password: '12345678' });
+  assert.equal(register.status, 201);
+  const claims = await Promise.all([
+    api('/api/claim', { turnstileToken: 'first-token' }, register.cookie),
+    api('/api/claim', { turnstileToken: 'second-token' }, register.cookie)
+  ]);
+  assert.equal(verificationCalls, 2);
+  assert.deepEqual(claims.map(claim => claim.status).sort(), [200, 429]);
+  const winner = claims.find(claim => claim.status === 200);
+  assert.ok(Number.isInteger(winner.data.awarded));
+  assert.ok(winner.data.awarded >= 10 && winner.data.awarded <= 20);
+  const stored = await store.users.findOne({ usernameKey: username.toLowerCase() });
+  assert.equal(stored.balance, winner.data.awarded);
+  assert.equal(stored.lastClaimAt, winner.data.user.lastClaimAt);
+  assert.equal((await api('/api/me', undefined, register.cookie)).data.user.balance, winner.data.awarded);
 });
 
 test('sign-up does not depend on email delivery or save a supplied email', async () => {
