@@ -7,7 +7,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { ObjectId } = require('mongodb');
-const { createApp, connectMongo } = require('../server');
+const { createApp, connectMongo, CLAIM_INTERVAL_MS } = require('../server');
 const { migrate } = require('../scripts/migrate-sqlite');
 
 let mongo;
@@ -209,21 +209,35 @@ test('public chat can be read, and only signed-in users can post', async () => {
 test('public profiles can be read anonymously and only include public account details', async () => {
   const username = `Profile_${crypto.randomBytes(3).toString('hex')}`;
   const createdAt = new Date('2024-04-05T12:00:00.000Z');
+  const lastClaimAt = 1700000000000;
   await store.users.insertOne({
     username, usernameKey: username.toLowerCase(), createdAt,
     email: `${username.toLowerCase()}@example.test`, passwordHash: 'private-password-hash',
-    balance: 25, lastClaimAt: Date.now(), emailVerifiedAt: new Date(), lastEmailAttemptAt: new Date()
+    balance: 25, lastClaimAt, emailVerifiedAt: new Date(), lastEmailAttemptAt: new Date()
   });
 
   const result = await request(`/api/profiles/${username.toUpperCase()}`);
   assert.equal(result.status, 200);
-  assert.deepEqual(result.data, { profile: { username, createdAt: createdAt.toISOString() } });
+  assert.deepEqual(result.data, { profile: {
+    username, createdAt: createdAt.toISOString(), balance: 25,
+    lastClaimAt, nextClaimAt: lastClaimAt + CLAIM_INTERVAL_MS
+  } });
 
   const legacyUsername = `Legacy_${crypto.randomBytes(3).toString('hex')}`;
-  await store.users.insertOne({ username: legacyUsername, usernameKey: legacyUsername.toLowerCase(), balance: 0 });
+  await store.users.insertOne({ username: legacyUsername, usernameKey: legacyUsername.toLowerCase() });
   const legacy = await request(`/api/profiles/${legacyUsername}`);
   assert.equal(legacy.status, 200);
-  assert.deepEqual(legacy.data, { profile: { username: legacyUsername, createdAt: null } });
+  assert.deepEqual(legacy.data, { profile: {
+    username: legacyUsername, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
+  } });
+
+  const noClaimUsername = `NoClaim_${crypto.randomBytes(3).toString('hex')}`;
+  await store.users.insertOne({ username: noClaimUsername, usernameKey: noClaimUsername.toLowerCase(), balance: 15, lastClaimAt: null });
+  const noClaim = await request(`/api/profiles/${noClaimUsername}`);
+  assert.equal(noClaim.status, 200);
+  assert.deepEqual(noClaim.data, { profile: {
+    username: noClaimUsername, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
+  } });
 
   for (const name of [`missing_${crypto.randomBytes(3).toString('hex')}`, 'ab', 'a'.repeat(25), 'invalid-name', 'invalid%20name']) {
     const missing = await request(`/api/profiles/${name}`);

@@ -4,7 +4,7 @@ const profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
 const viewingPublicProfile = !!profileRoute;
 const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : 'home';
 document.querySelector(`.main-nav a[href="${pageKind === 'pack' ? '/packs/test' : pageKind === 'profile' ? '/profile' : '/'}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, chatLoading: false, chatSignature: null, chatFollowLatest: true };
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, chatLoading: false, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
 
 async function api(path, options = {}) {
@@ -34,20 +34,36 @@ function formatProfileDate(value, includeTime = false) {
   return date.toLocaleString([], includeTime ? { dateStyle: 'medium', timeStyle: 'short' } : { dateStyle: 'medium' });
 }
 
+function isOwnProfile(username) {
+  return !!state.user && state.user.username.toLowerCase() === username.toLowerCase();
+}
+
+function profileHref(username) {
+  return isOwnProfile(username) ? '/profile' : `/profile/${encodeURIComponent(username)}`;
+}
+
+function renderProfileDetails(profile) {
+  $('profileUsername').textContent = profile.username;
+  $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
+  $('profileBalance').textContent = profile.balance.toLocaleString();
+  $('profileLastClaim').textContent = formatProfileDate(profile.lastClaimAt, true);
+}
+
 function setUser(user) {
   state.user = user;
+  $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
+    author.href = profileHref(author.dataset.username);
+  });
+  if (viewingPublicProfile && state.profile && isOwnProfile(state.profile.username)) {
+    location.replace('/profile');
+    return;
+  }
   if (!viewingPublicProfile) {
     $('profileDescription').textContent = user
       ? 'Your account and tokens.'
       : 'Sign up or log in to see your account and tokens.';
     $('profileDetails').hidden = !user;
-    if (user) {
-      $('profileUsername').textContent = user.username;
-      $('profileJoined').textContent = user.createdAt ? formatProfileDate(user.createdAt) : 'Not available';
-      $('profileBalance').textContent = user.balance.toLocaleString();
-      $('profileLastClaim').textContent = formatProfileDate(user.lastClaimAt, true);
-      $('profileNextClaim').textContent = user.nextClaimAt ? formatProfileDate(user.nextClaimAt, true) : 'Ready now';
-    }
+    if (user) renderProfileDetails(user);
   }
   $('accountButton').hidden = !!user;
   $('accountMenu').hidden = !user;
@@ -88,10 +104,12 @@ function formatTime(ms) {
 }
 
 function renderClaim() {
-  if (!state.user || pageKind !== 'profile' || viewingPublicProfile) return;
-  const remaining = state.user.nextClaimAt ? state.user.nextClaimAt - Date.now() : 0;
+  const profile = viewingPublicProfile ? state.profile : state.user;
+  if (!profile || pageKind !== 'profile') return;
+  const remaining = profile.nextClaimAt ? profile.nextClaimAt - Date.now() : 0;
   const ready = remaining <= 0;
   $('profileNextClaim').textContent = ready ? 'Ready now' : formatTime(remaining);
+  if (viewingPublicProfile) return;
   $('claimReady').hidden = !ready;
   $('claimCooldown').hidden = ready;
   $('claimTitle').textContent = ready ? 'Ready to claim' : 'Next claim';
@@ -262,7 +280,6 @@ if (pageKind === 'profile') {
     document.body.classList.add('public-profile-route');
     $('profileDescription').textContent = 'Loading profile…';
     $('profileAccountTitle').textContent = 'About';
-    $('profileTokenCard').hidden = true;
     $('tokens').hidden = true;
   }
 } else if (pageKind === 'pack') {
@@ -341,16 +358,22 @@ $('logoutButton').addEventListener('click', signOut);
 $('headerLogoutButton').addEventListener('click', signOut);
 
 async function loadProfile() {
+  state.profile = null;
   $('profileRetry').hidden = true;
   $('profileDetails').hidden = true;
   $('profileDescription').textContent = 'Loading profile…';
   try {
     const { profile } = await api(`profiles/${profileRoute[1]}`);
+    state.profile = profile;
+    if (isOwnProfile(profile.username)) {
+      location.replace('/profile');
+      return;
+    }
     document.title = `${profile.username} — Pepper TCG`;
     $('profileTitle').textContent = profile.username;
-    $('profileDescription').textContent = 'Pepper TCG member';
-    $('profileUsername').textContent = profile.username;
-    $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
+    $('profileDescription').textContent = 'Account and tokens.';
+    renderProfileDetails(profile);
+    renderClaim();
     $('profileDetails').hidden = false;
   } catch (error) {
     document.title = 'Profile unavailable — Pepper TCG';
@@ -408,7 +431,8 @@ function renderChat(messages) {
     head.className = 'chat-row-head';
     const author = document.createElement('a');
     author.className = 'chat-author';
-    author.href = `/profile/${encodeURIComponent(item.username)}`;
+    author.dataset.username = item.username;
+    author.href = profileHref(item.username);
     author.textContent = item.username;
     author.setAttribute('aria-label', `View ${item.username}'s profile`);
     const time = document.createElement('time');

@@ -88,7 +88,6 @@ input:focus { border-color: var(--accent); }
 .dev-status p { margin: 0; color: var(--muted); font-size: 14px; }
 
 .profile-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 32px; }
-.public-profile-route .profile-details { grid-template-columns: minmax(0, 680px); }
 .profile-retry { margin-top: 20px; }
 .profile-info-card { min-width: 0; padding: 24px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .profile-info-card h2 { margin-bottom: 22px; font-size: 18px; }

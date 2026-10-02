@@ -226,10 +226,16 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
     const user = await users.findOne(
       { usernameKey: username.toLowerCase() },
-      { projection: { _id: 0, username: 1, createdAt: 1 } }
+      { projection: { _id: 0, username: 1, createdAt: 1, balance: 1, lastClaimAt: 1 } }
     );
     if (!user) return sendError(res, 404, 'Profile not found.');
-    res.json({ profile: { username: user.username, createdAt: user.createdAt ?? null } });
+    res.json({ profile: {
+      username: user.username,
+      createdAt: user.createdAt ?? null,
+      balance: user.balance ?? 0,
+      lastClaimAt: user.lastClaimAt ?? null,
+      nextClaimAt: user.lastClaimAt ? user.lastClaimAt + CLAIM_INTERVAL_MS : null
+    } });
   });
 
   app.get('/api/turnstile-config', (req, res) => {
