@@ -1,6 +1,23 @@
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 
+const CHAT_HISTORY_LIMIT = 100;
+
+async function trimChatHistory(messages) {
+  const [oldestToKeep] = await messages.find()
+    .sort({ createdAt: -1, _id: -1 })
+    .skip(CHAT_HISTORY_LIMIT - 1)
+    .limit(1)
+    .project({ createdAt: 1 })
+    .toArray();
+  if (!oldestToKeep) return;
+  // A cutoff preserves newer inserts when multiple sends trim at the same time.
+  await messages.deleteMany({ $or: [
+    { createdAt: { $lt: oldestToKeep.createdAt } },
+    { createdAt: oldestToKeep.createdAt, _id: { $lt: oldestToKeep._id } }
+  ] });
+}
+
 async function connectMongo(options = {}) {
   const uri = options.uri || process.env.MONGODB_URI;
   const dbName = options.dbName || process.env.MONGODB_DB || 'pepper_tcg';
@@ -25,9 +42,10 @@ async function connectMongo(options = {}) {
       sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       verificationTokens.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       verificationTokens.createIndex({ userId: 1, purpose: 1 }),
-      messages.createIndex({ createdAt: -1 }),
-      messages.createIndex({ userId: 1, createdAt: -1 })
+      messages.createIndex({ createdAt: -1, _id: -1 }),
+      messages.createIndex({ userId: 1, createdAt: -1, _id: -1 })
     ]);
+    await trimChatHistory(messages);
     return { client, db, users, sessions, messages, verificationTokens };
   } catch (error) {
     await client.close();
@@ -35,4 +53,4 @@ async function connectMongo(options = {}) {
   }
 }
 
-module.exports = { connectMongo };
+module.exports = { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory };

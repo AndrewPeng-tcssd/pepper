@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 const routePath = location.pathname.replace(/\/+$/, '') || '/';
 const pageKind = routePath === '/profile' ? 'profile' : routePath === '/packs/test' ? 'pack' : 'home';
 document.querySelector(`.main-nav a[href="${pageKind === 'pack' ? '/packs/test' : pageKind === 'profile' ? '/profile' : '/'}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, chatLoading: false, chatSignature: null };
+const state = { user: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, chatLoading: false, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
 
 async function api(path, options = {}) {
@@ -70,6 +70,7 @@ function setUser(user) {
   }
   renderClaim();
   document.body.classList.remove('auth-loading');
+  if (state.chatFollowLatest) scrollChatToLatest();
 }
 
 function formatTime(ms) {
@@ -198,7 +199,10 @@ function setChatOpen(open) {
   $('chatOverlay').hidden = !open;
   $('chatToggle').setAttribute('aria-expanded', String(open));
   document.body.classList.toggle('chat-open', open);
-  if (open) $('chatClose').focus();
+  if (open) {
+    if (state.chatFollowLatest) scrollChatToLatest();
+    $('chatClose').focus();
+  }
   else if (document.activeElement === $('chatClose')) $('chatToggle').focus();
 }
 
@@ -313,23 +317,47 @@ async function signOut() {
 $('logoutButton').addEventListener('click', signOut);
 $('headerLogoutButton').addEventListener('click', signOut);
 
-function renderChat(messages) {
-  const signature = messages.map(item => item.id).join(',');
-  if (signature === state.chatSignature) return;
-  state.chatSignature = signature;
+function scrollChatToLatest() {
   const container = $('chatMessages');
-  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 70;
-  container.replaceChildren();
-  if (!messages.length) {
+  container.scrollTop = container.scrollHeight;
+}
+
+$('chatMessages').addEventListener('scroll', () => {
+  const container = $('chatMessages');
+  state.chatFollowLatest = container.scrollHeight - container.scrollTop - container.clientHeight < 40;
+}, { passive: true });
+
+new ResizeObserver(() => {
+  if (state.chatFollowLatest) scrollChatToLatest();
+}).observe($('chatMessages'));
+
+function renderChat(messages) {
+  const latest = messages.slice(-100);
+  const signature = latest.map(item => item.id).join(',');
+  if (signature === state.chatSignature) return;
+  const container = $('chatMessages');
+  const followLatest = state.chatSignature === null || state.chatFollowLatest;
+  const retainedIds = new Set(latest.map(item => item.id));
+  const top = container.getBoundingClientRect().top;
+  const anchor = !followLatest && Array.from(container.children).find(row =>
+    retainedIds.has(row.dataset.messageId) && row.getBoundingClientRect().bottom > top);
+  const anchorOffset = anchor ? anchor.getBoundingClientRect().top - top : 0;
+  const previousScrollTop = container.scrollTop;
+  state.chatSignature = signature;
+  state.chatFollowLatest = followLatest;
+  const fragment = document.createDocumentFragment();
+  if (!latest.length) {
     const empty = document.createElement('div');
     empty.className = 'chat-empty';
     empty.textContent = 'No messages yet.';
-    container.append(empty);
+    container.replaceChildren(empty);
+    state.chatFollowLatest = true;
     return;
   }
-  for (const item of messages) {
+  for (const item of latest) {
     const row = document.createElement('div');
     row.className = 'chat-row';
+    row.dataset.messageId = item.id;
     const head = document.createElement('div');
     head.className = 'chat-row-head';
     const author = document.createElement('strong');
@@ -341,9 +369,18 @@ function renderChat(messages) {
     body.textContent = item.text;
     head.append(author, time);
     row.append(head, body);
-    container.append(row);
+    fragment.append(row);
   }
-  if (nearBottom) container.scrollTop = container.scrollHeight;
+  container.replaceChildren(fragment);
+  if (followLatest) {
+    scrollChatToLatest();
+  } else {
+    container.scrollTop = previousScrollTop;
+    if (anchor) {
+      const retainedAnchor = Array.from(container.children).find(row => row.dataset.messageId === anchor.dataset.messageId);
+      container.scrollTop += retainedAnchor.getBoundingClientRect().top - top - anchorOffset;
+    }
+  }
 }
 
 async function loadChat() {
@@ -366,6 +403,8 @@ $('chatForm').addEventListener('submit', async (event) => {
   try {
     await api('chat', { method: 'POST', body: JSON.stringify({ text: input.value }) });
     input.value = '';
+    state.chatFollowLatest = true;
+    scrollChatToLatest();
     await loadChat();
   } catch (error) {
     message($('chatMessage'), error.message);

@@ -159,7 +159,7 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-heading-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-heading h2 { margin: 0; font-size: 25px; }
 .chat-board { display: flex; flex: 1; min-height: 0; flex-direction: column; }
-.chat-messages { flex: 1; min-height: 0; padding: 0 21px; overflow-y: auto; }
+.chat-messages { flex: 1; min-height: 0; padding: 0 21px; overflow-y: auto; overflow-anchor: none; }
 .chat-empty { display: grid; place-items: center; height: 100%; padding: 20px; color: var(--muted); text-align: center; font-size: 13px; }
 .chat-row { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .chat-row-head { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }

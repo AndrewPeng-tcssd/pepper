@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const { MongoMemoryServer } = require('mongodb-memory-server');
+const { ObjectId } = require('mongodb');
 const { createApp, connectMongo } = require('../server');
 const { migrate } = require('../scripts/migrate-sqlite');
 
@@ -203,4 +204,67 @@ test('public chat can be read, and only signed-in users can post', async () => {
   assert.equal(messages.status, 200);
   assert.ok(messages.data.messages.some(item => item.id === post.data.message.id));
   assert.equal((await request('/api/chat', { text: 'Too soon' }, signedUp.cookie)).status, 429);
+});
+
+test('chat keeps the newest 100 messages when sends overlap, with stable ordering for matching times', async () => {
+  const chatStore = await connectMongo({ uri: mongo.getUri(), dbName: `chat_${crypto.randomBytes(3).toString('hex')}` });
+  const chatServer = createApp(chatStore, { mailer: null }).listen(0);
+  const chatUrl = `http://127.0.0.1:${chatServer.address().port}/api/chat`;
+  try {
+    const createdAt = new Date(Date.now() - 60000);
+    const seedUserId = new ObjectId();
+    await chatStore.messages.insertMany(Array.from({ length: 120 }, (_, index) => ({
+      _id: new ObjectId(index.toString(16).padStart(24, '0')),
+      userId: seedUserId, username: 'history', text: `message ${index}`, createdAt
+    })));
+    const initial = await (await fetch(chatUrl)).json();
+    assert.equal(initial.messages.length, 100);
+    assert.deepEqual(initial.messages.map(message => message.text),
+      Array.from({ length: 100 }, (_, index) => `message ${index + 20}`));
+
+    const cookies = await Promise.all(Array.from({ length: 8 }, async (_, index) => {
+      const userId = new ObjectId();
+      await chatStore.users.insertOne({ _id: userId, username: `sender_${index}`, usernameKey: `sender_${index}` });
+      const token = crypto.randomBytes(32).toString('hex');
+      await chatStore.sessions.insertOne({
+        _id: crypto.createHash('sha256').update(token).digest('hex'),
+        userId, expiresAt: new Date(Date.now() + 60000)
+      });
+      return `pepper_session=${token}`;
+    }));
+    const sends = await Promise.all(cookies.map((cookie, index) => fetch(chatUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ text: `new message ${index}` })
+    })));
+    for (const response of sends) assert.equal(response.status, 201);
+
+    const stored = await chatStore.messages.find().sort({ createdAt: 1, _id: 1 }).toArray();
+    assert.equal(stored.length, 100);
+    assert.deepEqual(stored.slice(0, 92).map(message => message.text),
+      Array.from({ length: 92 }, (_, index) => `message ${index + 28}`));
+    assert.deepEqual(new Set(stored.slice(92).map(message => message.text)),
+      new Set(Array.from({ length: 8 }, (_, index) => `new message ${index}`)));
+    const latest = await (await fetch(chatUrl)).json();
+    assert.deepEqual(latest.messages.map(message => message.id), stored.map(message => message._id.toString()));
+  } finally {
+    await new Promise(resolve => chatServer.close(resolve));
+    await chatStore.client.close();
+  }
+});
+
+test('connecting to an existing database trims chat history to the newest 100', async () => {
+  const dbName = `chat_startup_${crypto.randomBytes(3).toString('hex')}`;
+  const messages = store.client.db(dbName).collection('messages');
+  await messages.insertMany(Array.from({ length: 105 }, (_, index) => ({
+    _id: new ObjectId(index.toString(16).padStart(24, '0')),
+    username: 'history', text: `message ${index}`,
+    createdAt: new Date(index < 55 ? 1000 : 2000)
+  })));
+  const restarted = await connectMongo({ uri: mongo.getUri(), dbName });
+  try {
+    const remaining = await restarted.messages.find().sort({ createdAt: 1, _id: 1 }).toArray();
+    assert.equal(remaining.length, 100);
+    assert.deepEqual(remaining.map(message => message.text),
+      Array.from({ length: 100 }, (_, index) => `message ${index + 5}`));
+  } finally { await restarted.client.close(); }
 });

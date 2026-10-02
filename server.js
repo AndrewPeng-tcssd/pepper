@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { connectMongo } = require('./mongo');
+const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory } = require('./mongo');
 const { createMailer } = require('./mailer');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -260,18 +260,19 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     createdAt: message.createdAt.toISOString()
   });
   app.get('/api/chat', async (req, res) => {
-    const latest = await messages.find().sort({ createdAt: -1 }).limit(50).toArray();
+    const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
     res.json({ messages: latest.reverse().map(publicMessage) });
   });
   app.post('/api/chat', requireUser, rateLimit(12, 60 * 1000), async (req, res) => {
     const messageText = String(req.body?.text || '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     if (!messageText || messageText.length > 400) return sendError(res, 400, 'Message must be 1–400 characters.');
-    const last = await messages.findOne({ userId: req.user._id }, { sort: { createdAt: -1 } });
+    const last = await messages.findOne({ userId: req.user._id }, { sort: { createdAt: -1, _id: -1 } });
     if (last && Date.now() - last.createdAt.getTime() < 3000) {
       return sendError(res, 429, 'Please wait a few seconds before sending another message.');
     }
     const message = { userId: req.user._id, username: req.user.username, text: messageText, createdAt: new Date() };
     await messages.insertOne(message);
+    await trimChatHistory(messages);
     res.status(201).json({ message: publicMessage(message) });
   });
 
