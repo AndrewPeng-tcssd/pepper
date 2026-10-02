@@ -1,6 +1,8 @@
 const $ = (id) => document.getElementById(id);
 const routePath = location.pathname.replace(/\/+$/, '') || '/';
-const pageKind = routePath === '/profile' ? 'profile' : routePath === '/packs/test' ? 'pack' : 'home';
+const profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
+const viewingPublicProfile = !!profileRoute;
+const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : 'home';
 document.querySelector(`.main-nav a[href="${pageKind === 'pack' ? '/packs/test' : pageKind === 'profile' ? '/profile' : '/'}"]`)?.setAttribute('aria-current', 'page');
 const state = { user: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, chatLoading: false, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
@@ -34,10 +36,19 @@ function formatProfileDate(value, includeTime = false) {
 
 function setUser(user) {
   state.user = user;
-  $('profileDescription').textContent = user
-    ? 'Your account and tokens.'
-    : 'Sign up or log in to see your account and tokens.';
-  $('profileDetails').hidden = !user;
+  if (!viewingPublicProfile) {
+    $('profileDescription').textContent = user
+      ? 'Your account and tokens.'
+      : 'Sign up or log in to see your account and tokens.';
+    $('profileDetails').hidden = !user;
+    if (user) {
+      $('profileUsername').textContent = user.username;
+      $('profileJoined').textContent = user.createdAt ? formatProfileDate(user.createdAt) : 'Not available';
+      $('profileBalance').textContent = user.balance.toLocaleString();
+      $('profileLastClaim').textContent = formatProfileDate(user.lastClaimAt, true);
+      $('profileNextClaim').textContent = user.nextClaimAt ? formatProfileDate(user.nextClaimAt, true) : 'Ready now';
+    }
+  }
   $('accountButton').hidden = !!user;
   $('accountMenu').hidden = !user;
   if (!user) $('accountMenu').open = false;
@@ -46,11 +57,6 @@ function setUser(user) {
   $('chatLoggedOut').hidden = !!user;
   $('chatLoggedIn').hidden = !user;
   if (user) {
-    $('profileUsername').textContent = user.username;
-    $('profileJoined').textContent = user.createdAt ? formatProfileDate(user.createdAt) : 'Not available';
-    $('profileBalance').textContent = user.balance.toLocaleString();
-    $('profileLastClaim').textContent = formatProfileDate(user.lastClaimAt, true);
-    $('profileNextClaim').textContent = user.nextClaimAt ? formatProfileDate(user.nextClaimAt, true) : 'Ready now';
     $('menuUsername').textContent = user.username;
     $('menuBalance').textContent = user.balance.toLocaleString();
     $('panelBalance').textContent = user.balance.toLocaleString();
@@ -82,7 +88,7 @@ function formatTime(ms) {
 }
 
 function renderClaim() {
-  if (!state.user || pageKind !== 'profile') return;
+  if (!state.user || pageKind !== 'profile' || viewingPublicProfile) return;
   const remaining = state.user.nextClaimAt ? state.user.nextClaimAt - Date.now() : 0;
   const ready = remaining <= 0;
   $('profileNextClaim').textContent = ready ? 'Ready now' : formatTime(remaining);
@@ -141,7 +147,7 @@ function loadTurnstileScript() {
 }
 
 async function loadTurnstile() {
-  if (!state.user || pageKind !== 'profile' || state.turnstileLoading || state.turnstileWidgetId !== null) return;
+  if (!state.user || pageKind !== 'profile' || viewingPublicProfile || state.turnstileLoading || state.turnstileWidgetId !== null) return;
   state.turnstileLoading = true;
   const generation = ++state.turnstileGeneration;
   try {
@@ -229,10 +235,19 @@ document.addEventListener('keydown', (event) => {
 });
 $('closeDialog').addEventListener('click', () => $('authDialog').close());
 $('closeAccount').addEventListener('click', () => $('accountDialog').close());
+$('accountDialog').addEventListener('click', (event) => {
+  const dialog = event.currentTarget;
+  if (event.target !== dialog) return;
+  const bounds = dialog.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
+    dialog.close();
+  }
+});
 $('signupTab').addEventListener('click', () => setAuthMode('signup'));
 $('loginTab').addEventListener('click', () => setAuthMode('login'));
 $('resetTurnstile').addEventListener('click', () => { message($('claimMessage'), ''); resetTurnstile(); });
 $('goToTokens').addEventListener('click', () => $('accountDialog').close());
+$('profileRetry').addEventListener('click', loadProfile);
 $('year').textContent = new Date().getFullYear();
 
 if (pageKind === 'profile') {
@@ -243,6 +258,13 @@ if (pageKind === 'profile') {
   $('home').hidden = true;
   $('profileIntro').hidden = false;
   $('cards').hidden = true;
+  if (viewingPublicProfile) {
+    document.body.classList.add('public-profile-route');
+    $('profileDescription').textContent = 'Loading profile…';
+    $('profileAccountTitle').textContent = 'About';
+    $('profileTokenCard').hidden = true;
+    $('tokens').hidden = true;
+  }
 } else if (pageKind === 'pack') {
   document.title = 'Pack opening test — Pepper TCG';
   document.body.classList.add('pack-route');
@@ -272,7 +294,8 @@ $('authForm').addEventListener('submit', async (event) => {
     setUser(data.user);
     $('authDialog').close();
     $('authForm').reset();
-    if (pageKind === 'profile') $('tokens').scrollIntoView({ behavior: 'smooth' });
+    if (pageKind === 'profile' && !viewingPublicProfile) $('tokens').scrollIntoView({ behavior: 'smooth' });
+    else if (viewingPublicProfile) $('profileIntro').scrollIntoView({ behavior: 'smooth' });
     else location.assign('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -317,6 +340,26 @@ async function signOut() {
 $('logoutButton').addEventListener('click', signOut);
 $('headerLogoutButton').addEventListener('click', signOut);
 
+async function loadProfile() {
+  $('profileRetry').hidden = true;
+  $('profileDetails').hidden = true;
+  $('profileDescription').textContent = 'Loading profile…';
+  try {
+    const { profile } = await api(`profiles/${profileRoute[1]}`);
+    document.title = `${profile.username} — Pepper TCG`;
+    $('profileTitle').textContent = profile.username;
+    $('profileDescription').textContent = 'Pepper TCG member';
+    $('profileUsername').textContent = profile.username;
+    $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
+    $('profileDetails').hidden = false;
+  } catch (error) {
+    document.title = 'Profile unavailable — Pepper TCG';
+    $('profileTitle').textContent = 'Profile unavailable';
+    $('profileDescription').textContent = error.message;
+    $('profileRetry').hidden = false;
+  }
+}
+
 function scrollChatToLatest() {
   const container = $('chatMessages');
   container.scrollTop = container.scrollHeight;
@@ -336,6 +379,9 @@ function renderChat(messages) {
   const signature = latest.map(item => item.id).join(',');
   if (signature === state.chatSignature) return;
   const container = $('chatMessages');
+  const focusedAuthor = document.activeElement?.closest('.chat-author');
+  const focusedMessageId = focusedAuthor && container.contains(focusedAuthor)
+    ? focusedAuthor.closest('.chat-row').dataset.messageId : null;
   const followLatest = state.chatSignature === null || state.chatFollowLatest;
   const retainedIds = new Set(latest.map(item => item.id));
   const top = container.getBoundingClientRect().top;
@@ -360,8 +406,11 @@ function renderChat(messages) {
     row.dataset.messageId = item.id;
     const head = document.createElement('div');
     head.className = 'chat-row-head';
-    const author = document.createElement('strong');
+    const author = document.createElement('a');
+    author.className = 'chat-author';
+    author.href = `/profile/${encodeURIComponent(item.username)}`;
     author.textContent = item.username;
+    author.setAttribute('aria-label', `View ${item.username}'s profile`);
     const time = document.createElement('time');
     time.dateTime = item.createdAt;
     time.textContent = new Date(item.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
@@ -372,6 +421,10 @@ function renderChat(messages) {
     fragment.append(row);
   }
   container.replaceChildren(fragment);
+  if (focusedMessageId) {
+    const focusedRow = Array.from(container.children).find(row => row.dataset.messageId === focusedMessageId);
+    focusedRow?.querySelector('.chat-author').focus({ preventScroll: true });
+  }
   if (followLatest) {
     scrollChatToLatest();
   } else {
@@ -416,6 +469,7 @@ fetch('/api/me', { credentials: 'same-origin' })
   .then(data => setUser(data.user))
   .catch(() => setUser(null));
 setInterval(renderClaim, 1000);
+if (viewingPublicProfile) loadProfile();
 loadChat();
 setInterval(loadChat, 4000);
 

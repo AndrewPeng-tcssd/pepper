@@ -34,6 +34,7 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 
 - Username and password sign-up and login; sign out. Existing email logins remain available for accounts that already have an email. Passwords are salted and hashed.
 - Persistent MongoDB account balances.
+- Click a username in chat to view that member's public profile, including their username and join date. Public profiles also open directly at `/profile/USERNAME`; `/profile` remains your own account and token page.
 - Cloudflare Turnstile verification and a 5-token claim once every rolling hour per account. MongoDB enforces the claim timer with an atomic update.
 - A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 50 messages; signed-in users can post. Messages are saved in MongoDB. Posting has length and speed limits.
 - A pack opening animation test at `/packs/test`. It reveals five blank cards and can be reset. It does not use tokens or save cards.

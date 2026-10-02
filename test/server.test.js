@@ -206,6 +206,41 @@ test('public chat can be read, and only signed-in users can post', async () => {
   assert.equal((await request('/api/chat', { text: 'Too soon' }, signedUp.cookie)).status, 429);
 });
 
+test('public profiles can be read anonymously and only include public account details', async () => {
+  const username = `Profile_${crypto.randomBytes(3).toString('hex')}`;
+  const createdAt = new Date('2024-04-05T12:00:00.000Z');
+  await store.users.insertOne({
+    username, usernameKey: username.toLowerCase(), createdAt,
+    email: `${username.toLowerCase()}@example.test`, passwordHash: 'private-password-hash',
+    balance: 25, lastClaimAt: Date.now(), emailVerifiedAt: new Date(), lastEmailAttemptAt: new Date()
+  });
+
+  const result = await request(`/api/profiles/${username.toUpperCase()}`);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { profile: { username, createdAt: createdAt.toISOString() } });
+
+  const legacyUsername = `Legacy_${crypto.randomBytes(3).toString('hex')}`;
+  await store.users.insertOne({ username: legacyUsername, usernameKey: legacyUsername.toLowerCase(), balance: 0 });
+  const legacy = await request(`/api/profiles/${legacyUsername}`);
+  assert.equal(legacy.status, 200);
+  assert.deepEqual(legacy.data, { profile: { username: legacyUsername, createdAt: null } });
+
+  for (const name of [`missing_${crypto.randomBytes(3).toString('hex')}`, 'ab', 'a'.repeat(25), 'invalid-name', 'invalid%20name']) {
+    const missing = await request(`/api/profiles/${name}`);
+    assert.equal(missing.status, 404);
+    assert.deepEqual(missing.data, { error: 'Profile not found.' });
+  }
+});
+
+test('profile URLs serve the profile page directly', async () => {
+  for (const route of ['/profile', '/profile/OtherGardener']) {
+    const response = await fetch(base + route);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    assert.match(await response.text(), /id="profileIntro"/);
+  }
+});
+
 test('chat keeps the newest 100 messages when sends overlap, with stable ordering for matching times', async () => {
   const chatStore = await connectMongo({ uri: mongo.getUri(), dbName: `chat_${crypto.randomBytes(3).toString('hex')}` });
   const chatServer = createApp(chatStore, { mailer: null }).listen(0);

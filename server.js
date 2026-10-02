@@ -221,6 +221,17 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     res.json({ user: user ? publicUser(user) : null });
   });
 
+  app.get('/api/profiles/:username', async (req, res) => {
+    const username = req.params.username;
+    if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
+    const user = await users.findOne(
+      { usernameKey: username.toLowerCase() },
+      { projection: { _id: 0, username: 1, createdAt: 1 } }
+    );
+    if (!user) return sendError(res, 404, 'Profile not found.');
+    res.json({ profile: { username: user.username, createdAt: user.createdAt ?? null } });
+  });
+
   app.get('/api/turnstile-config', (req, res) => {
     res.json({ siteKey: turnstileConfigured ? turnstileSiteKey : null });
   });
@@ -276,7 +287,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     res.status(201).json({ message: publicMessage(message) });
   });
 
-  app.get(['/profile', '/packs/test'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/packs/test'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs', (req, res) => res.redirect(302, '/packs/test'));

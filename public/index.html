@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f4ef">
   <title>Pepper TCG — Development</title>
-  <link rel="stylesheet" href="/styles.css?v=22">
-  <script src="/app.js?v=21" defer></script>
+  <link rel="icon" type="image/jpeg" sizes="980x980" href="/favicon.jpg">
+  <link rel="stylesheet" href="/styles.css?v=23">
+  <script src="/app.js?v=22" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -67,16 +68,17 @@
 
     <section class="section-wrap profile-overview" id="profileIntro" aria-labelledby="profileTitle" hidden>
       <h1 id="profileTitle">Profile</h1>
-      <p id="profileDescription">Sign up or log in to see your account and tokens.</p>
+      <p id="profileDescription" role="status">Sign up or log in to see your account and tokens.</p>
+      <button class="button profile-retry" id="profileRetry" type="button" hidden>Try again</button>
       <div class="profile-details" id="profileDetails" hidden>
         <div class="profile-info-card">
-          <h2>Account</h2>
+          <h2 id="profileAccountTitle">Account</h2>
           <dl>
             <dt>Username</dt><dd id="profileUsername"></dd>
             <dt>Joined</dt><dd id="profileJoined"></dd>
           </dl>
         </div>
-        <div class="profile-info-card">
+        <div class="profile-info-card" id="profileTokenCard">
           <h2>Tokens</h2>
           <div class="profile-token-balance"><strong id="profileBalance">0</strong><span>tokens</span></div>
           <dl>
