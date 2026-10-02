@@ -22,6 +22,8 @@ New accounts use a username and password. No email address or email verification
 
 The site stores accounts, password hashes, balances, claim times, and sessions in MongoDB. Passwords need at least eight characters. To change the local website port, set `PORT` before starting the server.
 
+Change your username or password at `/settings` using your current password. Changing your username also updates the name shown on your chat messages. Changing your password signs out your other sessions while keeping the current session signed in.
+
 ## Cloudflare verification
 
 The hourly token claim uses Cloudflare Turnstile. On `localhost` in a non-production run, the site uses [Cloudflare's test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) so you can test the claim flow without creating a Cloudflare account. For any deployed site, create a Turnstile widget for that hostname and set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. Keep the secret key private. The server verifies each token with Cloudflare before adding tokens. Test keys must not be used for a deployed site.
@@ -33,6 +35,7 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 ## What works now
 
 - Username and password sign-up and login; sign out. Existing email logins remain available for accounts that already have an email. Passwords are salted and hashed.
+- Account details, username and password changes, and appearance settings at `/settings`, with light or dark mode saved per browser.
 - Persistent MongoDB account balances.
 - Click a username in chat to view that member's public profile, including their username, join date, token balance, and last and next claim details. Clicking your own username opens `/profile`, your account and token claim page. Other public profiles also open directly at `/profile/USERNAME`.
 - Cloudflare Turnstile verification and a 5-token claim once every rolling hour per account. MongoDB enforces the claim timer with an atomic update.

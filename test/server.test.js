@@ -32,13 +32,20 @@ after(async () => {
   await mongo?.stop();
 });
 
-async function request(route, body, cookie) {
-  const response = await fetch(base + route, {
-    method: body === undefined ? 'GET' : 'POST',
+async function request(route, body, cookie, method = body === undefined ? 'GET' : 'POST', baseUrl = base) {
+  const response = await fetch(baseUrl + route, {
+    method,
     headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
+}
+
+function accountApi(t, accountStore = store) {
+  const accountServer = createApp(accountStore, { mailer: null }).listen(0);
+  t.after(() => new Promise(resolve => accountServer.close(resolve)));
+  const accountBase = `http://127.0.0.1:${accountServer.address().port}`;
+  return (route, body, cookie, method) => request(route, body, cookie, method, accountBase);
 }
 
 test('eight-character sign-up, MongoDB balance, and hourly claim', async () => {
@@ -252,6 +259,147 @@ test('profile URLs serve the profile page directly', async () => {
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type'), /text\/html/);
     assert.match(await response.text(), /id="profileIntro"/);
+  }
+});
+
+test('account username changes preserve the account and refresh historical chat names', async t => {
+  const api = accountApi(t);
+  const username = `rename_${crypto.randomBytes(3).toString('hex')}`;
+  const password = 'original-password';
+  const register = await api('/api/register', { username, password });
+  assert.equal(register.status, 201);
+  const original = await store.users.findOne({ usernameKey: username });
+  const lastClaimAt = 1700000000000;
+  await store.users.updateOne({ _id: original._id }, { $set: { balance: 42, lastClaimAt } });
+  const posted = await api('/api/chat', { text: 'My name can change.' }, register.cookie);
+  assert.equal(posted.status, 201);
+
+  const taken = `taken_${crypto.randomBytes(3).toString('hex')}`;
+  assert.equal((await api('/api/register', { username: taken, password })).status, 201);
+  const route = '/api/account/username';
+  assert.equal((await api(route, { username: 'NewGardener', currentPassword: password }, undefined, 'PATCH')).status, 401);
+  assert.equal((await api(route, { username: 'NewGardener', currentPassword: 'wrong-password' }, register.cookie, 'PATCH')).status, 403);
+  for (const invalid of ['ab', 'invalid-name', 'a'.repeat(25)]) {
+    assert.equal((await api(route, { username: invalid, currentPassword: password }, register.cookie, 'PATCH')).status, 400);
+  }
+  const duplicate = await api(route, { username: taken.toUpperCase(), currentPassword: password }, register.cookie, 'PATCH');
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.data.error, 'That username is already in use.');
+  assert.equal((await api('/api/me', undefined, register.cookie)).data.user.username, username);
+
+  const caseOnly = await api(route, { username: `  ${username.toUpperCase()}  `, currentPassword: password }, register.cookie, 'PATCH');
+  assert.equal(caseOnly.status, 200);
+  assert.equal(caseOnly.data.user.username, username.toUpperCase());
+  assert.equal(caseOnly.data.user.balance, 42);
+  assert.equal(caseOnly.data.user.passwordHash, undefined);
+
+  const renamed = `Changed_${crypto.randomBytes(3).toString('hex')}`;
+  const changed = await api(route, { username: renamed, currentPassword: password }, register.cookie, 'PATCH');
+  assert.equal(changed.status, 200);
+  assert.equal(changed.data.user.username, renamed);
+  assert.equal(changed.data.user.createdAt, original.createdAt.toISOString());
+  assert.equal(changed.data.user.balance, 42);
+  assert.equal(changed.data.user.lastClaimAt, lastClaimAt);
+  assert.equal(changed.data.user.nextClaimAt, lastClaimAt + CLAIM_INTERVAL_MS);
+  assert.equal(changed.data.user.passwordHash, undefined);
+  const saved = await store.users.findOne({ usernameKey: renamed.toLowerCase() });
+  assert.ok(saved._id.equals(original._id));
+  assert.equal(saved.passwordHash, original.passwordHash);
+  assert.equal((await api('/api/me', undefined, register.cookie)).data.user.username, renamed);
+  assert.equal((await api(`/api/profiles/${username}`)).status, 404);
+  const profile = await api(`/api/profiles/${renamed}`);
+  assert.equal(profile.status, 200);
+  assert.equal(profile.data.profile.balance, 42);
+  const history = await api('/api/chat');
+  assert.equal(history.data.messages.find(item => item.id === posted.data.message.id).username, renamed);
+  assert.equal((await store.messages.findOne({ _id: new ObjectId(posted.data.message.id) })).username, username);
+  assert.equal((await api('/api/login', { identifier: username, password })).status, 401);
+  assert.equal((await api('/api/login', { identifier: renamed.toUpperCase(), password })).status, 200);
+});
+
+test('account password changes require the current password and revoke other sessions', async t => {
+  const api = accountApi(t);
+  const username = `password_${crypto.randomBytes(3).toString('hex')}`;
+  const currentPassword = 'original-password';
+  const newPassword = 'replacement-password';
+  const register = await api('/api/register', { username, password: currentPassword });
+  assert.equal(register.status, 201);
+  const original = await store.users.findOne({ usernameKey: username });
+  const otherSession = await api('/api/login', { identifier: username, password: currentPassword });
+  assert.equal(otherSession.status, 200);
+  const pendingLoginToken = crypto.randomBytes(32).toString('hex');
+  await store.verificationTokens.insertOne({
+    _id: crypto.createHash('sha256').update(pendingLoginToken).digest('hex'),
+    userId: original._id, purpose: 'login', expiresAt: new Date(Date.now() + 60000)
+  });
+  const route = '/api/account/password';
+  assert.equal((await api(route, { currentPassword, newPassword }, undefined, 'PATCH')).status, 401);
+  assert.equal((await api(route, { currentPassword: 'wrong-password', newPassword }, register.cookie, 'PATCH')).status, 403);
+  for (const invalid of ['1234567', 'a'.repeat(129)]) {
+    assert.equal((await api(route, { currentPassword, newPassword: invalid }, register.cookie, 'PATCH')).status, 400);
+  }
+  assert.equal((await api('/api/me', undefined, otherSession.cookie)).data.user.username, username);
+  assert.equal((await store.users.findOne({ _id: original._id })).passwordHash, original.passwordHash);
+
+  const changed = await api(route, { currentPassword, newPassword }, register.cookie, 'PATCH');
+  assert.equal(changed.status, 200);
+  assert.deepEqual(changed.data, { ok: true });
+  const saved = await store.users.findOne({ _id: original._id });
+  assert.notEqual(saved.passwordHash, original.passwordHash);
+  assert.notEqual(saved.passwordHash, newPassword);
+  assert.equal((await api('/api/me', undefined, register.cookie)).data.user.username, username);
+  assert.equal((await api('/api/me', undefined, otherSession.cookie)).data.user, null);
+  assert.equal(await store.sessions.countDocuments({ userId: original._id }), 1);
+  assert.equal((await api('/api/verify-email', { purpose: 'login', token: pendingLoginToken })).status, 400);
+  assert.equal((await api('/api/login', { identifier: username, password: currentPassword })).status, 401);
+  const newLogin = await api('/api/login', { identifier: username, password: newPassword });
+  assert.equal(newLogin.status, 200);
+  assert.ok(newLogin.cookie);
+  assert.equal(newLogin.data.user.passwordHash, undefined);
+});
+
+test('account updates reject a password changed after the current password check', async t => {
+  let changePasswordDuringUpdate = false;
+  const raceUsers = new Proxy(store.users, { get(target, property) {
+    if (property === 'findOneAndUpdate') return async (filter, update, options) => {
+      if (changePasswordDuringUpdate) {
+        await target.updateOne({ _id: filter._id }, { $set: { passwordHash: 'concurrently-changed-hash' } });
+      }
+      return target.findOneAndUpdate(filter, update, options);
+    };
+    const value = Reflect.get(target, property, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const api = accountApi(t, { ...store, users: raceUsers });
+  const username = `race_${crypto.randomBytes(3).toString('hex')}`;
+  const currentPassword = 'original-password';
+  const register = await api('/api/register', { username, password: currentPassword });
+  assert.equal(register.status, 201);
+  const original = await store.users.findOne({ usernameKey: username });
+  changePasswordDuringUpdate = true;
+  for (const [route, body] of [
+    ['/api/account/username', { username: 'ChangedGardener', currentPassword }],
+    ['/api/account/password', { currentPassword, newPassword: 'replacement-password' }]
+  ]) {
+    await store.users.updateOne({ _id: original._id }, { $set: { passwordHash: original.passwordHash } });
+    const result = await api(route, body, register.cookie, 'PATCH');
+    assert.equal(result.status, 409);
+    assert.equal(result.data.error, 'Your account changed. Please try again.');
+    const saved = await store.users.findOne({ _id: original._id });
+    assert.equal(saved.username, username);
+    assert.equal(saved.passwordHash, 'concurrently-changed-hash');
+    assert.equal(await store.sessions.countDocuments({ userId: original._id }), 1);
+  }
+});
+
+test('settings URLs serve the settings page directly', async () => {
+  for (const route of ['/settings', '/settings/']) {
+    const response = await fetch(base + route);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    const html = await response.text();
+    assert.match(html, /id="settingsPage"/);
+    assert.match(html, /<script\b[^>]*\bsrc="\/theme\.js(?:\?[^\"]*)?"[^>]*>/);
   }
 });
 

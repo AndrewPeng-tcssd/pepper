@@ -6,8 +6,9 @@
   <meta name="theme-color" content="#f6f4ef">
   <title>Pepper TCG — Development</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=24">
-  <script src="/app.js?v=23" defer></script>
+  <script src="/theme.js?v=1"></script>
+  <link rel="stylesheet" href="/styles.css?v=25">
+  <script src="/app.js?v=24" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -40,6 +41,7 @@
       <a href="/">Overview</a>
       <a href="/profile">Profile</a>
       <a href="/packs/test">Packs</a>
+      <a href="/settings">Settings</a>
       <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat</button>
     </nav>
     <div class="header-actions">
@@ -49,8 +51,9 @@
         <div class="account-dropdown">
           <div class="account-menu-info"><strong id="menuUsername"></strong><span><span id="menuBalance">0</span> tokens</span></div>
           <a href="/profile">Profile</a>
-          <button id="accountDetailsButton" type="button">Account details</button>
+          <a href="/settings">Settings</a>
           <button id="headerLogoutButton" type="button">Sign out</button>
+          <p class="form-message account-menu-message" id="headerAccountMessage" role="status" hidden></p>
         </div>
       </details>
     </div>
@@ -151,6 +154,65 @@
       </div>
     </section>
 
+    <section class="section-wrap settings-overview" id="settingsPage" aria-labelledby="settingsTitle" hidden>
+      <h1 id="settingsTitle">Settings</h1>
+      <p>Manage your account and appearance.</p>
+      <div class="settings-grid">
+        <section class="settings-card" aria-labelledby="appearanceTitle">
+          <h2 id="appearanceTitle">Appearance</h2>
+          <p id="themeHint">Choose how Pepper TCG looks.</p>
+          <fieldset class="theme-options" aria-describedby="themeHint">
+            <legend class="sr-only">Color theme</legend>
+            <label class="theme-option" for="themeLight"><input id="themeLight" type="radio" name="theme" value="light" checked><span>Light</span></label>
+            <label class="theme-option" for="themeDark"><input id="themeDark" type="radio" name="theme" value="dark"><span>Dark</span></label>
+          </fieldset>
+          <p class="form-message" id="themeMessage" role="status"></p>
+        </section>
+        <section class="settings-card" aria-labelledby="accountTitle">
+          <h2 id="accountTitle">Account details</h2>
+          <p id="settingsAccountLoading" role="status">Loading account…</p>
+          <div id="settingsLoggedOut" hidden>
+            <p>Sign up or log in to see your account details.</p>
+            <button class="button" id="settingsJoin" type="button">Sign up or log in</button>
+          </div>
+          <div id="settingsLoggedIn" hidden>
+            <dl class="account-details">
+              <dt>Username</dt><dd id="accountName"></dd>
+              <dt id="accountEmailLabel">Email</dt><dd id="accountEmail"></dd>
+              <dt>Joined</dt><dd id="accountJoined"></dd>
+              <dt>Last claim</dt><dd id="accountLastClaim"></dd>
+            </dl>
+            <div class="account-balance"><small>Token balance</small><strong><span id="accountBalance">0</span> tokens</strong></div>
+            <div class="settings-account-actions">
+              <a class="button" href="/profile">View profile</a>
+              <button class="button" id="logoutButton" type="button">Sign out</button>
+            </div>
+          </div>
+          <p class="form-message" id="accountMessage" role="status"></p>
+        </section>
+        <section class="settings-card" id="usernameSettings" aria-labelledby="usernameSettingsTitle" hidden>
+          <h2 id="usernameSettingsTitle">Change username</h2>
+          <form class="settings-form" id="usernameForm">
+            <div><label for="newUsername">New username</label><input id="newUsername" name="username" autocomplete="username" minlength="3" maxlength="24" pattern="[a-zA-Z0-9_]{3,24}" aria-describedby="usernameRules" required></div>
+            <p id="usernameRules">Use 3–24 letters, numbers, or underscores.</p>
+            <div><label for="usernameCurrentPassword">Current password</label><input id="usernameCurrentPassword" name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></div>
+            <button class="button" id="usernameSubmit" type="submit">Save username</button>
+            <p class="form-message" id="usernameMessage" role="status"></p>
+          </form>
+        </section>
+        <section class="settings-card" id="passwordSettings" aria-labelledby="passwordSettingsTitle" hidden>
+          <h2 id="passwordSettingsTitle">Change password</h2>
+          <form class="settings-form" id="passwordForm">
+            <div><label for="passwordCurrentPassword">Current password</label><input id="passwordCurrentPassword" name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></div>
+            <div><label for="newPassword">New password (at least 8 characters)</label><input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div>
+            <div><label for="confirmPassword">Confirm new password</label><input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div>
+            <button class="button" id="passwordSubmit" type="submit">Update password</button>
+            <p class="form-message" id="passwordMessage" role="status"></p>
+          </form>
+        </section>
+      </div>
+    </section>
+
   </main>
 
   <footer><span>Pepper TCG · Development build</span><span>© <span id="year"></span></span></footer>
@@ -171,21 +233,5 @@
     </div>
   </dialog>
 
-  <dialog class="account-dialog" id="accountDialog" aria-labelledby="accountTitle">
-    <div class="account-dialog-inner">
-      <button class="dialog-close" id="closeAccount" type="button" aria-label="Close">×</button>
-      <h2 id="accountTitle">Account</h2>
-      <dl class="account-dialog-details">
-        <dt>Username</dt><dd id="accountName"></dd>
-        <dt id="accountEmailLabel">Email</dt><dd id="accountEmail"></dd>
-        <dt>Joined</dt><dd id="accountJoined"></dd>
-        <dt>Last claim</dt><dd id="accountLastClaim"></dd>
-      </dl>
-      <div class="account-balance"><small>Token balance</small><strong><span id="accountBalance">0</span> tokens</strong></div>
-      <a class="button" id="goToTokens" href="/profile">View profile</a>
-      <button class="logout-button" id="logoutButton" type="button">Sign out</button>
-      <p class="form-message" id="accountMessage" role="status"></p>
-    </div>
-  </dialog>
 </body>
 </html>

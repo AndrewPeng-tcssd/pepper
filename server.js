@@ -221,6 +221,46 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     res.json({ user: user ? publicUser(user) : null });
   });
 
+  app.patch('/api/account/username', requireUser, rateLimit(10, 15 * 60 * 1000), async (req, res) => {
+    const username = String(req.body?.username || '').trim();
+    const currentPassword = String(req.body?.currentPassword || '');
+    if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 400, 'Username must be 3–24 letters, numbers, or underscores.');
+    if (!passwordMatches(currentPassword, req.user.passwordHash)) return sendError(res, 403, 'Incorrect current password.');
+    try {
+      const user = await users.findOneAndUpdate(
+        { _id: req.user._id, passwordHash: req.user.passwordHash },
+        { $set: { username, usernameKey: username.toLowerCase() } },
+        { returnDocument: 'after' }
+      );
+      if (!user) return sendError(res, 409, 'Your account changed. Please try again.');
+      res.json({ user: publicUser(user) });
+    } catch (error) {
+      if (error.code === 11000) return sendError(res, 409, 'That username is already in use.');
+      throw error;
+    }
+  });
+
+  app.patch('/api/account/password', requireUser, rateLimit(10, 15 * 60 * 1000), async (req, res) => {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    if (newPassword.length < 8 || newPassword.length > 128) return sendError(res, 400, 'Password must be 8–128 characters.');
+    if (!passwordMatches(currentPassword, req.user.passwordHash)) return sendError(res, 403, 'Incorrect current password.');
+    const user = await users.findOneAndUpdate(
+      { _id: req.user._id, passwordHash: req.user.passwordHash },
+      { $set: { passwordHash: passwordHash(newPassword) } },
+      { returnDocument: 'after' }
+    );
+    if (!user) return sendError(res, 409, 'Your account changed. Please try again.');
+    try {
+      await sessions.deleteMany({ userId: req.user._id, _id: { $ne: sha256(cookieToken(req)) } });
+      await verificationTokens.deleteMany({ userId: req.user._id, purpose: 'login' });
+    } catch (error) {
+      console.error('Other sign-ins could not be cleared:', error.message);
+      return sendError(res, 503, 'Your password was changed, but other sign-ins could not be cleared. Try again using your new password as the current password.');
+    }
+    res.json({ ok: true });
+  });
+
   app.get('/api/profiles/:username', async (req, res) => {
     const username = req.params.username;
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
@@ -270,15 +310,23 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     res.json({ user: publicUser(user), awarded: HOURLY_TOKENS });
   });
 
-  const publicMessage = (message) => ({
+  const publicMessage = (message, username = message.username) => ({
     id: message._id.toString(),
-    username: message.username,
+    username,
     text: message.text,
     createdAt: message.createdAt.toISOString()
   });
   app.get('/api/chat', async (req, res) => {
     const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
-    res.json({ messages: latest.reverse().map(publicMessage) });
+    const authorIds = [...new Map(latest.filter(message => message.userId)
+      .map(message => [message.userId.toString(), message.userId])).values()];
+    const authors = authorIds.length ? await users.find(
+      { _id: { $in: authorIds } }, { projection: { username: 1 } }
+    ).toArray() : [];
+    const authorNames = new Map(authors.map(author => [author._id.toString(), author.username]));
+    res.json({ messages: latest.reverse().map(message => publicMessage(
+      message, authorNames.get(message.userId?.toString()) ?? message.username
+    )) });
   });
   app.post('/api/chat', requireUser, rateLimit(12, 60 * 1000), async (req, res) => {
     const messageText = String(req.body?.text || '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
@@ -293,7 +341,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     res.status(201).json({ message: publicMessage(message) });
   });
 
-  app.get(['/profile', '/profile/:username', '/packs/test'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/packs/test'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs', (req, res) => res.redirect(302, '/packs/test'));

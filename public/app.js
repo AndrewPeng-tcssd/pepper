@@ -2,10 +2,12 @@ const $ = (id) => document.getElementById(id);
 const routePath = location.pathname.replace(/\/+$/, '') || '/';
 const profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
 const viewingPublicProfile = !!profileRoute;
-const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : 'home';
-document.querySelector(`.main-nav a[href="${pageKind === 'pack' ? '/packs/test' : pageKind === 'profile' ? '/profile' : '/'}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, chatLoading: false, chatSignature: null, chatFollowLatest: true };
+const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : 'home';
+const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings' }[pageKind];
+document.querySelector(`.main-nav a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
+let chatLoadPromise;
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -16,6 +18,7 @@ async function api(path, options = {}) {
   const data = await response.json();
   if (!response.ok) {
     const error = new Error(data.error || 'Something went wrong.');
+    error.status = response.status;
     error.user = data.user;
     throw error;
   }
@@ -72,7 +75,13 @@ function setUser(user) {
   $('loggedInClaim').hidden = !user;
   $('chatLoggedOut').hidden = !!user;
   $('chatLoggedIn').hidden = !user;
+  $('settingsAccountLoading').hidden = true;
+  $('settingsLoggedOut').hidden = !!user;
+  $('settingsLoggedIn').hidden = !user;
+  $('usernameSettings').hidden = !user;
+  $('passwordSettings').hidden = !user;
   if (user) {
+    $('newUsername').value = user.username;
     $('menuUsername').textContent = user.username;
     $('menuBalance').textContent = user.balance.toLocaleString();
     $('panelBalance').textContent = user.balance.toLocaleString();
@@ -85,6 +94,12 @@ function setUser(user) {
     $('accountLastClaim').textContent = formatProfileDate(user.lastClaimAt, true);
     $('chatUsername').textContent = user.username;
   } else {
+    $('usernameForm').reset();
+    $('passwordForm').reset();
+    message($('usernameMessage'), '');
+    message($('passwordMessage'), '');
+    ['accountName', 'accountEmail', 'accountJoined', 'accountLastClaim'].forEach(id => { $(id).textContent = ''; });
+    $('accountBalance').textContent = '0';
     removeTurnstile();
     $('claimTitle').textContent = 'Sign in to claim';
     $('claimDescription').textContent = 'Sign up or log in to claim 5 tokens each hour.';
@@ -213,7 +228,7 @@ function setAuthMode(mode) {
 
 function openAccount() {
   setChatOpen(false);
-  if (state.user) $('accountDialog').showModal();
+  if (state.user) location.assign('/settings');
   else { setAuthMode('signup'); $('authDialog').showModal(); }
 }
 
@@ -237,11 +252,7 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && 
 window.matchMedia('(min-width: 851px)').addEventListener('change', () => setChatOpen(false));
 setChatOpen(false);
 
-['accountButton', 'claimJoin', 'chatJoin'].forEach(id => $(id).addEventListener('click', openAccount));
-$('accountDetailsButton').addEventListener('click', () => {
-  $('accountMenu').open = false;
-  openAccount();
-});
+['accountButton', 'claimJoin', 'chatJoin', 'settingsJoin'].forEach(id => $(id).addEventListener('click', openAccount));
 document.addEventListener('click', (event) => {
   if (!$('accountMenu').contains(event.target)) $('accountMenu').open = false;
 });
@@ -252,19 +263,9 @@ document.addEventListener('keydown', (event) => {
   }
 });
 $('closeDialog').addEventListener('click', () => $('authDialog').close());
-$('closeAccount').addEventListener('click', () => $('accountDialog').close());
-$('accountDialog').addEventListener('click', (event) => {
-  const dialog = event.currentTarget;
-  if (event.target !== dialog) return;
-  const bounds = dialog.getBoundingClientRect();
-  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
-    dialog.close();
-  }
-});
 $('signupTab').addEventListener('click', () => setAuthMode('signup'));
 $('loginTab').addEventListener('click', () => setAuthMode('login'));
 $('resetTurnstile').addEventListener('click', () => { message($('claimMessage'), ''); resetTurnstile(); });
-$('goToTokens').addEventListener('click', () => $('accountDialog').close());
 $('profileRetry').addEventListener('click', loadProfile);
 $('year').textContent = new Date().getFullYear();
 
@@ -287,6 +288,13 @@ if (pageKind === 'profile') {
   document.body.classList.add('pack-route');
   $('home').hidden = true;
   $('tokens').hidden = true;
+} else if (pageKind === 'settings') {
+  document.title = 'Settings — Pepper TCG';
+  document.body.classList.add('settings-route');
+  $('home').hidden = true;
+  $('tokens').hidden = true;
+  $('cards').hidden = true;
+  $('settingsPage').hidden = false;
 } else {
   $('tokens').hidden = true;
   $('cards').hidden = true;
@@ -313,6 +321,7 @@ $('authForm').addEventListener('submit', async (event) => {
     $('authForm').reset();
     if (pageKind === 'profile' && !viewingPublicProfile) $('tokens').scrollIntoView({ behavior: 'smooth' });
     else if (viewingPublicProfile) $('profileIntro').scrollIntoView({ behavior: 'smooth' });
+    else if (pageKind === 'settings') $('settingsPage').scrollIntoView({ behavior: 'smooth' });
     else location.assign('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -338,24 +347,99 @@ $('claimForm').addEventListener('submit', async (event) => {
 });
 
 async function signOut() {
+  if (state.accountSubmitting) return;
   $('accountMenu').open = false;
-  const buttons = [$('logoutButton'), $('headerLogoutButton')];
-  buttons.forEach(button => { button.disabled = true; });
+  setAccountSubmitting(true);
   message($('accountMessage'), '');
+  message($('headerAccountMessage'), '');
+  $('headerAccountMessage').hidden = true;
   try {
     await api('logout', { method: 'POST', body: '{}' });
-    if ($('accountDialog').open) $('accountDialog').close();
     setUser(null);
+    if (pageKind === 'settings') $('settingsJoin').focus();
   } catch (error) {
     message($('accountMessage'), error.message);
-    if (!$('accountDialog').open) $('accountDialog').showModal();
+    if (pageKind !== 'settings') {
+      message($('headerAccountMessage'), error.message);
+      $('headerAccountMessage').hidden = false;
+      $('accountMenu').open = true;
+    }
   } finally {
-    buttons.forEach(button => { button.disabled = false; });
+    setAccountSubmitting(false);
   }
 }
 
 $('logoutButton').addEventListener('click', signOut);
 $('headerLogoutButton').addEventListener('click', signOut);
+
+function setAccountSubmitting(submitting) {
+  state.accountSubmitting = submitting;
+  ['usernameSubmit', 'passwordSubmit', 'logoutButton', 'headerLogoutButton'].forEach(id => {
+    $(id).disabled = submitting;
+  });
+}
+
+function settingsError(element, error) {
+  if (error.status === 401) {
+    setUser(null);
+    message($('accountMessage'), error.message);
+    $('settingsJoin').focus();
+  } else message(element, error.message);
+}
+
+$('usernameForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (state.accountSubmitting) return;
+  setAccountSubmitting(true);
+  message($('usernameMessage'), '');
+  const previousUsername = state.user.username;
+  try {
+    const { user } = await api('account/username', { method: 'PATCH', body: JSON.stringify({
+      username: $('newUsername').value,
+      currentPassword: $('usernameCurrentPassword').value
+    }) });
+    setUser(user);
+    $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
+      if (author.dataset.username.toLowerCase() !== previousUsername.toLowerCase()) return;
+      author.dataset.username = user.username;
+      author.textContent = user.username;
+      author.href = '/profile';
+      author.setAttribute('aria-label', `View ${user.username}'s profile`);
+    });
+    message($('usernameMessage'), 'Username updated.', true);
+    void loadChat(true);
+  } catch (error) {
+    settingsError($('usernameMessage'), error);
+  } finally {
+    $('usernameCurrentPassword').value = '';
+    setAccountSubmitting(false);
+  }
+});
+
+$('passwordForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (state.accountSubmitting) return;
+  message($('passwordMessage'), '');
+  if ($('newPassword').value !== $('confirmPassword').value) {
+    message($('passwordMessage'), 'The new passwords do not match.');
+    $('confirmPassword').focus();
+    return;
+  }
+  setAccountSubmitting(true);
+  try {
+    await api('account/password', { method: 'PATCH', body: JSON.stringify({
+      currentPassword: $('passwordCurrentPassword').value,
+      newPassword: $('newPassword').value
+    }) });
+    $('passwordForm').reset();
+    message($('passwordMessage'), 'Password updated. Other devices have been signed out.', true);
+  } catch (error) {
+    settingsError($('passwordMessage'), error);
+  } finally {
+    $('passwordCurrentPassword').value = '';
+    setAccountSubmitting(false);
+  }
+});
 
 async function loadProfile() {
   state.profile = null;
@@ -399,7 +483,7 @@ new ResizeObserver(() => {
 
 function renderChat(messages) {
   const latest = messages.slice(-100);
-  const signature = latest.map(item => item.id).join(',');
+  const signature = latest.map(item => `${item.id}:${item.username}`).join(',');
   if (signature === state.chatSignature) return;
   const container = $('chatMessages');
   const focusedAuthor = document.activeElement?.closest('.chat-author');
@@ -460,15 +544,22 @@ function renderChat(messages) {
   }
 }
 
-async function loadChat() {
-  if (state.chatLoading) return;
-  state.chatLoading = true;
-  try {
-    const data = await api('chat');
-    renderChat(data.messages);
-  } catch (error) {
-    if (state.chatSignature === null) $('chatMessages').textContent = 'Chat is unavailable right now. Please try again.';
-  } finally { state.chatLoading = false; }
+async function loadChat(refresh = false) {
+  if (chatLoadPromise) {
+    await chatLoadPromise;
+    if (refresh) return loadChat(true);
+    return;
+  }
+  chatLoadPromise = (async () => {
+    try {
+      const data = await api('chat');
+      renderChat(data.messages);
+    } catch (error) {
+      if (state.chatSignature === null) $('chatMessages').textContent = 'Chat is unavailable right now. Please try again.';
+    }
+  })();
+  try { await chatLoadPromise; }
+  finally { chatLoadPromise = null; }
 }
 
 $('chatForm').addEventListener('submit', async (event) => {
