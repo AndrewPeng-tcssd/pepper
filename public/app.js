@@ -35,8 +35,8 @@ function formatProfileDate(value, includeTime = false) {
 function setUser(user) {
   state.user = user;
   $('profileDescription').textContent = user
-    ? 'Your account and hourly token claim.'
-    : 'Sign up or log in to claim hourly tokens.';
+    ? 'Your account and tokens.'
+    : 'Sign up or log in to see your account and tokens.';
   $('profileDetails').hidden = !user;
   $('accountButton').hidden = !!user;
   $('accountMenu').hidden = !user;
@@ -65,7 +65,7 @@ function setUser(user) {
   } else {
     removeTurnstile();
     $('claimTitle').textContent = 'Sign in to claim';
-    $('claimDescription').textContent = 'Create an account to claim 5 tokens per hour.';
+    $('claimDescription').textContent = 'Sign up or log in to claim 5 tokens each hour.';
     message($('claimMessage'), '');
   }
   renderClaim();
@@ -89,8 +89,8 @@ function renderClaim() {
   $('claimCooldown').hidden = ready;
   $('claimTitle').textContent = ready ? 'Ready to claim' : 'Next claim';
   $('claimDescription').textContent = ready
-    ? 'Complete Cloudflare verification to add 5 tokens to your balance.'
-    : 'You can claim another 5 tokens when the timer reaches zero.';
+    ? 'Complete the check below, then claim 5 tokens.'
+    : 'You can claim again when the timer ends.';
   if (ready && state.turnstileWidgetId === null && !state.turnstileLoading && !state.turnstileFailed) loadTurnstile();
   if (!ready) { removeTurnstile(); $('cooldownClock').textContent = formatTime(remaining); }
 }
@@ -179,9 +179,10 @@ function setAuthMode(mode) {
   $('password').autocomplete = signup ? 'new-password' : 'current-password';
   $('authTitle').textContent = signup ? 'Create account' : 'Log in';
   $('authSubmit').textContent = signup ? 'Create account' : 'Log in';
+  $('authHint').hidden = signup;
   $('authHint').textContent = signup
-    ? 'Create an account with a username and password.'
-    : 'Use your username and password. Existing email logins still use a verification link.';
+    ? ''
+    : 'Older accounts can still use email sign-in. That sends a verification link.';
   message($('authMessage'), '');
 }
 
@@ -234,7 +235,7 @@ if (pageKind === 'profile') {
   document.title = 'Profile — Pepper TCG';
   document.body.classList.add('profile-route');
   $('tokensTitle').textContent = 'Hourly claim';
-  $('tokensIntro').textContent = 'Claim 5 tokens once per hour. Your balance is saved to your account.';
+  $('tokensIntro').textContent = 'You can claim 5 tokens every hour.';
   $('home').hidden = true;
   $('profileIntro').hidden = false;
   $('cards').hidden = true;
@@ -403,7 +404,7 @@ function resetPack() {
   openPackButton.disabled = false;
   demoPackButton.disabled = false;
   replayPackButton.hidden = true;
-  packHelp.textContent = 'Click the pack or use the button.';
+  packHelp.textContent = 'Open the pack below, or use the button.';
   packStatus.textContent = 'Ready';
   demoPackButton.focus();
 }
@@ -428,7 +429,7 @@ function openDemoPack() {
     revealCards.hidden = false;
     packStage.dataset.phase = 'revealed';
     packStatus.textContent = '5 blank cards';
-    packHelp.textContent = 'Use Reset to replay the animation.';
+    packHelp.textContent = 'Press Reset to open it again.';
     replayPackButton.hidden = false;
     cards.forEach((card, index) => packLater(() => card.classList.add('is-dealt'), reducePackMotion.matches ? 0 : index * 110));
     packLater(() => replayPackButton.focus(), reducePackMotion.matches ? 0 : 1000);
