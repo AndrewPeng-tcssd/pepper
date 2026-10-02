@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory } = require('./mongo');
+const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory, resolveChangelogOwner, createAccountId, ensureAccountId } = require('./mongo');
 const { createMailer } = require('./mailer');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -15,6 +15,7 @@ const SIGNUP_VERIFY_MS = 24 * 60 * 60 * 1000;
 const LOGIN_VERIFY_MS = 10 * 60 * 1000;
 const EMAIL_ATTEMPT_INTERVAL_MS = 10 * 60 * 1000;
 const cookieName = 'pepper_session';
+const DEFAULT_BUILD_VERSION = '0.4.0';
 
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const passwordHash = (password) => {
@@ -28,21 +29,23 @@ const passwordMatches = (password, stored) => {
   const expected = Buffer.from(hex, 'hex');
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 };
-const publicUser = (user) => ({
+const publicUser = (user, canManageChangelog = false) => ({
   username: user.username,
+  accountId: user.accountId,
   email: user.email ?? null,
   createdAt: user.createdAt ?? null,
   balance: user.balance,
   lastClaimAt: user.lastClaimAt ?? null,
   nextClaimAt: user.lastClaimAt ? user.lastClaimAt + CLAIM_INTERVAL_MS : null,
   hourlyTokenMin: HOURLY_TOKEN_MIN,
-  hourlyTokenMax: HOURLY_TOKEN_MAX
+  hourlyTokenMax: HOURLY_TOKEN_MAX,
+  canManageChangelog
 });
 const sendError = (res, status, message) => res.status(status).json({ error: message });
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
 
-function createApp({ users, sessions, messages, verificationTokens }, options = {}) {
+function createApp({ users, sessions, messages, verificationTokens, changelog, siteSettings }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
   const randomInt = options.randomInt || crypto.randomInt;
@@ -85,7 +88,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     }
     next();
   });
-  app.use(express.json({ limit: '10kb' }));
+  app.use(express.json({ limit: '32kb' }));
 
   function rateLimit(max, windowMs) {
     return (req, res, next) => {
@@ -106,6 +109,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     const session = await sessions.findOne({ _id: sha256(token), expiresAt: { $gt: new Date() } });
     if (!session) return null;
     const user = await users.findOne({ _id: session.userId });
+    if (user) await ensureAccountId(users, user);
     return user;
   }
   async function requireUser(req, res, next) {
@@ -114,6 +118,14 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
       if (!req.user) return sendError(res, 401, 'Please log in first.');
       next();
     } catch (error) { next(error); }
+  }
+  async function canManageChangelog(user) {
+    const ownerAccountId = await resolveChangelogOwner(users, siteSettings);
+    return Boolean(ownerAccountId && user.accountId === ownerAccountId);
+  }
+  async function signedInUser(user) {
+    await ensureAccountId(users, user);
+    return publicUser(user, await canManageChangelog(user));
   }
   async function startSession(res, userId) {
     const token = crypto.randomBytes(32).toString('hex');
@@ -159,14 +171,23 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     try {
       const user = {
         username, usernameKey: username.toLowerCase(),
+        accountId: createAccountId(),
         passwordHash: passwordHash(password), balance: 0, lastClaimAt: null,
         createdAt: new Date()
       };
-      const result = await users.insertOne(user);
+      let result;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try { result = await users.insertOne(user); break; }
+        catch (error) {
+          if (error.code !== 11000 || !error.keyPattern?.accountId || attempt === 4) throw error;
+          user.accountId = createAccountId();
+        }
+      }
       user._id = result.insertedId;
       await startSession(res, user._id);
-      res.status(201).json({ user: publicUser(user) });
+      res.status(201).json({ user: await signedInUser(user) });
     } catch (error) {
+      if (error.code === 11000 && error.keyPattern?.accountId) return sendError(res, 503, 'An account ID could not be assigned. Please try again.');
       if (error.code === 11000) return sendError(res, 409, 'That username is already in use.');
       throw error;
     }
@@ -190,7 +211,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
       return res.json({ pending: true, message: 'Check your email and click the sign-in link to finish logging in.' });
     }
     await startSession(res, user._id);
-    res.json({ user: publicUser(user) });
+    res.json({ user: await signedInUser(user) });
   });
 
   app.post('/api/verify-email', rateLimit(20, 15 * 60 * 1000), async (req, res) => {
@@ -209,7 +230,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     const user = await users.findOne({ _id: record.userId });
     if (!user || user.emailVerifiedAt === null) return sendError(res, 400, 'This account is not ready to sign in.');
     await startSession(res, user._id);
-    res.json({ user: publicUser(user) });
+    res.json({ user: await signedInUser(user) });
   });
 
   app.post('/api/logout', async (req, res) => {
@@ -221,7 +242,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
 
   app.get('/api/me', async (req, res) => {
     const user = await currentUser(req);
-    res.json({ user: user ? publicUser(user) : null });
+    res.json({ user: user ? await signedInUser(user) : null });
   });
 
   app.patch('/api/account/username', requireUser, rateLimit(10, 15 * 60 * 1000), async (req, res) => {
@@ -229,6 +250,8 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     const currentPassword = String(req.body?.currentPassword || '');
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 400, 'Username must be 3–24 letters, numbers, or underscores.');
     if (!passwordMatches(currentPassword, req.user.passwordHash)) return sendError(res, 403, 'Incorrect current password.');
+    const ownerId = await resolveChangelogOwner(users, siteSettings);
+    if (username === '675' && !ownerId) return sendError(res, 403, 'That username is reserved for the changelog owner.');
     try {
       const user = await users.findOneAndUpdate(
         { _id: req.user._id, passwordHash: req.user.passwordHash },
@@ -236,7 +259,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
         { returnDocument: 'after' }
       );
       if (!user) return sendError(res, 409, 'Your account changed. Please try again.');
-      res.json({ user: publicUser(user) });
+      res.json({ user: await signedInUser(user) });
     } catch (error) {
       if (error.code === 11000) return sendError(res, 409, 'That username is already in use.');
       throw error;
@@ -269,11 +292,13 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
     const user = await users.findOne(
       { usernameKey: username.toLowerCase() },
-      { projection: { _id: 0, username: 1, createdAt: 1, balance: 1, lastClaimAt: 1 } }
+      { projection: { username: 1, accountId: 1, createdAt: 1, balance: 1, lastClaimAt: 1 } }
     );
     if (!user) return sendError(res, 404, 'Profile not found.');
+    await ensureAccountId(users, user);
     res.json({ profile: {
       username: user.username,
+      accountId: user.accountId,
       createdAt: user.createdAt ?? null,
       balance: user.balance ?? 0,
       lastClaimAt: user.lastClaimAt ?? null,
@@ -309,9 +334,36 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     if (!user) {
       const latest = await users.findOne({ _id: req.user._id });
       if (!latest) return sendError(res, 401, 'Please log in first.');
-      return res.status(429).json({ error: 'Your next claim is not ready yet.', user: publicUser(latest) });
+      return res.status(429).json({ error: 'Your next claim is not ready yet.', user: await signedInUser(latest) });
     }
-    res.json({ user: publicUser(user), awarded });
+    res.json({ user: await signedInUser(user), awarded });
+  });
+
+  const publicChangelogEntry = (entry) => ({
+    id: entry._id.toString(),
+    title: entry.title,
+    description: entry.description,
+    version: entry.version,
+    createdAt: entry.createdAt.toISOString()
+  });
+  app.get('/api/changelog', async (req, res) => {
+    const entries = await changelog.find().sort({ createdAt: -1, _id: -1 }).toArray();
+    res.json({ entries: entries.map(publicChangelogEntry), latestVersion: entries[0]?.version ?? DEFAULT_BUILD_VERSION });
+  });
+  app.post('/api/changelog', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can publish updates.');
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const version = typeof req.body?.version === 'string' ? req.body.version.trim().replace(/^v/i, '') : '';
+    if (!title || title.length > 120) return sendError(res, 400, 'Title must be 1–120 characters.');
+    if (!description || description.length > 5000) return sendError(res, 400, 'Description must be 1–5,000 characters.');
+    if (version.length > 32 || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+      return sendError(res, 400, 'Version must use numbers in major.minor.patch format, such as 0.5.0.');
+    }
+    const entry = { title, description, version, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
+    await changelog.insertOne(entry);
+    const latest = await changelog.findOne({}, { sort: { createdAt: -1, _id: -1 }, projection: { version: 1 } });
+    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: latest.version });
   });
 
   const publicMessage = (message, username = message.username) => ({
@@ -345,7 +397,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
     res.status(201).json({ message: publicMessage(message) });
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/packs/test'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/packs/test'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs', (req, res) => res.redirect(302, '/packs/test'));
@@ -353,6 +405,7 @@ function createApp({ users, sessions, messages, verificationTokens }, options = 
   app.use((error, req, res, next) => {
     console.error(error);
     if (error instanceof SyntaxError && 'body' in error) return sendError(res, 400, 'Invalid request.');
+    if (error.type === 'entity.too.large') return sendError(res, 413, 'The request is too large.');
     sendError(res, 500, 'Something went wrong. Please try again.');
   });
 

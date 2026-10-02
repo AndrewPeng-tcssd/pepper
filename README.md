@@ -24,6 +24,12 @@ The site stores accounts, password hashes, balances, claim times, and sessions i
 
 Change your username or password at `/settings` using your current password. Changing your username also updates the name shown on your chat messages. Changing your password signs out your other sessions while keeping the current session signed in.
 
+Read release notes at `/changelog`. The original account named `675` can publish a title, description, and version from that page. Publishing dates are set by the server and displayed in each reader's local timezone. The latest published entry updates the development build version in the site footer; before the first entry, it remains `0.4.0`. Versions use `major.minor.patch`, such as `0.5.0`, and may include a leading `v` when entered.
+
+Every account has a permanent random account ID, such as `PPR-8F0B6ED0-77F5-4E25-9B41-B75B1EE16791`. New accounts receive their IDs on registration, and existing accounts receive them automatically when the server starts. IDs are saved uniquely in MongoDB and stay the same through username or password changes and server restarts. They appear in account details and public profiles.
+
+Changelog publishing permission is saved against the owner's permanent random account ID in MongoDB. Existing ownership automatically migrates from the original stored MongoDB account to its random ID. Changing that account's username keeps the permission; another account that later takes the name `675` does not receive it. If the owner has not registered yet, changing an existing account's username to `675` is reserved.
+
 ## Cloudflare verification
 
 The hourly token claim uses Cloudflare Turnstile. On `localhost` in a non-production run, the site uses [Cloudflare's test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) so you can test the claim flow without creating a Cloudflare account. For any deployed site, create a Turnstile widget for that hostname and set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. Keep the secret key private. The server verifies each token with Cloudflare before adding tokens. Test keys must not be used for a deployed site.
@@ -37,6 +43,7 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Username and password sign-up and login; sign out. Existing email logins remain available for accounts that already have an email. Passwords are salted and hashed.
 - Account details, username and password changes, and appearance settings at `/settings`, with light or dark mode saved per browser.
 - Persistent MongoDB account balances.
+- Public changelog entries saved in MongoDB, with publishing restricted to the original `675` account and an automatic footer version.
 - Click a username in chat to view that member's public profile, including their username, join date, token balance, and last and next claim details. Clicking your own username opens `/profile`, your account and token claim page. Other public profiles also open directly at `/profile/USERNAME`.
 - Cloudflare Turnstile verification and a random reward of 10–20 tokens once every rolling hour per account. Each whole-number reward is chosen on the server, and MongoDB adds it with an atomic update that also enforces the claim timer.
 - A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 50 messages; signed-in users can post. Messages are saved in MongoDB. Posting has length and speed limits.

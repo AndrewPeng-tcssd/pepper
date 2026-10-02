@@ -2,14 +2,16 @@ const $ = (id) => document.getElementById(id);
 const routePath = location.pathname.replace(/\/+$/, '') || '/';
 const profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
 const viewingPublicProfile = !!profileRoute;
-const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : 'home';
-const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings' }[pageKind];
+const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : 'home';
+const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog' }[pageKind];
 const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
 document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, chatSignature: null, chatFollowLatest: true };
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogEntries: null, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
 let chatLoadPromise;
 let claimRewardAnimation;
+let changelogLoadPromise;
+let changelogRevision = 0;
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -49,6 +51,7 @@ function profileHref(username) {
 
 function renderProfileDetails(profile) {
   $('profileUsername').textContent = profile.username;
+  $('profileAccountId').textContent = profile.accountId || 'Not available';
   $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
   $('profileBalance').textContent = profile.balance.toLocaleString();
   $('profileLastClaim').textContent = formatProfileDate(profile.lastClaimAt, true);
@@ -57,6 +60,7 @@ function renderProfileDetails(profile) {
 function setUser(user) {
   if (!user || (state.user && state.user.username !== user.username)) clearClaimReward();
   state.user = user;
+  renderChangelogEditor();
   $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
     author.href = profileHref(author.dataset.username);
   });
@@ -90,6 +94,7 @@ function setUser(user) {
     $('panelBalance').textContent = user.balance.toLocaleString();
     $('accountBalance').textContent = user.balance.toLocaleString();
     $('accountName').textContent = user.username;
+    $('accountId').textContent = user.accountId || 'Not available';
     $('accountEmailLabel').hidden = !user.email;
     $('accountEmail').hidden = !user.email;
     $('accountEmail').textContent = user.email || '';
@@ -101,7 +106,8 @@ function setUser(user) {
     $('passwordForm').reset();
     message($('usernameMessage'), '');
     message($('passwordMessage'), '');
-    ['accountName', 'accountEmail', 'accountJoined', 'accountLastClaim'].forEach(id => { $(id).textContent = ''; });
+    ['accountName', 'accountId', 'accountEmail', 'accountJoined', 'accountLastClaim'].forEach(id => { $(id).textContent = ''; });
+    if (!viewingPublicProfile) $('profileAccountId').textContent = '';
     $('accountBalance').textContent = '0';
     removeTurnstile();
     $('claimTitle').textContent = 'Sign in to claim';
@@ -303,6 +309,7 @@ $('signupTab').addEventListener('click', () => setAuthMode('signup'));
 $('loginTab').addEventListener('click', () => setAuthMode('login'));
 $('resetTurnstile').addEventListener('click', () => { message($('claimMessage'), ''); resetTurnstile(); });
 $('profileRetry').addEventListener('click', loadProfile);
+$('changelogRetry').addEventListener('click', () => loadChangelog());
 $('year').textContent = new Date().getFullYear();
 
 if (pageKind === 'profile') {
@@ -331,6 +338,13 @@ if (pageKind === 'profile') {
   $('tokens').hidden = true;
   $('cards').hidden = true;
   $('settingsPage').hidden = false;
+} else if (pageKind === 'changelog') {
+  document.title = 'Changelog — Pepper TCG';
+  document.body.classList.add('changelog-route');
+  $('home').hidden = true;
+  $('tokens').hidden = true;
+  $('cards').hidden = true;
+  $('changelogPage').hidden = false;
 } else {
   $('tokens').hidden = true;
   $('cards').hidden = true;
@@ -358,6 +372,7 @@ $('authForm').addEventListener('submit', async (event) => {
     if (pageKind === 'profile' && !viewingPublicProfile) $('tokens').scrollIntoView({ behavior: 'smooth' });
     else if (viewingPublicProfile) $('profileIntro').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'settings') $('settingsPage').scrollIntoView({ behavior: 'smooth' });
+    else if (pageKind === 'changelog') $('changelogPage').scrollIntoView({ behavior: 'smooth' });
     else location.assign('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -423,6 +438,103 @@ function setAccountSubmitting(submitting) {
     $(id).disabled = submitting;
   });
 }
+
+function renderChangelogEditor() {
+  const canManage = state.user?.canManageChangelog === true;
+  $('changelogEditor').hidden = !canManage;
+  if (!canManage) {
+    $('changelogForm').reset();
+    message($('changelogFormMessage'), '');
+  }
+}
+
+function renderChangelog(entries, latestVersion) {
+  $('siteVersion').textContent = latestVersion;
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    const article = document.createElement('article');
+    article.className = 'changelog-entry';
+    const meta = document.createElement('div');
+    meta.className = 'changelog-entry-meta';
+    const version = document.createElement('span');
+    version.className = 'changelog-entry-version';
+    version.textContent = `v${entry.version}`;
+    const date = document.createElement('time');
+    date.dateTime = entry.createdAt;
+    date.textContent = new Date(entry.createdAt).toLocaleString([], {
+      year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+    });
+    const title = document.createElement('h2');
+    title.textContent = entry.title;
+    const description = document.createElement('p');
+    description.className = 'changelog-entry-description';
+    description.textContent = entry.description;
+    meta.append(version, date);
+    article.append(meta, title, description);
+    fragment.append(article);
+  }
+  $('changelogEntries').replaceChildren(fragment);
+  message($('changelogMessage'), entries.length ? '' : 'No changelog entries yet.');
+  $('changelogRetry').hidden = true;
+}
+
+async function loadChangelog(refresh = false) {
+  if (changelogLoadPromise) {
+    await changelogLoadPromise;
+    if (refresh) return loadChangelog();
+    return;
+  }
+  const revision = changelogRevision;
+  changelogLoadPromise = (async () => {
+    try {
+      const data = await api('changelog');
+      // Ignore an older read that finishes after a newly published entry.
+      if (revision !== changelogRevision) return;
+      state.changelogEntries = data.entries;
+      renderChangelog(data.entries, data.latestVersion);
+    } catch (error) {
+      if (revision !== changelogRevision) return;
+      if (pageKind === 'changelog') {
+        message($('changelogMessage'), 'The changelog could not load. Please try again.');
+        $('changelogRetry').hidden = false;
+      }
+    }
+  })();
+  try { await changelogLoadPromise; }
+  finally { changelogLoadPromise = null; }
+}
+
+$('changelogForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (state.changelogSubmitting || state.accountSubmitting || !state.user?.canManageChangelog) return;
+  state.changelogSubmitting = true;
+  setAccountSubmitting(true);
+  $('changelogSubmit').disabled = true;
+  message($('changelogFormMessage'), 'Adding entry…');
+  try {
+    const data = await api('changelog', { method: 'POST', body: JSON.stringify({
+      title: $('changelogTitle').value,
+      description: $('changelogDescription').value,
+      version: $('changelogVersion').value
+    }) });
+    changelogRevision++;
+    state.changelogEntries = [data.entry, ...(state.changelogEntries || []).filter(entry => entry.id !== data.entry.id)];
+    renderChangelog(state.changelogEntries, data.latestVersion);
+    $('changelogForm').reset();
+    message($('changelogFormMessage'), 'Changelog entry added. The site version is updated.', true);
+    void loadChangelog(true);
+  } catch (error) {
+    if (error.status === 401 || error.status === 403) {
+      if (error.status === 401) setUser(null);
+      else { state.user.canManageChangelog = false; renderChangelogEditor(); }
+      message($('changelogMessage'), error.message);
+    } else message($('changelogFormMessage'), error.message);
+  } finally {
+    state.changelogSubmitting = false;
+    $('changelogSubmit').disabled = false;
+    setAccountSubmitting(false);
+  }
+});
 
 function settingsError(element, error) {
   if (error.status === 401) {
@@ -632,6 +744,9 @@ setInterval(renderClaim, 1000);
 if (viewingPublicProfile) loadProfile();
 loadChat();
 setInterval(loadChat, 4000);
+loadChangelog();
+setInterval(() => { if (!document.hidden) loadChangelog(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadChangelog(); });
 
 // Pack animation test; it does not change accounts, tokens, or collections.
 const packStage = $('packStage');

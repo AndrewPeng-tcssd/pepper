@@ -126,11 +126,11 @@ input:focus { border-color: var(--accent); }
 .auth-loading .header-actions, .auth-loading:not(.public-profile-route) .profile-overview, .auth-loading .tokens-section, .auth-loading .chat-join { visibility: hidden; }
 
 .section-wrap { width: 100%; max-width: 1160px; margin: 0 auto; padding: 64px clamp(24px, 4vw, 56px); }
-.dev-overview, .profile-overview, .settings-overview, .tokens-section, .pack-section { border-bottom: 1px solid var(--line); }
+.dev-overview, .profile-overview, .settings-overview, .changelog-overview, .tokens-section, .pack-section { border-bottom: 1px solid var(--line); }
 .dev-overview { padding-top: 76px; padding-bottom: 76px; }
-.dev-overview h1, .profile-overview h1, .settings-overview h1 { font-size: clamp(36px, 3.7vw, 52px); }
+.dev-overview h1, .profile-overview h1, .settings-overview h1, .changelog-overview h1 { font-size: clamp(36px, 3.7vw, 52px); }
 .profile-overview h1 { overflow-wrap: anywhere; }
-.dev-overview > p, .profile-overview > p, .settings-overview > p { max-width: 680px; margin: 0; color: var(--muted); font-size: 16px; }
+.dev-overview > p, .profile-overview > p, .settings-overview > p, .changelog-overview > p { max-width: 680px; margin: 0; color: var(--muted); font-size: 16px; }
 .dev-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 34px; }
 .dev-status > div { min-height: 145px; padding: 23px 25px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .dev-status > div:first-child { border-top: 3px solid var(--accent); }
@@ -144,6 +144,7 @@ input:focus { border-color: var(--accent); }
 .profile-info-card dl, .account-details { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 12px 16px; margin: 0; }
 .profile-info-card dt, .account-details dt { color: var(--muted); font-size: 13px; }
 .profile-info-card dd, .account-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
+.profile-info-card .account-id-value, .account-details .account-id-value { font-family: Consolas, "Courier New", monospace; font-size: 12px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
 .profile-token-balance { display: flex; align-items: baseline; gap: 8px; margin: -4px 0 19px; }
 .profile-token-balance strong { font-size: 42px; line-height: 1; letter-spacing: -.055em; }
 .profile-token-balance span { color: var(--muted); font-size: 14px; }
@@ -166,6 +167,28 @@ input:focus { border-color: var(--accent); }
 .settings-form .button { width: 100%; }
 .settings-form .form-message { margin: 0 !important; }
 #settingsJoin { margin-top: 16px; }
+
+.changelog-editor { max-width: 760px; margin-top: 32px; padding: 24px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.changelog-editor h2 { margin-bottom: 12px; font-size: 21px; }
+.changelog-editor > p { max-width: 640px; margin: 0; color: var(--muted); font-size: 14px; }
+.changelog-form { display: grid; gap: 16px; margin-top: 22px; }
+.changelog-form label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+.changelog-form textarea { display: block; width: 100%; min-height: 136px; padding: 10px 12px; resize: vertical; border: 1px solid var(--button-line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; line-height: 1.5; }
+.changelog-form textarea:focus { border-color: var(--accent); }
+.changelog-form input[name="version"] { max-width: 230px; }
+.changelog-form > div > p { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+.changelog-form > .button { justify-self: start; }
+.changelog-form .form-message { margin: 0 !important; }
+.changelog-overview > .changelog-message { margin-top: 32px; font-size: 14px; }
+.changelog-retry { margin-top: 14px; }
+.changelog-entries { display: grid; gap: 16px; max-width: 760px; margin-top: 32px; }
+.changelog-entries:empty { margin-top: 0; }
+.changelog-entry { min-width: 0; padding: 24px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.changelog-entry-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 16px; font-size: 12px; }
+.changelog-entry-version { max-width: 100%; padding: 5px 9px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-weight: 700; overflow-wrap: anywhere; }
+.changelog-entry-meta time { color: var(--muted); }
+.changelog-entry h2 { margin-bottom: 12px; overflow-wrap: anywhere; font-size: 23px; }
+.changelog-entry-description { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
 
 .tokens-heading { margin-bottom: 24px; }
 .tokens-heading h2 { margin-bottom: 10px; font-size: clamp(28px, 3vw, 37px); }
@@ -300,7 +323,7 @@ dialog::backdrop { background: var(--dialog-backdrop); }
   .brand { font-size: 20px; }
   .header-actions { min-width: 95px; }
   .header-actions > .button, .account-menu > summary { width: 95px; min-height: 38px; padding: 7px 10px; font-size: 13px; }
-  .main-nav { justify-content: space-between; gap: 12px; margin-top: 10px; border-top: 1px solid var(--line); }
+  .main-nav { flex-wrap: wrap; justify-content: space-between; gap: 0 8px; margin-top: 10px; border-top: 1px solid var(--line); }
   .main-nav a, .main-nav .chat-toggle { min-height: 48px; font-size: 13px; }
   .section-wrap { padding: 44px 20px; }
   .dev-overview { padding-top: 56px; }
@@ -308,6 +331,8 @@ dialog::backdrop { background: var(--dialog-backdrop); }
   .dev-status > div { min-height: 0; }
   .profile-details, .settings-grid { margin-top: 24px; }
   .profile-info-card, .settings-card, .claim-panel, .future-panel { padding: 21px; }
+  .changelog-editor, .changelog-entry { padding: 21px; }
+  .changelog-editor, .changelog-entries, .changelog-overview > .changelog-message { margin-top: 24px; }
   .profile-info-card dl, .account-details { grid-template-columns: 90px minmax(0, 1fr); }
   .theme-options { gap: 10px; }
   .theme-option { padding: 12px; }

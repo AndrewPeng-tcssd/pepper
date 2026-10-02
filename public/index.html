@@ -7,8 +7,8 @@
   <title>Pepper TCG — Development</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=1"></script>
-  <link rel="stylesheet" href="/styles.css?v=26">
-  <script src="/app.js?v=26" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=28">
+  <script src="/app.js?v=28" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -41,6 +41,7 @@
       <a href="/">Overview</a>
       <a href="/profile">Profile</a>
       <a href="/packs/test">Packs</a>
+      <a href="/changelog">Changelog</a>
       <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat</button>
     </nav>
     <div class="header-actions">
@@ -77,6 +78,7 @@
           <h2 id="profileAccountTitle">Account</h2>
           <dl>
             <dt>Username</dt><dd id="profileUsername"></dd>
+            <dt>Account ID</dt><dd class="account-id-value" id="profileAccountId"></dd>
             <dt>Joined</dt><dd id="profileJoined"></dd>
           </dl>
         </div>
@@ -159,6 +161,25 @@
       </div>
     </section>
 
+    <section class="section-wrap changelog-overview" id="changelogPage" aria-labelledby="changelogTitleHeading" hidden>
+      <h1 id="changelogTitleHeading">Changelog</h1>
+      <p>The latest updates to Pepper TCG. Dates appear in your local time zone.</p>
+      <section class="changelog-editor" id="changelogEditor" aria-labelledby="changelogEditorTitle" hidden>
+        <h2 id="changelogEditorTitle">Add an update</h2>
+        <p>The date is set automatically when you publish. This version also updates the development build shown at the bottom of the site.</p>
+        <form class="changelog-form" id="changelogForm">
+          <div><label for="changelogTitle">Title</label><input id="changelogTitle" name="title" maxlength="120" required></div>
+          <div><label for="changelogDescription">Description</label><textarea id="changelogDescription" name="description" maxlength="5000" rows="5" required></textarea></div>
+          <div><label for="changelogVersion">Version</label><input id="changelogVersion" name="version" maxlength="32" pattern="[0-9]+\.[0-9]+\.[0-9]+" placeholder="0.4.1" aria-describedby="changelogVersionHint" required><p id="changelogVersionHint">Use three numbers separated by periods, such as 0.4.1.</p></div>
+          <button class="button" id="changelogSubmit" type="submit">Add entry</button>
+          <p class="form-message" id="changelogFormMessage" role="status"></p>
+        </form>
+      </section>
+      <p class="changelog-message" id="changelogMessage" role="status">Loading updates…</p>
+      <button class="button changelog-retry" id="changelogRetry" type="button" hidden>Try again</button>
+      <div class="changelog-entries" id="changelogEntries" role="region" aria-label="Releases"></div>
+    </section>
+
     <section class="section-wrap settings-overview" id="settingsPage" aria-labelledby="settingsTitle" hidden>
       <h1 id="settingsTitle">Settings</h1>
       <p>Manage your account and appearance.</p>
@@ -183,6 +204,7 @@
           <div id="settingsLoggedIn" hidden>
             <dl class="account-details">
               <dt>Username</dt><dd id="accountName"></dd>
+              <dt>Account ID</dt><dd class="account-id-value" id="accountId"></dd>
               <dt id="accountEmailLabel">Email</dt><dd id="accountEmail"></dd>
               <dt>Joined</dt><dd id="accountJoined"></dd>
               <dt>Last claim</dt><dd id="accountLastClaim"></dd>
@@ -220,7 +242,7 @@
 
   </main>
 
-  <footer><span>Pepper TCG · Development build v0.4.0</span><span>© <span id="year"></span></span></footer>
+  <footer><span>Pepper TCG · Development build v<span id="siteVersion">0.4.0</span></span><span>© <span id="year"></span></span></footer>
 
   <dialog id="authDialog" aria-labelledby="authTitle">
     <div class="dialog-content">
