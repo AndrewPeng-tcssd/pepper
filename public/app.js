@@ -182,7 +182,7 @@ function setAuthMode(mode) {
   $('authHint').hidden = signup;
   $('authHint').textContent = signup
     ? ''
-    : 'Older accounts can still use email sign-in. That sends a verification link.';
+    : 'no more email signup for u sry';
   message($('authMessage'), '');
 }
 

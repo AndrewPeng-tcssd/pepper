@@ -62,10 +62,11 @@ input:focus { border-color: var(--accent); }
 .header-actions { display: flex; justify-content: flex-end; justify-self: end; min-width: 112px; }
 .header-actions > .button, .account-menu > summary { width: 112px; }
 .account-menu { position: relative; }
-.account-menu > summary { list-style: none; cursor: pointer; user-select: none; }
+.account-menu > summary { gap: 8px; list-style: none; cursor: pointer; user-select: none; }
 .account-menu > summary::-webkit-details-marker { display: none; }
-.account-menu > summary::after { content: "⌄"; margin-left: 10px; font-size: 16px; line-height: .8; }
-.account-menu[open] > summary::after { transform: rotate(180deg); }
+.account-menu > summary:active { transform: none; }
+.account-menu-chevron { display: block; flex: 0 0 14px; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transform-origin: center; }
+.account-menu[open] .account-menu-chevron { transform: rotate(180deg); }
 .account-dropdown { position: absolute; z-index: 50; top: calc(100% + 8px); right: 0; width: 234px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 28px #24282421; }
 .account-menu-info { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .account-menu-info strong { overflow-wrap: anywhere; }
