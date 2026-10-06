@@ -268,6 +268,9 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-heading { flex: none; padding: 23px 21px; border-bottom: 1px solid var(--line); }
 .chat-heading-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-heading h2 { margin: 0; font-size: 25px; }
+.player-count { display: flex; align-items: center; gap: 7px; margin: 10px 0 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.player-count::before { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); content: ""; }
+.player-count[data-status="live"]::before { background: var(--success); }
 .chat-board { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .chat-messages { flex: 1; min-height: 0; padding: 0 21px; overflow-y: auto; overflow-anchor: none; scrollbar-width: none; }
 .chat-messages::-webkit-scrollbar { display: none; }
@@ -310,7 +313,7 @@ dialog::backdrop { background: var(--dialog-backdrop); }
 }
 @media (max-width: 1100px) {
   .site-header { grid-template-columns: minmax(0, 1fr) auto; }
-  .main-nav { grid-column: 1 / -1; grid-row: 2; }
+  .main-nav { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; row-gap: 0; }
   .main-nav a { min-height: 46px; }
   .header-actions { grid-column: 2; grid-row: 1; }
   .profile-details, .settings-grid { grid-template-columns: 1fr; }
@@ -318,7 +321,8 @@ dialog::backdrop { background: var(--dialog-backdrop); }
 @media (max-width: 850px) {
   .chat-sidebar { width: min(340px, calc(100vw - 32px)); transform: translateX(-101%); transition: transform .22s ease; box-shadow: 10px 0 30px var(--sidebar-shadow); }
   .chat-sidebar.open { transform: translateX(0); }
-  .main-nav .chat-toggle { display: inline-flex; align-items: center; min-height: 46px; padding: 0; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 14px; font-weight: 600; }
+  .main-nav .chat-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 46px; padding: 0; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 14px; font-weight: 600; }
+  .chat-toggle-count { font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
   .main-nav .chat-toggle:hover, .main-nav .chat-toggle[aria-expanded="true"] { color: var(--ink); }
   .chat-close { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font-size: 24px; }
   .chat-overlay:not([hidden]) { position: fixed; inset: 0; z-index: 39; display: block; background: var(--chat-backdrop); }

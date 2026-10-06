@@ -2,17 +2,24 @@ const $ = (id) => document.getElementById(id);
 const routePath = location.pathname.replace(/\/+$/, '') || '/';
 const profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
 const viewingPublicProfile = !!profileRoute;
-const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : 'home';
-const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog' }[pageKind];
+const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : 'home';
+const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog', announcements: '/announcements' }[pageKind];
 const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
 document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, chatSignature: null, chatFollowLatest: true };
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true };
 let turnstileScriptPromise;
 let chatLoadPromise;
 let claimRewardAnimation;
 let changelogLoadPromise;
 let changelogRevision = 0;
 let changelogLoadFailed = false;
+let announcementLoadPromise;
+let announcementRevision = 0;
+let announcementLoadFailed = false;
+let presenceLoadPromise;
+let presenceRefreshQueued = false;
+let presenceRevision = 0;
+let presenceSuspended = false;
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -60,8 +67,14 @@ function renderProfileDetails(profile) {
 
 function setUser(user) {
   if (!user || (state.user && state.user.username !== user.username)) clearClaimReward();
+  const previousPresenceIdentity = state.user?.accountId || state.user?.username || null;
   state.user = user;
   renderChangelogEditor();
+  renderAnnouncementEditor();
+  if (previousPresenceIdentity !== (user?.accountId || user?.username || null)) {
+    presenceRevision++;
+    void loadPresence(true);
+  }
   $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
     author.href = profileHref(author.dataset.username);
   });
@@ -311,6 +324,7 @@ $('loginTab').addEventListener('click', () => setAuthMode('login'));
 $('resetTurnstile').addEventListener('click', () => { message($('claimMessage'), ''); resetTurnstile(); });
 $('profileRetry').addEventListener('click', loadProfile);
 $('changelogRetry').addEventListener('click', () => loadChangelog());
+$('announcementRetry').addEventListener('click', () => loadAnnouncements());
 $('year').textContent = new Date().getFullYear();
 
 if (pageKind === 'profile') {
@@ -346,6 +360,13 @@ if (pageKind === 'profile') {
   $('tokens').hidden = true;
   $('cards').hidden = true;
   $('changelogPage').hidden = false;
+} else if (pageKind === 'announcements') {
+  document.title = 'Announcements — Pepper TCG';
+  document.body.classList.add('announcements-route');
+  $('home').hidden = true;
+  $('tokens').hidden = true;
+  $('cards').hidden = true;
+  $('announcementsPage').hidden = false;
 } else {
   $('tokens').hidden = true;
   $('cards').hidden = true;
@@ -374,6 +395,7 @@ $('authForm').addEventListener('submit', async (event) => {
     else if (viewingPublicProfile) $('profileIntro').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'settings') $('settingsPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'changelog') $('changelogPage').scrollIntoView({ behavior: 'smooth' });
+    else if (pageKind === 'announcements') $('announcementsPage').scrollIntoView({ behavior: 'smooth' });
     else location.assign('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -657,6 +679,257 @@ $('changelogForm').addEventListener('submit', async event => {
   }
 });
 
+function renderAnnouncementEditor() {
+  const canManage = state.user?.canManageAnnouncements === true;
+  if (!canManage) state.announcementVisitorPreview = false;
+  const showControls = canManage && !state.announcementVisitorPreview;
+  $('announcementTools').hidden = !canManage;
+  $('announcementPreviewNotice').hidden = !state.announcementVisitorPreview;
+  $('announcementPreviewToggle').textContent = state.announcementVisitorPreview ? 'Back to editing' : 'View as visitor';
+  $('announcementPreviewToggle').setAttribute('aria-pressed', String(state.announcementVisitorPreview));
+  $('announcementEditor').hidden = !showControls;
+  $('announcementEntries').querySelectorAll('.changelog-entry-actions').forEach(actions => {
+    actions.hidden = !showControls;
+    if (!showControls) {
+      actions.querySelector('.changelog-delete-confirm').hidden = true;
+      actions.querySelector('.changelog-delete-button').hidden = false;
+    }
+  });
+  if (!canManage) {
+    $('announcementForm').reset();
+    message($('announcementFormMessage'), '');
+  }
+}
+
+$('announcementPreviewToggle').addEventListener('click', () => {
+  if (!state.user?.canManageAnnouncements || state.announcementSubmitting || state.accountSubmitting) return;
+  state.announcementVisitorPreview = !state.announcementVisitorPreview;
+  renderAnnouncementEditor();
+});
+
+function announcementActionButton(label, action) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'button';
+  button.dataset.announcementAction = action;
+  button.textContent = label;
+  button.disabled = state.announcementSubmitting;
+  return button;
+}
+
+function renderAnnouncements(entries) {
+  const signature = JSON.stringify(entries);
+  if (signature === state.announcementSignature) {
+    renderAnnouncementEditor();
+    $('announcementRetry').hidden = true;
+    return;
+  }
+  state.announcementSignature = signature;
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    const article = document.createElement('article');
+    article.className = 'changelog-entry';
+    article.dataset.entryId = entry.id;
+    const meta = document.createElement('div');
+    meta.className = 'changelog-entry-meta';
+    const date = document.createElement('time');
+    date.dateTime = entry.createdAt;
+    date.textContent = new Date(entry.createdAt).toLocaleString([], {
+      year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+    });
+    const title = document.createElement('h2');
+    title.textContent = entry.title;
+    const description = document.createElement('p');
+    description.className = 'changelog-entry-description';
+    description.textContent = entry.description;
+    const actions = document.createElement('div');
+    actions.className = 'changelog-entry-actions';
+    actions.hidden = true;
+    const deleteButton = announcementActionButton('Delete', 'delete');
+    deleteButton.classList.add('changelog-delete-button');
+    deleteButton.setAttribute('aria-label', `Delete ${entry.title}`);
+    const confirmation = document.createElement('span');
+    confirmation.className = 'changelog-delete-confirm';
+    confirmation.hidden = true;
+    const prompt = document.createElement('span');
+    prompt.textContent = 'Delete this announcement?';
+    confirmation.append(prompt, announcementActionButton('Confirm delete', 'confirm'), announcementActionButton('Cancel', 'cancel'));
+    actions.append(deleteButton, confirmation);
+    meta.append(date);
+    article.append(meta, title, description, actions);
+    fragment.append(article);
+  }
+  $('announcementEntries').replaceChildren(fragment);
+  renderAnnouncementEditor();
+  announcementLoadFailed = false;
+  message($('announcementMessage'), entries.length ? '' : 'No announcements yet.');
+  $('announcementRetry').hidden = true;
+}
+
+async function loadAnnouncements(refresh = false) {
+  if (pageKind !== 'announcements') return;
+  if (announcementLoadPromise) {
+    await announcementLoadPromise;
+    if (refresh) return loadAnnouncements();
+    return;
+  }
+  const revision = announcementRevision;
+  announcementLoadPromise = (async () => {
+    try {
+      const data = await api('announcements');
+      // A read started before a publish or deletion cannot overwrite its result.
+      if (revision !== announcementRevision) return;
+      state.announcementEntries = data.entries;
+      if (announcementLoadFailed) {
+        message($('announcementMessage'), data.entries.length ? '' : 'No announcements yet.');
+        announcementLoadFailed = false;
+      }
+      renderAnnouncements(data.entries);
+    } catch (error) {
+      if (revision !== announcementRevision) return;
+      announcementLoadFailed = true;
+      message($('announcementMessage'), 'Announcements could not load. Please try again.');
+      $('announcementRetry').hidden = false;
+    }
+  })();
+  try { await announcementLoadPromise; }
+  finally { announcementLoadPromise = null; }
+}
+
+function setAnnouncementSubmitting(submitting) {
+  state.announcementSubmitting = submitting;
+  setAccountSubmitting(submitting);
+  $('announcementSubmit').disabled = submitting;
+  $('announcementPreviewToggle').disabled = submitting;
+  $('announcementEntries').querySelectorAll('.changelog-entry-actions button').forEach(button => { button.disabled = submitting; });
+}
+
+function focusAnnouncementMessage() {
+  $('announcementMessage').tabIndex = -1;
+  $('announcementMessage').focus();
+}
+
+function announcementPermissionError(error) {
+  if (error.status !== 401 && error.status !== 403) return false;
+  if (error.status === 401) setUser(null);
+  else {
+    if (state.user) state.user.canManageAnnouncements = false;
+    renderAnnouncementEditor();
+  }
+  announcementLoadFailed = false;
+  message($('announcementMessage'), error.message);
+  if (error.status === 401) $('accountButton').focus();
+  else focusAnnouncementMessage();
+  return true;
+}
+
+$('announcementEntries').addEventListener('click', event => {
+  const button = event.target.closest('button[data-announcement-action]');
+  if (!button || !state.user?.canManageAnnouncements || state.announcementVisitorPreview || state.announcementSubmitting || state.accountSubmitting) return;
+  const article = button.closest('.changelog-entry');
+  const confirmation = article.querySelector('.changelog-delete-confirm');
+  const deleteButton = article.querySelector('.changelog-delete-button');
+  if (button.dataset.announcementAction === 'delete') {
+    deleteButton.hidden = true;
+    confirmation.hidden = false;
+    confirmation.querySelector('button').focus();
+  } else if (button.dataset.announcementAction === 'cancel') {
+    confirmation.hidden = true;
+    deleteButton.hidden = false;
+    deleteButton.focus();
+  } else if (button.dataset.announcementAction === 'confirm') {
+    void deleteAnnouncementEntry(article.dataset.entryId);
+  }
+});
+
+async function deleteAnnouncementEntry(entryId) {
+  if (!state.user?.canManageAnnouncements || state.announcementVisitorPreview || state.announcementSubmitting || state.accountSubmitting) return;
+  setAnnouncementSubmitting(true);
+  let deleted = false;
+  try {
+    const data = await api(`announcements/${encodeURIComponent(entryId)}`, { method: 'DELETE' });
+    announcementRevision++;
+    state.announcementEntries = data.entries;
+    renderAnnouncements(data.entries);
+    message($('announcementMessage'), 'Announcement deleted.', true);
+    deleted = true;
+    void loadAnnouncements(true);
+  } catch (error) {
+    if (!announcementPermissionError(error)) {
+      if (error.status === 404) await loadAnnouncements(true);
+      announcementLoadFailed = false;
+      message($('announcementMessage'), error.message);
+      if (error.status === 404) focusAnnouncementMessage();
+    }
+  } finally {
+    setAnnouncementSubmitting(false);
+    if (deleted) {
+      const nextDelete = $('announcementEntries').querySelector('.changelog-delete-button');
+      (nextDelete || $('announcementPreviewToggle')).focus();
+    }
+  }
+}
+
+$('announcementForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (state.announcementSubmitting || state.accountSubmitting || state.announcementVisitorPreview || !state.user?.canManageAnnouncements) return;
+  setAnnouncementSubmitting(true);
+  message($('announcementFormMessage'), 'Publishing announcement…');
+  try {
+    const data = await api('announcements', { method: 'POST', body: JSON.stringify({
+      title: $('announcementTitle').value,
+      description: $('announcementDescription').value
+    }) });
+    announcementRevision++;
+    state.announcementEntries = [data.entry, ...(state.announcementEntries || []).filter(entry => entry.id !== data.entry.id)];
+    renderAnnouncements(state.announcementEntries);
+    $('announcementForm').reset();
+    message($('announcementFormMessage'), 'Announcement published.', true);
+    void loadAnnouncements(true);
+  } catch (error) {
+    if (!announcementPermissionError(error)) message($('announcementFormMessage'), error.message);
+  } finally {
+    setAnnouncementSubmitting(false);
+  }
+});
+
+function renderPresence(count) {
+  const available = Number.isSafeInteger(count) && count >= 0;
+  const text = available ? `${count.toLocaleString()} ${count === 1 ? 'player' : 'players'} online` : 'Player count unavailable';
+  if ($('playerCount').textContent !== text) $('playerCount').textContent = text;
+  $('playerCount').dataset.status = available ? 'live' : 'unavailable';
+  const mobileText = available ? `${count.toLocaleString()} online` : 'count unavailable';
+  if ($('mobilePlayerCount').textContent !== mobileText) $('mobilePlayerCount').textContent = mobileText;
+}
+
+function loadPresence(refresh = false) {
+  if (presenceSuspended) return Promise.resolve();
+  if (presenceLoadPromise) {
+    if (refresh) presenceRefreshQueued = true;
+    return presenceLoadPromise;
+  }
+  const revision = presenceRevision;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 10000);
+  presenceLoadPromise = (async () => {
+    try {
+      const data = await api('presence', { signal: controller.signal, ...(state.user ? { method: 'POST', body: '{}' } : {}) });
+      if (revision !== presenceRevision) return;
+      renderPresence(data.count);
+    } catch {
+      if (revision === presenceRevision) renderPresence(null);
+    }
+  })().finally(() => {
+    window.clearTimeout(timeout);
+    presenceLoadPromise = null;
+    if (presenceRefreshQueued) {
+      presenceRefreshQueued = false;
+      void loadPresence();
+    }
+  });
+  return presenceLoadPromise;
+}
+
 function settingsError(element, error) {
   if (error.status === 401) {
     setUser(null);
@@ -866,8 +1139,21 @@ if (viewingPublicProfile) loadProfile();
 loadChat();
 setInterval(loadChat, 4000);
 loadChangelog();
-setInterval(() => { if (!document.hidden) loadChangelog(); }, 60000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadChangelog(); });
+loadAnnouncements();
+setInterval(() => { if (!document.hidden) { loadChangelog(); loadAnnouncements(); } }, 60000);
+loadPresence();
+setInterval(() => loadPresence(), 20000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadChangelog();
+    loadAnnouncements();
+    void loadPresence(true);
+  }
+});
+window.addEventListener('online', () => { presenceRevision++; void loadPresence(true); });
+window.addEventListener('offline', () => { presenceRevision++; renderPresence(null); });
+window.addEventListener('pagehide', () => { presenceSuspended = true; presenceRevision++; });
+window.addEventListener('pageshow', () => { presenceSuspended = false; presenceRevision++; void loadPresence(true); });
 
 // Pack animation test; it does not change accounts, tokens, or collections.
 const packStage = $('packStage');

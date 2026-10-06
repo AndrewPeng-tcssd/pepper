@@ -32,6 +32,10 @@ The changelog owner can choose **View as visitor** to hide the entry form and de
 
 Changelog publishing permission is saved against the owner's permanent random account ID in MongoDB. Existing ownership automatically migrates from the original stored MongoDB account to its random ID. Changing that account's username keeps the permission; another account that later takes the name `675` does not receive it. If the owner has not registered yet, changing an existing account's username to `675` is reserved.
 
+Read site news at `/announcements`. The same permanent changelog owner can publish announcements with a title and description, preview them as a visitor, and delete them with confirmation. Everyone can read them. Announcements are saved in MongoDB with automatic publishing dates and do not change the development build version.
+
+The live player count above chat shows unique signed-in players with an open site page. Pages refresh the count and their activity every 20 seconds. Multiple tabs or devices count once per account, signed-out sessions stop counting immediately, and closed or disconnected pages age out after 75 seconds without activity. Guests can read the count without being counted.
+
 ## Cloudflare verification
 
 The hourly token claim uses Cloudflare Turnstile. On `localhost` in a non-production run, the site uses [Cloudflare's test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) so you can test the claim flow without creating a Cloudflare account. For any deployed site, create a Turnstile widget for that hostname and set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. Keep the secret key private. The server verifies each token with Cloudflare before adding tokens. Test keys must not be used for a deployed site.
@@ -46,6 +50,8 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Account details, username and password changes, and appearance settings at `/settings`, with light or dark mode saved per browser.
 - Persistent MongoDB account balances.
 - Public changelog entries saved in MongoDB, with publishing and deletion restricted to the original `675` account and an automatic footer version.
+- Public announcements styled like changelog entries, with publishing and deletion restricted to the same permanent owner.
+- A live count of unique signed-in players, shared across server instances and updated automatically above chat.
 - Click a username in chat to view that member's public profile, including their username, join date, token balance, and last and next claim details. Clicking your own username opens `/profile`, your account and token claim page. Other public profiles also open directly at `/profile/USERNAME`.
 - Cloudflare Turnstile verification and a random reward of 10–20 tokens once every rolling hour per account. Each whole-number reward is chosen on the server, and MongoDB adds it with an atomic update that also enforces the claim timer.
 - A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 50 messages; signed-in users can post. Messages are saved in MongoDB. Posting has length and speed limits.

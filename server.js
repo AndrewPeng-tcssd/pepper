@@ -10,6 +10,7 @@ const HOURLY_TOKEN_MIN = 10;
 const HOURLY_TOKEN_MAX = 20;
 const CLAIM_INTERVAL_MS = 60 * 60 * 1000;
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+const PRESENCE_TIMEOUT_MS = 75 * 1000;
 const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
 const TURNSTILE_TEST_SECRET_KEY = '1x0000000000000000000000000000000AA';
 const SIGNUP_VERIFY_MS = 24 * 60 * 60 * 1000;
@@ -40,13 +41,14 @@ const publicUser = (user, canManageChangelog = false) => ({
   nextClaimAt: user.lastClaimAt ? user.lastClaimAt + CLAIM_INTERVAL_MS : null,
   hourlyTokenMin: HOURLY_TOKEN_MIN,
   hourlyTokenMax: HOURLY_TOKEN_MAX,
-  canManageChangelog
+  canManageChangelog,
+  canManageAnnouncements: canManageChangelog
 });
 const sendError = (res, status, message) => res.status(status).json({ error: message });
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
 
-function createApp({ users, sessions, messages, verificationTokens, changelog, siteSettings }, options = {}) {
+function createApp({ users, sessions, messages, verificationTokens, changelog, announcements, siteSettings }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
   const randomInt = options.randomInt || crypto.randomInt;
@@ -133,6 +135,29 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, s
     await sessions.insertOne({ _id: sha256(token), userId, expiresAt: new Date(Date.now() + SESSION_MS) });
     res.set('Set-Cookie', `${cookieName}=${token}; ${cookieOptions()}`);
   }
+
+  async function presenceSnapshot() {
+    const now = new Date();
+    const activeUserIds = await sessions.distinct('userId', {
+      expiresAt: { $gt: now },
+      lastSeenAt: { $gt: new Date(now.getTime() - PRESENCE_TIMEOUT_MS) }
+    });
+    return { count: activeUserIds.length };
+  }
+  app.get('/api/presence', async (req, res) => {
+    res.json(await presenceSnapshot());
+  });
+  app.post('/api/presence', async (req, res) => {
+    const user = await currentUser(req);
+    if (user) {
+      const now = new Date();
+      await sessions.updateOne(
+        { _id: sha256(cookieToken(req)), userId: user._id, expiresAt: { $gt: now } },
+        { $set: { lastSeenAt: now } }
+      );
+    }
+    res.json(await presenceSnapshot());
+  });
 
   async function sendVerification(user, purpose) {
     if (!mailer) return 'failed';
@@ -377,6 +402,37 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, s
     res.json(await changelogSnapshot());
   });
 
+  const publicAnnouncementEntry = (entry) => ({
+    id: entry._id.toString(),
+    title: entry.title,
+    description: entry.description,
+    createdAt: entry.createdAt.toISOString()
+  });
+  async function announcementsSnapshot() {
+    const entries = await announcements.find().sort({ createdAt: -1, _id: -1 }).toArray();
+    return { entries: entries.map(publicAnnouncementEntry) };
+  }
+  app.get('/api/announcements', async (req, res) => {
+    res.json(await announcementsSnapshot());
+  });
+  app.post('/api/announcements', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the site owner can publish announcements.');
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    if (!title || title.length > 120) return sendError(res, 400, 'Title must be 1–120 characters.');
+    if (!description || description.length > 5000) return sendError(res, 400, 'Description must be 1–5,000 characters.');
+    const entry = { title, description, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
+    await announcements.insertOne(entry);
+    res.status(201).json({ entry: publicAnnouncementEntry(entry) });
+  });
+  app.delete('/api/announcements/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the site owner can delete announcements.');
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This announcement entry ID is invalid.');
+    const result = await announcements.deleteOne({ _id: new ObjectId(req.params.id) });
+    if (!result.deletedCount) return sendError(res, 404, 'Announcement entry not found.');
+    res.json(await announcementsSnapshot());
+  });
+
   const publicMessage = (message, username = message.username) => ({
     id: message._id.toString(),
     username,
@@ -408,7 +464,7 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, s
     res.status(201).json({ message: publicMessage(message) });
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/packs/test'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/packs/test'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs', (req, res) => res.redirect(302, '/packs/test'));
@@ -432,4 +488,4 @@ async function start() {
   createApp(store).listen(PORT, () => console.log(`Pepper TCG running at http://localhost:${PORT}`));
 }
 if (require.main === module) start().catch(error => { console.error('Could not start Pepper TCG:', error.message); process.exitCode = 1; });
-module.exports = { createApp, connectMongo, CLAIM_INTERVAL_MS, HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX };
+module.exports = { createApp, connectMongo, CLAIM_INTERVAL_MS, HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX, PRESENCE_TIMEOUT_MS };

@@ -7,8 +7,8 @@
   <title>Pepper TCG — Development</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=1"></script>
-  <link rel="stylesheet" href="/styles.css?v=30">
-  <script src="/app.js?v=29" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=31">
+  <script src="/app.js?v=30" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -16,6 +16,7 @@
   <aside class="chat-sidebar" id="chat" aria-label="Chat">
     <div class="chat-heading">
       <div class="chat-heading-title"><h2>Chat</h2><button class="chat-close" id="chatClose" type="button" aria-label="Close chat">×</button></div>
+      <p class="player-count" id="playerCount" role="status" aria-live="polite" aria-atomic="true" title="Unique signed-in players active on the site. Updates every 20 seconds.">Checking players…</p>
     </div>
     <div class="chat-board">
       <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
@@ -42,7 +43,8 @@
       <a href="/profile">Profile</a>
       <a href="/packs/test">Packs</a>
       <a href="/changelog">Changelog</a>
-      <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat</button>
+      <a href="/announcements">Announcements</a>
+      <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat <span class="chat-toggle-count" id="mobilePlayerCount" title="Unique signed-in players active on the site."></span></button>
     </nav>
     <div class="header-actions">
       <button class="button" id="accountButton" type="button">Sign up</button>
@@ -182,6 +184,28 @@
       <p class="changelog-message" id="changelogMessage" role="status">Loading updates…</p>
       <button class="button changelog-retry" id="changelogRetry" type="button" hidden>Try again</button>
       <div class="changelog-entries" id="changelogEntries" role="region" aria-label="Releases"></div>
+    </section>
+
+    <section class="section-wrap changelog-overview" id="announcementsPage" aria-labelledby="announcementsTitle" hidden>
+      <h1 id="announcementsTitle">Announcements</h1>
+      <p>News and notices from Pepper TCG.</p>
+      <div class="changelog-tools" id="announcementTools" hidden>
+        <button class="button" id="announcementPreviewToggle" type="button" aria-pressed="false">View as visitor</button>
+        <p class="changelog-preview-notice" id="announcementPreviewNotice" role="status" hidden>Visitor preview — editing controls are hidden.</p>
+      </div>
+      <section class="changelog-editor" id="announcementEditor" aria-labelledby="announcementEditorTitle" hidden>
+        <h2 id="announcementEditorTitle">Add an announcement</h2>
+        <p>Only the site owner can publish announcements. The date is set automatically when you publish.</p>
+        <form class="changelog-form" id="announcementForm">
+          <div><label for="announcementTitle">Title</label><input id="announcementTitle" name="title" maxlength="120" required></div>
+          <div><label for="announcementDescription">Description</label><textarea id="announcementDescription" name="description" maxlength="5000" rows="5" required></textarea></div>
+          <button class="button" id="announcementSubmit" type="submit">Publish announcement</button>
+          <p class="form-message" id="announcementFormMessage" role="status"></p>
+        </form>
+      </section>
+      <p class="changelog-message" id="announcementMessage" role="status">Loading announcements…</p>
+      <button class="button changelog-retry" id="announcementRetry" type="button" hidden>Try again</button>
+      <div class="changelog-entries" id="announcementEntries" role="region" aria-label="Announcements"></div>
     </section>
 
     <section class="section-wrap settings-overview" id="settingsPage" aria-labelledby="settingsTitle" hidden>

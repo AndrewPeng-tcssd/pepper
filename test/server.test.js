@@ -7,7 +7,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { ObjectId } = require('mongodb');
-const { createApp, connectMongo, CLAIM_INTERVAL_MS } = require('../server');
+const { createApp, connectMongo, CLAIM_INTERVAL_MS, PRESENCE_TIMEOUT_MS } = require('../server');
 const { migrate } = require('../scripts/migrate-sqlite');
 
 let mongo;
@@ -757,6 +757,214 @@ test('connecting binds the existing 675 account and changelog input is validated
 
 test('changelog URLs serve the website directly', async () => {
   for (const route of ['/changelog', '/changelog/']) {
+    const response = await fetch(base + route);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    assert.match(await response.text(), /Pepper TCG/i);
+  }
+});
+
+test('announcements are public, only the owner can publish, and their dates and saved ordering are automatic', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  assert.deepEqual((await api('/api/announcements')).data, { entries: [] });
+  const payload = { title: 'Welcome players', description: 'A new announcement.', createdAt: '1970-01-01T00:00:00Z', version: '99.0.0' };
+  assert.equal((await api('/api/announcements', payload)).status, 401);
+  const member = await api('/api/register', { username: 'announcement_member', password: '12345678', canManageAnnouncements: true });
+  assert.equal(member.data.user.canManageAnnouncements, false);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  assert.equal(owner.data.user.canManageAnnouncements, true);
+  assert.equal((await api('/api/me', undefined, owner.cookie)).data.user.canManageAnnouncements, true);
+  assert.equal((await api('/api/login', { identifier: '675', password: '12345678' })).data.user.canManageAnnouncements, true);
+  assert.equal((await api('/api/announcements', {
+    ...payload, username: '675', accountId: owner.data.user.accountId, canManageAnnouncements: true
+  }, member.cookie)).status, 403);
+  const release = await api('/api/changelog', { title: 'A release', description: 'The current release.', version: '0.6.0' }, owner.cookie);
+  assert.equal(release.status, 201);
+  const changelog = (await api('/api/changelog')).data;
+
+  const beforePublish = Date.now();
+  const first = await api('/api/announcements', payload, owner.cookie);
+  assert.equal(first.status, 201);
+  assert.deepEqual(Object.keys(first.data), ['entry']);
+  assert.deepEqual(Object.keys(first.data.entry).sort(), ['createdAt', 'description', 'id', 'title']);
+  assert.ok(Date.parse(first.data.entry.createdAt) >= beforePublish);
+  assert.ok(Date.parse(first.data.entry.createdAt) <= Date.now());
+  const storedFirst = await isolated.announcements.findOne({ _id: new ObjectId(first.data.entry.id) });
+  assert.ok(storedFirst.createdAt instanceof Date);
+  assert.equal(storedFirst.authorAccountId, owner.data.user.accountId);
+  assert.equal(storedFirst.version, undefined);
+  const second = await api('/api/announcements', { title: '  Another announcement  ', description: '  Line one\nLine two  ' }, owner.cookie);
+  assert.equal(second.status, 201);
+  assert.equal(second.data.entry.title, 'Another announcement');
+  assert.equal(second.data.entry.description, 'Line one\nLine two');
+  assert.deepEqual((await api('/api/announcements')).data.entries, [second.data.entry, first.data.entry]);
+  assert.deepEqual((await api('/api/changelog')).data, changelog);
+
+  const identicalTime = new Date();
+  await isolated.announcements.updateMany({}, { $set: { createdAt: identicalTime } });
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const freshApi = accountApi(t, reconnected);
+  const persisted = await freshApi('/api/announcements');
+  assert.equal(persisted.status, 200);
+  assert.deepEqual(persisted.data.entries.map(entry => entry.id), [second.data.entry.id, first.data.entry.id]);
+  assert.deepEqual((await freshApi('/api/changelog')).data, changelog);
+});
+
+test('announcement permission stays with the original owner through renaming, reclaimed names, and restarts', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const password = '12345678';
+  const owner = await api('/api/register', { username: '675', password });
+  const member = await api('/api/register', { username: 'announcement_impostor', password });
+  const published = await api('/api/announcements', { title: 'Owner news', description: 'Only its owner can remove it.' }, owner.cookie);
+  assert.equal(published.status, 201);
+  const route = `/api/announcements/${published.data.entry.id}`;
+  const original = (await api('/api/announcements')).data;
+  assert.equal((await api(route, undefined, undefined, 'DELETE')).status, 401);
+  assert.equal((await api(route, { canManageAnnouncements: true, accountId: owner.data.user.accountId }, member.cookie, 'DELETE')).status, 403);
+  const renamedOwner = await api('/api/account/username', { username: 'announcement_owner', currentPassword: password }, owner.cookie, 'PATCH');
+  assert.equal(renamedOwner.status, 200);
+  assert.equal(renamedOwner.data.user.canManageAnnouncements, true);
+  assert.equal(renamedOwner.data.user.accountId, owner.data.user.accountId);
+  const renamedMember = await api('/api/account/username', { username: '675', currentPassword: password }, member.cookie, 'PATCH');
+  assert.equal(renamedMember.status, 200);
+  assert.equal(renamedMember.data.user.canManageAnnouncements, false);
+  assert.equal((await api('/api/announcements', { title: 'Forbidden', description: 'A reclaimed name gives no permission.' }, member.cookie)).status, 403);
+  assert.equal((await api(route, undefined, member.cookie, 'DELETE')).status, 403);
+  assert.deepEqual((await api('/api/announcements')).data, original);
+
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const freshApi = accountApi(t, reconnected);
+  assert.equal((await freshApi('/api/me', undefined, owner.cookie)).data.user.canManageAnnouncements, true);
+  assert.equal((await freshApi('/api/me', undefined, member.cookie)).data.user.canManageAnnouncements, false);
+  assert.deepEqual((await freshApi('/api/announcements')).data, original);
+  const second = await freshApi('/api/announcements', { title: 'Still the owner', description: 'Ownership remains after restart.' }, owner.cookie);
+  assert.equal(second.status, 201);
+  const deleted = await freshApi(`/api/announcements/${published.data.entry.id.toUpperCase()}`, undefined, owner.cookie, 'DELETE');
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(deleted.data, { entries: [second.data.entry] });
+  assert.equal((await freshApi(route, undefined, owner.cookie, 'DELETE')).status, 404);
+  assert.deepEqual((await api('/api/announcements')).data, deleted.data);
+  assert.deepEqual((await freshApi(`/api/announcements/${second.data.entry.id}`, undefined, owner.cookie, 'DELETE')).data, { entries: [] });
+  const restarted = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => restarted.client.close());
+  assert.deepEqual((await accountApi(t, restarted)('/api/announcements')).data, { entries: [] });
+});
+
+test('announcements validate titles, descriptions, and deletion IDs without changing saved entries', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  const valid = { title: 'A title', description: 'A description' };
+  for (const change of [
+    { title: '' }, { title: '  ' }, { title: 'a'.repeat(121) }, { title: { value: 'A title' } },
+    { description: '' }, { description: '  ' }, { description: 'a'.repeat(5001) }, { description: 12 }
+  ]) {
+    assert.equal((await api('/api/announcements', { ...valid, ...change }, owner.cookie)).status, 400);
+  }
+  assert.equal(await isolated.announcements.countDocuments(), 0);
+  const largest = await api('/api/announcements', { title: 'a'.repeat(120), description: '椒'.repeat(5000) }, owner.cookie);
+  assert.equal(largest.status, 201);
+  assert.equal(largest.data.entry.description.length, 5000);
+  const original = (await api('/api/announcements')).data;
+  for (const invalid of ['invalid', 'a'.repeat(23), 'a'.repeat(25), 'z'.repeat(24), '123456789012']) {
+    assert.equal((await api(`/api/announcements/${invalid}`, undefined, owner.cookie, 'DELETE')).status, 400);
+  }
+  assert.equal((await api(`/api/announcements/${new ObjectId()}`, undefined, owner.cookie, 'DELETE')).status, 404);
+  assert.deepEqual((await api('/api/announcements')).data, original);
+  assert.equal(await isolated.announcements.countDocuments(), 1);
+});
+
+test('presence counts signed-in players only after heartbeats and deduplicates their active sessions', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  assert.deepEqual((await api('/api/presence')).data, { count: 0 });
+  const first = await api('/api/register', { username: 'presence_first', password: '12345678' });
+  assert.equal(first.status, 201);
+  const firstUser = await isolated.users.findOne({ usernameKey: 'presence_first' });
+  assert.deepEqual((await api('/api/presence', undefined, first.cookie)).data, { count: 0 });
+  const anonymous = await api('/api/presence', { userId: firstUser._id.toString(), accountId: first.data.user.accountId, count: 200 });
+  assert.equal(anonymous.status, 200);
+  assert.deepEqual(anonymous.data, { count: 0 });
+  assert.equal(await isolated.sessions.countDocuments({ lastSeenAt: { $exists: true } }), 0);
+  const beforeHeartbeat = Date.now();
+  const heartbeat = await api('/api/presence', {}, first.cookie);
+  assert.equal(heartbeat.status, 200);
+  assert.deepEqual(heartbeat.data, { count: 1 });
+  const active = await isolated.sessions.findOne({ userId: firstUser._id });
+  assert.ok(active.lastSeenAt instanceof Date);
+  assert.ok(active.lastSeenAt.getTime() >= beforeHeartbeat);
+  assert.ok(active.lastSeenAt.getTime() <= Date.now());
+  const anotherSession = await api('/api/login', { identifier: 'presence_first', password: '12345678' });
+  assert.equal(anotherSession.status, 200);
+  assert.deepEqual((await api('/api/presence', {}, anotherSession.cookie)).data, { count: 1 });
+  const second = await api('/api/register', { username: 'presence_second', password: '12345678' });
+  assert.equal(second.status, 201);
+  assert.deepEqual((await api('/api/presence')).data, { count: 1 });
+  assert.deepEqual((await api('/api/presence', {}, second.cookie)).data, { count: 2 });
+  assert.deepEqual((await api('/api/presence', {}, `pepper_session=${'a'.repeat(64)}`)).data, { count: 2 });
+  assert.equal((await api('/api/logout', {}, first.cookie)).status, 200);
+  assert.deepEqual((await api('/api/presence')).data, { count: 2 });
+  assert.equal((await api('/api/logout', {}, anotherSession.cookie)).status, 200);
+  assert.deepEqual((await api('/api/presence')).data, { count: 1 });
+  assert.equal((await api('/api/logout', {}, second.cookie)).status, 200);
+  assert.deepEqual((await api('/api/presence', {}, second.cookie)).data, { count: 0 });
+});
+
+test('presence stops counting stale and expired sessions while valid players can become active again', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  assert.equal(PRESENCE_TIMEOUT_MS, 75000);
+  const player = await api('/api/register', { username: 'presence_timeout', password: '12345678' });
+  assert.equal(player.status, 201);
+  assert.deepEqual((await api('/api/presence', {}, player.cookie)).data, { count: 1 });
+  const user = await isolated.users.findOne({ usernameKey: 'presence_timeout' });
+  await isolated.sessions.updateMany({ userId: user._id }, { $set: { lastSeenAt: new Date(Date.now() - PRESENCE_TIMEOUT_MS - 1000) } });
+  assert.deepEqual((await api('/api/presence', undefined, player.cookie)).data, { count: 0 });
+  assert.deepEqual((await api('/api/presence', {})).data, { count: 0 });
+  assert.deepEqual((await api('/api/presence', {}, player.cookie)).data, { count: 1 });
+  const refreshed = await isolated.sessions.findOne({ userId: user._id });
+  await isolated.sessions.updateMany({ userId: user._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+  assert.deepEqual((await api('/api/presence')).data, { count: 0 });
+  assert.deepEqual((await api('/api/presence', {}, player.cookie)).data, { count: 0 });
+  const expired = await isolated.sessions.findOne({ _id: refreshed._id });
+  if (expired) assert.deepEqual(expired.lastSeenAt, refreshed.lastSeenAt);
+});
+
+test('presence is shared across app instances and password changes immediately remove revoked sessions', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const password = 'original-password';
+  const player = await api('/api/register', { username: 'presence_shared', password });
+  assert.equal(player.status, 201);
+  const otherSession = await api('/api/login', { identifier: 'presence_shared', password });
+  assert.equal(otherSession.status, 200);
+  assert.deepEqual((await api('/api/presence', {}, otherSession.cookie)).data, { count: 1 });
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const freshApi = accountApi(t, reconnected);
+  assert.deepEqual((await freshApi('/api/presence')).data, { count: 1 });
+  const changed = await api('/api/account/password', { currentPassword: password, newPassword: 'replacement-password' }, player.cookie, 'PATCH');
+  assert.equal(changed.status, 200);
+  assert.deepEqual((await freshApi('/api/presence')).data, { count: 0 });
+  assert.deepEqual((await freshApi('/api/presence', {}, otherSession.cookie)).data, { count: 0 });
+  assert.deepEqual((await freshApi('/api/presence', {}, player.cookie)).data, { count: 1 });
+  const second = await freshApi('/api/register', { username: 'presence_other_app', password: '12345678' });
+  assert.equal(second.status, 201);
+  assert.deepEqual((await freshApi('/api/presence', {}, second.cookie)).data, { count: 2 });
+  assert.deepEqual((await api('/api/presence')).data, { count: 2 });
+  const firstUser = await isolated.users.findOne({ usernameKey: 'presence_shared' });
+  await isolated.sessions.updateMany({ userId: firstUser._id }, { $set: { lastSeenAt: new Date(Date.now() - PRESENCE_TIMEOUT_MS - 1000) } });
+  assert.deepEqual((await freshApi('/api/presence')).data, { count: 1 });
+  assert.equal((await api('/api/logout', {}, second.cookie)).status, 200);
+  assert.deepEqual((await freshApi('/api/presence')).data, { count: 0 });
+});
+
+test('announcement URLs serve the website directly', async () => {
+  for (const route of ['/announcements', '/announcements/']) {
     const response = await fetch(base + route);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type'), /text\/html/);

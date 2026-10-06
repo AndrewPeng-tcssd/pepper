@@ -80,6 +80,7 @@ async function connectMongo(options = {}) {
     const messages = db.collection('messages');
     const verificationTokens = db.collection('verification_tokens');
     const changelog = db.collection('changelog');
+    const announcements = db.collection('announcements');
     const siteSettings = db.collection('site_settings');
     let existingIndexes = [];
     try { existingIndexes = await users.indexes(); }
@@ -91,11 +92,13 @@ async function connectMongo(options = {}) {
       users.createIndex({ accountId: 1 }, { unique: true, partialFilterExpression: { accountId: { $type: 'string', $gt: '' } } }),
       users.createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } }),
       sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+      sessions.createIndex({ lastSeenAt: 1, expiresAt: 1, userId: 1 }),
       verificationTokens.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       verificationTokens.createIndex({ userId: 1, purpose: 1 }),
       messages.createIndex({ createdAt: -1, _id: -1 }),
       messages.createIndex({ userId: 1, createdAt: -1, _id: -1 }),
-      changelog.createIndex({ createdAt: -1, _id: -1 })
+      changelog.createIndex({ createdAt: -1, _id: -1 }),
+      announcements.createIndex({ createdAt: -1, _id: -1 })
     ]);
     await backfillAccountIds(users);
     await siteSettings.updateOne(
@@ -105,7 +108,7 @@ async function connectMongo(options = {}) {
     );
     await resolveChangelogOwner(users, siteSettings);
     await trimChatHistory(messages);
-    return { client, db, users, sessions, messages, verificationTokens, changelog, siteSettings };
+    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, siteSettings };
   } catch (error) {
     await client.close();
     throw error;
