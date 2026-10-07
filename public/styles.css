@@ -299,6 +299,10 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-row.is-reply-highlighted { border-radius: 6px; background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: 4px; }
 .chat-reply-button { min-height: 30px; margin-top: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; }
 .chat-reply-button:hover { background: var(--surface); color: var(--ink); }
+@media (hover: hover) and (pointer: fine) {
+  .chat-reply-button { opacity: 0; pointer-events: none; }
+  .chat-row:hover .chat-reply-button, .chat-row:focus-within .chat-reply-button { opacity: 1; pointer-events: auto; }
+}
 .chat-message-status { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
 .chat-row.is-pending > p { opacity: .75; }
 .chat-row.is-failed .chat-message-status { color: var(--error); }
