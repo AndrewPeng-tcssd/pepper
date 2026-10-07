@@ -72,10 +72,21 @@ function renderProfileDetails(profile) {
   $('profileLastClaim').textContent = formatProfileDate(profile.lastClaimAt, true);
 }
 
+function renderOverviewProfile(user) {
+  $('overviewProfileDetails').hidden = !user;
+  $('overviewProfileGuest').hidden = !!user;
+  $('overviewProfileGuest').textContent = 'Sign up or log in to see your profile and tokens.';
+  $('overviewProfileName').textContent = user?.username || '';
+  $('overviewProfileBalance').textContent = user ? user.balance.toLocaleString() : '0';
+  $('overviewProfileJoined').textContent = user?.createdAt ? formatProfileDate(user.createdAt) : 'Not available';
+  $('overviewProfileLastClaim').textContent = user ? formatProfileDate(user.lastClaimAt, true) : 'No claims yet';
+}
+
 function setUser(user) {
   if (!user || (state.user && state.user.username !== user.username)) clearClaimReward();
   const previousPresenceIdentity = state.user?.accountId || state.user?.username || null;
   state.user = user;
+  renderOverviewProfile(user);
   authRevision++;
   renderChangelogEditor();
   renderAnnouncementEditor();
@@ -358,31 +369,35 @@ function routeProfileUsername() {
 
 function isAppPath(pathname) {
   const path = pathname.replace(/\/+$/, '') || '/';
-  return ['/', '/profile', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard'].includes(path) || /^\/profile\/[^/]+$/.test(path);
+  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard'].includes(path) || /^\/profile\/[^/]+$/.test(path);
 }
 
 function renderRoute() {
   routeRevision++;
   profileLoadRevision++;
   routePath = location.pathname.replace(/\/+$/, '') || '/';
+  if (routePath === '/packs/test') {
+    history.replaceState(history.state, '', `/${location.search}#cards`);
+    routePath = '/';
+  }
   profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
   viewingPublicProfile = !!profileRoute;
-  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : 'home';
+  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : 'home';
   if (viewingPublicProfile && isOwnProfile(routeProfileUsername())) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
     return;
   }
-  const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard' }[pageKind];
+  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard' }[pageKind];
   document.querySelectorAll('.main-nav a[aria-current], .account-dropdown a[aria-current]').forEach(link => link.removeAttribute('aria-current'));
   const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
   document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
   document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route');
   if (pageKind !== 'home') document.body.classList.add(`${pageKind}-route`);
   document.body.classList.toggle('public-profile-route', viewingPublicProfile);
-  ['home', 'profileIntro', 'tokens', 'cards', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage'].forEach(id => { $(id).hidden = true; });
-  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'cards', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage' }[pageKind];
+  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage'].forEach(id => { $(id).hidden = true; });
+  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage' }[pageKind];
   $(sectionId).hidden = false;
-  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Pack opening test — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG' }[pageKind];
+  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG' }[pageKind];
   state.profile = null;
   $('profileRetry').hidden = true;
   $('profileTitle').textContent = 'Profile';
@@ -408,7 +423,7 @@ function renderRoute() {
 
 function focusRouteHeading() {
   if ($('chat').classList.contains('open')) return;
-  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'cardsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle' }[pageKind];
+  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle' }[pageKind];
   $(headingId).tabIndex = -1;
   $(headingId).focus({ preventScroll: true });
 }
@@ -416,6 +431,7 @@ function focusRouteHeading() {
 function navigateTo(href, { replace = false, focus = true, scroll = true } = {}) {
   const url = new URL(href, location.href);
   if (url.origin !== location.origin || !isAppPath(url.pathname)) return false;
+  if (url.pathname.replace(/\/+$/, '') === '/packs/test') { url.pathname = '/'; url.hash = '#cards'; }
   const target = `${url.pathname}${url.search}${url.hash}`;
   const current = `${location.pathname}${location.search}${location.hash}`;
   if (target !== current) {
@@ -424,7 +440,10 @@ function navigateTo(href, { replace = false, focus = true, scroll = true } = {})
     renderRoute();
   }
   $('accountMenu').open = false;
-  if (scroll) window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  if (scroll) {
+    if (url.hash === '#cards' && pageKind === 'home') $('cards').scrollIntoView({ behavior: 'instant' });
+    else window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }
   if (focus) focusRouteHeading();
   return true;
 }
@@ -1591,7 +1610,7 @@ function openDemoPack() {
     packHelp.textContent = 'Press Reset to open it again.';
     replayPackButton.hidden = false;
     cards.forEach((card, index) => packLater(() => card.classList.add('is-dealt'), reducePackMotion.matches ? 0 : index * 110));
-    packLater(() => replayPackButton.focus(), reducePackMotion.matches ? 0 : 1000);
+    packLater(() => { if (pageKind === 'home') replayPackButton.focus({ preventScroll: true }); }, reducePackMotion.matches ? 0 : 1000);
   }, reducePackMotion.matches ? 0 : 900);
 }
 

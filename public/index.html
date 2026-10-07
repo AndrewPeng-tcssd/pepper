@@ -7,8 +7,8 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=1"></script>
-  <link rel="stylesheet" href="/styles.css?v=34">
-  <script src="/app.js?v=32" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=35">
+  <script src="/app.js?v=33" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -45,7 +45,7 @@
     <nav class="main-nav" aria-label="Main navigation">
       <a href="/">Overview</a>
       <a href="/profile">Profile</a>
-      <a href="/packs/test">Packs</a>
+      <a href="/packs">Packs</a>
       <a href="/changelog">Changelog</a>
       <a href="/announcements">Announcements</a>
       <a href="/leaderboard">Leaderboard</a>
@@ -73,6 +73,45 @@
       <div class="dev-status">
         <div><h2>done</h2><p>account page, hourly token, chat</p></div>
         <div><h2>todo</h2><p>cards, packs, buying tokens</p></div>
+      </div>
+      <div class="overview-widgets">
+        <a class="overview-widget overview-profile" href="/profile" aria-labelledby="overviewProfileTitle">
+          <h2 id="overviewProfileTitle">Your profile</h2>
+          <p class="overview-profile-guest" id="overviewProfileGuest" role="status">Loading profile…</p>
+          <div id="overviewProfileDetails" hidden>
+            <h3 class="overview-profile-name" id="overviewProfileName"></h3>
+            <div class="overview-profile-balance"><strong id="overviewProfileBalance">0</strong><span>tokens</span></div>
+            <dl class="overview-profile-dates">
+              <dt>Joined</dt><dd id="overviewProfileJoined"></dd>
+              <dt>Last claim</dt><dd id="overviewProfileLastClaim"></dd>
+            </dl>
+          </div>
+          <span class="overview-profile-link">View profile <span aria-hidden="true">→</span></span>
+        </a>
+        <section class="overview-widget overview-pack" id="cards" aria-labelledby="cardsTitle">
+          <div class="pack-intro">
+            <h2 id="cardsTitle">Pack opening test</h2>
+            <p>Try the pack opening animation.</p>
+            <div class="pack-controls">
+              <button class="button" id="openPack" type="button">Open pack</button>
+              <button class="button" id="replayPack" type="button" hidden>Reset</button>
+            </div>
+            <p class="pack-help" id="packHelp">Open the pack below, or use the button.</p>
+          </div>
+          <div class="pack-stage" id="packStage" data-phase="sealed" aria-label="Pack opening test">
+            <button class="demo-pack" id="demoPack" type="button" aria-label="Open pack">
+              <span class="demo-pack-top"></span>
+              <span class="demo-pack-body">
+                <span class="demo-pack-title">PEPPER TCG</span>
+                <span class="demo-pack-mark" aria-hidden="true">P</span>
+                <span class="demo-pack-count">DEMO PACK · 5 CARDS</span>
+              </span>
+              <span class="demo-pack-bottom"></span>
+            </button>
+            <div class="reveal-cards" id="revealCards" aria-label="Five demo cards" hidden></div>
+            <div class="pack-stage-status" id="packStatus" role="status" aria-live="polite">Ready</div>
+          </div>
+        </section>
       </div>
     </section>
 
@@ -141,31 +180,9 @@
       </div>
     </section>
 
-    <section class="pack-section" id="cards" aria-labelledby="cardsTitle">
-      <div class="section-wrap pack-section-inner">
-        <div class="pack-intro">
-          <h1 id="cardsTitle">Pack opening test</h1>
-          <p>test animation</p>
-          <div class="pack-controls">
-            <button class="button" id="openPack" type="button">Open pack</button>
-            <button class="button" id="replayPack" type="button" hidden>Reset</button>
-          </div>
-          <p class="pack-help" id="packHelp">click on pack or click button</p>
-        </div>
-        <div class="pack-stage" id="packStage" data-phase="sealed" aria-label="Pack opening test">
-          <button class="demo-pack" id="demoPack" type="button" aria-label="Open pack">
-            <span class="demo-pack-top"></span>
-            <span class="demo-pack-body">
-              <span class="demo-pack-title">PEPPER TCG</span>
-              <span class="demo-pack-mark" aria-hidden="true">P</span>
-              <span class="demo-pack-count">DEMO PACK · 5 CARDS</span>
-            </span>
-            <span class="demo-pack-bottom"></span>
-          </button>
-          <div class="reveal-cards" id="revealCards" aria-label="Five demo cards" hidden></div>
-          <div class="pack-stage-status" id="packStatus" role="status" aria-live="polite">Ready</div>
-        </div>
-      </div>
+    <section class="section-wrap packs-overview" id="packsPage" aria-labelledby="packsTitle" hidden>
+      <h1 id="packsTitle">Packs</h1>
+      <p>Coming soon</p>
     </section>
 
     <section class="section-wrap changelog-overview" id="changelogPage" aria-labelledby="changelogTitleHeading" hidden>

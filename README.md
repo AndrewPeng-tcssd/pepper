@@ -14,7 +14,7 @@ A private development version of the pepper trading card game website. Accounts,
    ```
 
    Keep the real connection string private. `.env` is excluded by `.gitignore`.
-4. Run `npm start`, then open `http://localhost:3000` in Chrome. Use `/profile` for the hourly token claim and `/packs/test` for the pack animation test. Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
+4. Run `npm start`, then open `http://localhost:3000` in Chrome. Use `/profile` for the hourly token claim and Overview (`/`) for the pack animation test. The Packs page at `/packs` shows “Coming soon.” Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
 
 ## Accounts
 
@@ -64,9 +64,10 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Cloudflare Turnstile verification and a random reward of 10–20 tokens once every rolling hour per account. Each whole-number reward is chosen on the server, and MongoDB adds it with an atomic update that also enforces the claim timer.
 - A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 100 messages; signed-in users can post and reply. Messages are saved in MongoDB. Posting has length and speed limits. Page navigation preserves the chat and drafts.
 - A public token leaderboard with current balances, shared ranks for ties, and profile links.
-- A pack opening animation test at `/packs/test`. It reveals five blank cards and can be reset. It does not use tokens or save cards.
+- Overview shows your username, token balance, joined date, and last claim in a widget that links to your profile, beside the pack animation test.
+- A pack opening animation test on Overview (`/`). It reveals five blank cards and can be reset. It does not use tokens or save cards. Old links to `/packs/test` redirect to the demo on Overview.
 
-The planned pack price shown on the site is a placeholder. There is currently no pack or payment checkout.
+The Packs page at `/packs` currently displays “Coming soon.” There is currently no pack or payment checkout.
 
 ## Before a public launch
 

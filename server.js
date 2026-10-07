@@ -550,10 +550,10 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, a
     await sendPublicChatMessage(res, message);
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/packs/test'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/packs'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
-  app.get('/packs', (req, res) => res.redirect(302, '/packs/test'));
+  app.get('/packs/test', (req, res) => res.redirect(302, '/#cards'));
   app.use(express.static(path.join(__dirname, 'public')));
   app.use((error, req, res, next) => {
     console.error(error);
