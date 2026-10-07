@@ -198,6 +198,21 @@ input:focus { border-color: var(--accent); }
 .changelog-delete-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .changelog-delete-message { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
 
+.leaderboard-overview > .leaderboard-summary { margin-top: 24px; font-size: 13px; }
+.leaderboard-summary:empty { display: none; }
+.leaderboard-table-wrap { max-width: 760px; margin-top: 28px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.leaderboard-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.leaderboard-table th, .leaderboard-table td { padding: 17px 22px; text-align: left; border-bottom: 1px solid var(--line); }
+.leaderboard-table th { background: var(--sidebar-surface); color: var(--muted); font-size: 12px; font-weight: 600; }
+.leaderboard-table th:first-child, .leaderboard-table td:first-child { width: 78px; color: var(--muted); }
+.leaderboard-table th:last-child, .leaderboard-table td:last-child { text-align: right; white-space: nowrap; }
+.leaderboard-table td:last-child { font-weight: 700; }
+.leaderboard-table tr:last-child td { border-bottom: 0; }
+.leaderboard-own-row { background: var(--accent-soft); }
+.leaderboard-profile { color: var(--ink); font-weight: 600; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.leaderboard-profile:hover { color: var(--accent-dark); }
+.leaderboard-you { display: inline-block; margin-left: 8px; color: var(--accent); font-size: 11px; font-weight: 600; }
+
 .tokens-heading { margin-bottom: 24px; }
 .tokens-heading h2 { margin-bottom: 10px; font-size: clamp(28px, 3vw, 37px); }
 .tokens-heading p { max-width: 680px; margin: 0; color: var(--muted); font-size: 15px; }
@@ -281,10 +296,29 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-author:hover, .chat-author:focus-visible { color: var(--accent-dark); text-decoration-color: currentColor; }
 .chat-row-head time { color: var(--muted); font-size: 11px; }
 .chat-row p { margin: 6px 0 0; overflow-wrap: anywhere; font-size: 13px; }
+.chat-row.is-reply-highlighted { border-radius: 6px; background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: 4px; }
+.chat-reply-button { min-height: 30px; margin-top: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; }
+.chat-reply-button:hover { background: var(--surface); color: var(--ink); }
+.chat-message-status { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
+.chat-row.is-pending > p { opacity: .75; }
+.chat-row.is-failed .chat-message-status { color: var(--error); }
+.chat-retry-button { min-height: 30px; margin-top: 7px; padding: 4px 8px; border: 1px solid var(--button-line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 12px; }
+.chat-retry-button:hover { background: var(--button-hover); }
+.chat-reply-quote { display: block; width: 100%; margin: 10px 0 8px; padding: 8px 10px; border: 0; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: var(--surface); color: var(--muted); text-align: left; font: inherit; }
+button.chat-reply-quote:hover { background: var(--accent-soft); }
+.chat-reply-quote-author { display: block; margin-bottom: 4px; color: var(--ink); font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+.chat-row .chat-reply-quote-text { display: -webkit-box; max-height: 3.2em; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.chat-reply-unavailable { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 .chat-join, #chatLoggedIn { border-top: 1px solid var(--line); padding: 17px 21px 20px; }
 .chat-join { display: flex; flex-direction: column; gap: 10px; color: var(--muted); font-size: 13px; }
 .chat-identity { margin-bottom: 10px; color: var(--muted); font-size: 12px; }
 .chat-identity strong { color: var(--ink); }
+.chat-reply-preview { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 9px 10px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: var(--surface); color: var(--muted); font-size: 12px; }
+.chat-reply-preview > div { flex: 1; min-width: 0; }
+.chat-reply-preview strong { color: var(--ink); overflow-wrap: anywhere; }
+.chat-reply-preview p { margin: 5px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+#cancelChatReply { flex: none; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 22px; }
+#cancelChatReply:hover { background: var(--paper); color: var(--ink); }
 .chat-form { display: grid; gap: 8px; }
 .chat-form .button, .chat-join .button { width: 100%; }
 .chat-close, .chat-toggle, .chat-overlay { display: none; }
@@ -311,11 +345,13 @@ dialog::backdrop { background: var(--dialog-backdrop); }
 @media (min-width: 851px) {
   .site-header, main, footer { margin-left: var(--sidebar-width); }
 }
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
   .site-header { grid-template-columns: minmax(0, 1fr) auto; }
   .main-nav { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; row-gap: 0; }
   .main-nav a { min-height: 46px; }
   .header-actions { grid-column: 2; grid-row: 1; }
+}
+@media (max-width: 1100px) {
   .profile-details, .settings-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 850px) {
@@ -345,6 +381,8 @@ dialog::backdrop { background: var(--dialog-backdrop); }
   .profile-info-card, .settings-card, .claim-panel, .future-panel { padding: 21px; }
   .changelog-editor, .changelog-entry { padding: 21px; }
   .changelog-editor, .changelog-entries, .changelog-overview > .changelog-message { margin-top: 24px; }
+  .leaderboard-table th, .leaderboard-table td { padding: 14px 12px; }
+  .leaderboard-table th:first-child, .leaderboard-table td:first-child { width: 54px; }
   .profile-info-card dl, .account-details { grid-template-columns: 90px minmax(0, 1fr); }
   .theme-options { gap: 10px; }
   .theme-option { padding: 12px; }

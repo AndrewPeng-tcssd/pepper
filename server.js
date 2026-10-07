@@ -433,38 +433,116 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, a
     res.json(await announcementsSnapshot());
   });
 
-  const publicMessage = (message, username = message.username) => ({
-    id: message._id.toString(),
-    username,
-    text: message.text,
-    createdAt: message.createdAt.toISOString()
+  app.get('/api/leaderboard', async (req, res) => {
+    const [leaders, totalPlayers] = await Promise.all([
+      users.find({}, { projection: { username: 1, accountId: 1, balance: 1 } })
+        .sort({ balance: -1, usernameKey: 1, _id: 1 }).limit(100).toArray(),
+      users.countDocuments()
+    ]);
+    let rank = 0;
+    let previousBalance;
+    const entries = [];
+    for (const [index, user] of leaders.entries()) {
+      await ensureAccountId(users, user);
+      const balance = user.balance ?? 0;
+      if (index === 0 || balance !== previousBalance) rank = index + 1;
+      previousBalance = balance;
+      entries.push({ rank, username: user.username, accountId: user.accountId, balance });
+    }
+    res.json({ entries, totalPlayers });
   });
-  app.get('/api/chat', async (req, res) => {
-    const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
-    const authorIds = [...new Map(latest.filter(message => message.userId)
-      .map(message => [message.userId.toString(), message.userId])).values()];
+
+  const publicMessage = (message, authorNames, availableMessageIds) => ({
+    id: message._id.toString(),
+    username: authorNames.get(message.userId?.toString()) ?? message.username,
+    text: message.text,
+    createdAt: message.createdAt.toISOString(),
+    clientMessageId: message.clientMessageId ?? null,
+    replyTo: message.replyTo ? {
+      id: message.replyTo.id.toString(),
+      username: authorNames.get(message.replyTo.userId?.toString()) ?? message.replyTo.username,
+      text: message.replyTo.text,
+      available: availableMessageIds.has(message.replyTo.id.toString())
+    } : null
+  });
+  async function messageAuthorNames(chatMessages) {
+    const authorIds = [...new Map(chatMessages.flatMap(message => [message.userId, message.replyTo?.userId])
+      .filter(Boolean).map(userId => [userId.toString(), userId])).values()];
     const authors = authorIds.length ? await users.find(
       { _id: { $in: authorIds } }, { projection: { username: 1 } }
     ).toArray() : [];
-    const authorNames = new Map(authors.map(author => [author._id.toString(), author.username]));
+    return new Map(authors.map(author => [author._id.toString(), author.username]));
+  }
+  app.get('/api/chat', async (req, res) => {
+    const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
+    const authorNames = await messageAuthorNames(latest);
+    const availableMessageIds = new Set(latest.map(message => message._id.toString()));
     res.json({ messages: latest.reverse().map(message => publicMessage(
-      message, authorNames.get(message.userId?.toString()) ?? message.username
+      message, authorNames, availableMessageIds
     )) });
   });
+  async function sendPublicChatMessage(res, message) {
+    const [retained, authorNames] = await Promise.all([
+      messages.find({}, { projection: { _id: 1 } }).sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray(),
+      messageAuthorNames([message])
+    ]);
+    const availableMessageIds = new Set(retained.map(entry => entry._id.toString()));
+    res.status(201).json({ message: publicMessage(message, authorNames, availableMessageIds) });
+  }
   app.post('/api/chat', requireUser, rateLimit(12, 60 * 1000), async (req, res) => {
+    const requestedClientMessageId = req.body?.clientMessageId;
+    let clientMessageId = null;
+    if (requestedClientMessageId !== undefined && requestedClientMessageId !== null) {
+      if (typeof requestedClientMessageId !== 'string' ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestedClientMessageId)) {
+        return sendError(res, 400, 'This chat message ID is invalid.');
+      }
+      clientMessageId = requestedClientMessageId.toLowerCase();
+    }
+    async function replayIfSaved() {
+      if (!clientMessageId) return false;
+      const saved = await messages.findOne({ userId: req.user._id, clientMessageId });
+      if (!saved) return false;
+      await sendPublicChatMessage(res, saved);
+      return true;
+    }
+    if (await replayIfSaved()) return;
     const messageText = String(req.body?.text || '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     if (!messageText || messageText.length > 400) return sendError(res, 400, 'Message must be 1–400 characters.');
+    const replyToId = req.body?.replyToId;
+    let replyTo = null;
+    if (replyToId !== undefined && replyToId !== null) {
+      if (typeof replyToId !== 'string' || !/^[a-f0-9]{24}$/i.test(replyToId)) {
+        return sendError(res, 400, 'The message you are replying to is invalid.');
+      }
+      const parent = await messages.findOne({ _id: new ObjectId(replyToId) });
+      if (!parent) {
+        if (await replayIfSaved()) return;
+        return sendError(res, 404, 'The message you are replying to is no longer in chat.');
+      }
+      const parentAuthor = parent.userId ? await users.findOne(
+        { _id: parent.userId }, { projection: { username: 1 } }
+      ) : null;
+      replyTo = { id: parent._id, userId: parent.userId ?? null, username: parentAuthor?.username ?? parent.username, text: parent.text };
+    }
     const last = await messages.findOne({ userId: req.user._id }, { sort: { createdAt: -1, _id: -1 } });
     if (last && Date.now() - last.createdAt.getTime() < 3000) {
+      if (await replayIfSaved()) return;
       return sendError(res, 429, 'Please wait a few seconds before sending another message.');
     }
-    const message = { userId: req.user._id, username: req.user.username, text: messageText, createdAt: new Date() };
-    await messages.insertOne(message);
+    const message = { userId: req.user._id, username: req.user.username, text: messageText, createdAt: new Date(), replyTo };
+    if (clientMessageId) message.clientMessageId = clientMessageId;
+    try { await messages.insertOne(message); }
+    catch (error) {
+      if (error.code !== 11000 || !clientMessageId || (error.keyPattern && !error.keyPattern.clientMessageId)) throw error;
+      if (await replayIfSaved()) return;
+      throw error;
+    }
     await trimChatHistory(messages);
-    res.status(201).json({ message: publicMessage(message) });
+    await sendPublicChatMessage(res, message);
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/packs/test'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/packs/test'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs', (req, res) => res.redirect(302, '/packs/test'));

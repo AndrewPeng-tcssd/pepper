@@ -7,8 +7,8 @@
   <title>Pepper TCG — Development</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=1"></script>
-  <link rel="stylesheet" href="/styles.css?v=31">
-  <script src="/app.js?v=30" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=32">
+  <script src="/app.js?v=31" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -26,10 +26,14 @@
       </div>
       <div id="chatLoggedIn" hidden>
         <div class="chat-identity">Posting as <strong id="chatUsername"></strong></div>
+        <div class="chat-reply-preview" id="chatReplyPreview" role="status" hidden>
+          <div><span>Replying to <strong id="chatReplyAuthor"></strong></span><p id="chatReplyText"></p></div>
+          <button id="cancelChatReply" type="button" aria-label="Cancel reply">×</button>
+        </div>
         <form class="chat-form" id="chatForm">
           <label class="sr-only" for="chatInput">Message</label>
           <input id="chatInput" name="message" maxlength="400" placeholder="Write a message" required>
-          <button class="button" type="submit">Send</button>
+          <button class="button" id="chatSend" type="submit">Send</button>
         </form>
         <p class="form-message" id="chatMessage" role="status"></p>
       </div>
@@ -44,6 +48,7 @@
       <a href="/packs/test">Packs</a>
       <a href="/changelog">Changelog</a>
       <a href="/announcements">Announcements</a>
+      <a href="/leaderboard">Leaderboard</a>
       <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat <span class="chat-toggle-count" id="mobilePlayerCount" title="Unique signed-in players active on the site."></span></button>
     </nav>
     <div class="header-actions">
@@ -206,6 +211,21 @@
       <p class="changelog-message" id="announcementMessage" role="status">Loading announcements…</p>
       <button class="button changelog-retry" id="announcementRetry" type="button" hidden>Try again</button>
       <div class="changelog-entries" id="announcementEntries" role="region" aria-label="Announcements"></div>
+    </section>
+
+    <section class="section-wrap changelog-overview leaderboard-overview" id="leaderboardPage" aria-labelledby="leaderboardTitle" hidden>
+      <h1 id="leaderboardTitle">Token leaderboard</h1>
+      <p>The top 100 players by token balance. Equal balances share a rank.</p>
+      <p class="leaderboard-summary" id="leaderboardSummary"></p>
+      <p class="changelog-message" id="leaderboardMessage" role="status">Loading leaderboard…</p>
+      <button class="button changelog-retry" id="leaderboardRetry" type="button" hidden>Try again</button>
+      <div class="leaderboard-table-wrap">
+        <table class="leaderboard-table">
+          <caption class="sr-only">Players ranked by current token balance</caption>
+          <thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Tokens</th></tr></thead>
+          <tbody id="leaderboardRows"></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="section-wrap settings-overview" id="settingsPage" aria-labelledby="settingsTitle" hidden>

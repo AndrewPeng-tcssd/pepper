@@ -282,10 +282,291 @@ test('public chat can be read, and only signed-in users can post', async () => {
   assert.equal(post.status, 201);
   assert.equal(post.data.message.username, username);
   assert.equal(post.data.message.text, 'Hello, Pepper TCG!');
+  assert.equal(post.data.message.replyTo, null);
+  assert.equal(post.data.message.clientMessageId, null);
   const messages = await request('/api/chat');
   assert.equal(messages.status, 200);
-  assert.ok(messages.data.messages.some(item => item.id === post.data.message.id));
+  assert.deepEqual(messages.data.messages.find(item => item.id === post.data.message.id), post.data.message);
   assert.equal((await request('/api/chat', { text: 'Too soon' }, signedUp.cookie)).status, 429);
+});
+
+test('chat reply targets require valid IDs and saved parent messages', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const writer = await api('/api/register', { username: 'reply_validation', password: '12345678' });
+  assert.equal(writer.status, 201);
+  assert.equal((await api('/api/chat', { text: 'A reply', replyToId: new ObjectId().toString() })).status, 401);
+  for (const replyToId of ['', 'invalid', 'a'.repeat(23), 'a'.repeat(25), 'z'.repeat(24), 12, false, {}, []]) {
+    assert.equal((await api('/api/chat', { text: 'Invalid reply', replyToId }, writer.cookie)).status, 400);
+  }
+  assert.equal((await api('/api/chat', { text: 'Missing reply', replyToId: new ObjectId().toString() }, writer.cookie)).status, 404);
+  assert.equal(await isolated.messages.countDocuments(), 0);
+  const noReply = await api('/api/chat', { text: 'A regular message', replyToId: null, replyTo: { text: 'Fake quote' } }, writer.cookie);
+  assert.equal(noReply.status, 201);
+  assert.equal(noReply.data.message.replyTo, null);
+  assert.deepEqual((await api('/api/chat')).data.messages, [noReply.data.message]);
+});
+
+test('chat replies use authoritative shallow quotes and follow the parent account through renames and restarts', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const password = '12345678';
+  const author = await api('/api/register', { username: 'quote_author', password });
+  const writer = await api('/api/register', { username: 'quote_writer', password });
+  const third = await api('/api/register', { username: 'quote_third', password });
+  const parent = await api('/api/chat', { text: 'Original parent message.' }, author.cookie);
+  assert.equal(parent.status, 201);
+  const quote = { id: parent.data.message.id, username: 'quote_author', text: 'Original parent message.', available: true };
+  const reply = await api('/api/chat', {
+    text: 'My reply.', replyToId: parent.data.message.id.toUpperCase(),
+    replyTo: { id: new ObjectId().toString(), username: '675', text: 'Forged quote.', available: false },
+    replyToUsername: '675', replyToText: 'Another forged quote.'
+  }, writer.cookie);
+  assert.equal(reply.status, 201);
+  assert.deepEqual(reply.data.message.replyTo, quote);
+  assert.deepEqual(Object.keys(reply.data.message).sort(), ['clientMessageId', 'createdAt', 'id', 'replyTo', 'text', 'username']);
+  const nested = await api('/api/chat', { text: 'Replying to that reply.', replyToId: reply.data.message.id }, third.cookie);
+  assert.equal(nested.status, 201);
+  assert.deepEqual(nested.data.message.replyTo, { id: reply.data.message.id, username: 'quote_writer', text: 'My reply.', available: true });
+  assert.deepEqual(Object.keys(nested.data.message.replyTo).sort(), ['available', 'id', 'text', 'username']);
+  const initial = (await api('/api/chat')).data.messages;
+  assert.equal(initial.find(message => message.id === parent.data.message.id).replyTo, null);
+  assert.deepEqual(initial.find(message => message.id === reply.data.message.id).replyTo, quote);
+  const renamed = await api('/api/account/username', { username: 'renamed_quote_author', currentPassword: password }, author.cookie, 'PATCH');
+  assert.equal(renamed.status, 200);
+  const currentQuote = { ...quote, username: 'renamed_quote_author' };
+  assert.deepEqual((await api('/api/chat')).data.messages.find(message => message.id === reply.data.message.id).replyTo, currentQuote);
+  const reclaimedName = await api('/api/register', { username: 'quote_author', password });
+  assert.equal(reclaimedName.status, 201);
+  assert.notEqual(reclaimedName.data.user.accountId, author.data.user.accountId);
+
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const persisted = (await accountApi(t, reconnected)('/api/chat')).data.messages;
+  assert.equal(persisted.length, 3);
+  assert.deepEqual(persisted.find(message => message.id === reply.data.message.id).replyTo, currentQuote);
+  assert.deepEqual(persisted.find(message => message.id === nested.data.message.id).replyTo, nested.data.message.replyTo);
+});
+
+test('chat reply quotes survive parent pruning while new replies cannot target removed history', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const password = '12345678';
+  const author = await api('/api/register', { username: 'pruned_author', password });
+  const writer = await api('/api/register', { username: 'pruned_writer', password });
+  const third = await api('/api/register', { username: 'pruned_third', password });
+  const parent = await api('/api/chat', { text: 'Remember this parent.' }, author.cookie);
+  assert.equal(parent.status, 201);
+  await isolated.messages.updateOne({ _id: new ObjectId(parent.data.message.id) }, { $set: { createdAt: new Date(Date.now() - 120000) } });
+  const reply = await api('/api/chat', { text: 'A saved reply.', replyToId: parent.data.message.id }, writer.cookie);
+  assert.equal(reply.status, 201);
+  await isolated.messages.insertMany(Array.from({ length: 99 }, (_, index) => ({
+    userId: new ObjectId(), username: 'older_history', text: `Older message ${index}`, createdAt: new Date(Date.now() - 60000)
+  })));
+  const newest = await api('/api/chat', { text: 'A fresh message.' }, third.cookie);
+  assert.equal(newest.status, 201);
+  assert.equal(await isolated.messages.countDocuments(), 100);
+  assert.equal(await isolated.messages.findOne({ _id: new ObjectId(parent.data.message.id) }), null);
+  const quote = { id: parent.data.message.id, username: 'pruned_author', text: 'Remember this parent.', available: false };
+  const latest = (await api('/api/chat')).data.messages;
+  assert.equal(latest.length, 100);
+  assert.deepEqual(latest.find(message => message.id === reply.data.message.id).replyTo, quote);
+  assert.equal((await api('/api/chat', { text: 'Reply to removed parent.', replyToId: parent.data.message.id }, author.cookie)).status, 404);
+  assert.equal(await isolated.messages.countDocuments(), 100);
+  const renamed = await api('/api/account/username', { username: 'renamed_pruned_author', currentPassword: password }, author.cookie, 'PATCH');
+  assert.equal(renamed.status, 200);
+  const currentQuote = { ...quote, username: 'renamed_pruned_author' };
+  assert.deepEqual((await api('/api/chat')).data.messages.find(message => message.id === reply.data.message.id).replyTo, currentQuote);
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const persisted = (await accountApi(t, reconnected)('/api/chat')).data.messages;
+  assert.equal(persisted.length, 100);
+  assert.deepEqual(persisted.find(message => message.id === reply.data.message.id).replyTo, currentQuote);
+});
+
+test('chat validates optional client message IDs and keeps ordinary messages compatible', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const writer = await api('/api/register', { username: 'id_validation', password: '12345678' });
+  assert.equal(writer.status, 201);
+  const validId = crypto.randomUUID();
+  assert.equal((await api('/api/chat', { text: 'A message', clientMessageId: validId })).status, 401);
+  for (const clientMessageId of ['', 'not-a-uuid', crypto.randomBytes(16).toString('hex'), 'x'.repeat(36), 12, false, {}, [], `${validId.slice(0, 14)}3${validId.slice(15)}`]) {
+    assert.equal((await api('/api/chat', { text: 'Invalid ID', clientMessageId }, writer.cookie)).status, 400);
+  }
+  assert.equal(await isolated.messages.countDocuments(), 0);
+  const ordinary = await api('/api/chat', { text: 'An ordinary message', clientMessageId: null }, writer.cookie);
+  assert.equal(ordinary.status, 201);
+  assert.equal(ordinary.data.message.clientMessageId, null);
+  assert.equal((await isolated.messages.findOne({ _id: new ObjectId(ordinary.data.message.id) })).clientMessageId, undefined);
+  assert.deepEqual((await api('/api/chat')).data.messages, [ordinary.data.message]);
+});
+
+test('chat retries return the original saved message before cooldown or payload validation and IDs are scoped to each account', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const writer = await api('/api/register', { username: 'retry_writer', password: '12345678' });
+  const other = await api('/api/register', { username: 'retry_other', password: '12345678' });
+  const clientMessageId = crypto.randomUUID();
+  const first = await api('/api/chat', { text: 'Save this once.', clientMessageId: clientMessageId.toUpperCase() }, writer.cookie);
+  assert.equal(first.status, 201);
+  assert.equal(first.data.message.clientMessageId, clientMessageId);
+  const retry = await api('/api/chat', { text: 'A changed retry payload.', clientMessageId, replyToId: 'invalid' }, writer.cookie);
+  assert.equal(retry.status, 201);
+  assert.deepEqual(retry.data, first.data);
+  const emptyRetry = await api('/api/chat', { text: '', clientMessageId }, writer.cookie);
+  assert.equal(emptyRetry.status, 201);
+  assert.deepEqual(emptyRetry.data, first.data);
+  assert.equal(await isolated.messages.countDocuments(), 1);
+  assert.deepEqual((await api('/api/chat')).data.messages, [first.data.message]);
+  const otherMessage = await api('/api/chat', { text: 'Another account owns its own message.', clientMessageId, username: 'retry_writer', userId: writer.data.user.accountId }, other.cookie);
+  assert.equal(otherMessage.status, 201);
+  assert.notEqual(otherMessage.data.message.id, first.data.message.id);
+  assert.equal(otherMessage.data.message.username, 'retry_other');
+  assert.equal(otherMessage.data.message.clientMessageId, clientMessageId);
+  assert.equal(await isolated.messages.countDocuments(), 2);
+  assert.deepEqual((await api('/api/chat', { text: 'Other retry', clientMessageId }, other.cookie)).data, otherMessage.data);
+  assert.equal((await api('/api/chat', { text: 'A genuinely new message.', clientMessageId: crypto.randomUUID() }, writer.cookie)).status, 429);
+  assert.equal(await isolated.messages.countDocuments(), 2);
+});
+
+test('chat retries remain idempotent after a quoted parent is pruned and after reconnecting', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const author = await api('/api/register', { username: 'retry_parent', password: '12345678' });
+  const writer = await api('/api/register', { username: 'retry_reply', password: '12345678' });
+  const parent = await api('/api/chat', { text: 'An older parent.' }, author.cookie);
+  assert.equal(parent.status, 201);
+  await isolated.messages.updateOne({ _id: new ObjectId(parent.data.message.id) }, { $set: { createdAt: new Date(Date.now() - 120000) } });
+  const clientMessageId = crypto.randomUUID();
+  const first = await api('/api/chat', { text: 'The original reply.', replyToId: parent.data.message.id, clientMessageId }, writer.cookie);
+  assert.equal(first.status, 201);
+  assert.equal(first.data.message.replyTo.available, true);
+  await isolated.messages.insertMany(Array.from({ length: 99 }, (_, index) => ({
+    userId: new ObjectId(), username: 'older_retry_history', text: `Old message ${index}`, createdAt: new Date(Date.now() - 60000)
+  })));
+  assert.equal((await api('/api/chat', { text: 'Trim the old parent.' }, author.cookie)).status, 201);
+  assert.equal(await isolated.messages.findOne({ _id: new ObjectId(parent.data.message.id) }), null);
+  assert.equal(await isolated.messages.countDocuments(), 100);
+  const expected = { ...first.data.message, replyTo: { ...first.data.message.replyTo, available: false } };
+  const retry = await api('/api/chat', { text: 'The original reply.', replyToId: parent.data.message.id, clientMessageId }, writer.cookie);
+  assert.equal(retry.status, 201);
+  assert.deepEqual(retry.data, { message: expected });
+  assert.equal(await isolated.messages.countDocuments(), 100);
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  const freshApi = accountApi(t, reconnected);
+  const persistedRetry = await freshApi('/api/chat', { text: '', replyToId: 'invalid', clientMessageId }, writer.cookie);
+  assert.equal(persistedRetry.status, 201);
+  assert.deepEqual(persistedRetry.data, { message: expected });
+  assert.deepEqual((await freshApi('/api/chat')).data.messages.find(message => message.id === first.data.message.id), expected);
+  assert.equal(await reconnected.messages.countDocuments(), 100);
+});
+
+test('concurrent chat requests with one client message ID recover the same message from the unique insert race', { timeout: 10000 }, async t => {
+  const isolated = await changelogStore(t);
+  const writer = await accountApi(t, isolated)('/api/register', { username: 'concurrent_retry', password: '12345678' });
+  assert.equal(writer.status, 201);
+  const clientMessageId = crypto.randomUUID();
+  let insertAttempts = 0;
+  let releaseInsert;
+  const bothInserting = new Promise(resolve => { releaseInsert = resolve; });
+  const gateTimeout = setTimeout(releaseInsert, 2000);
+  gateTimeout.unref();
+  t.after(() => clearTimeout(gateTimeout));
+  const raceMessages = new Proxy(isolated.messages, { get(target, property) {
+    if (property === 'insertOne') return async (message, options) => {
+      if (message.clientMessageId === clientMessageId) {
+        insertAttempts += 1;
+        if (insertAttempts === 2) releaseInsert();
+        await bothInserting;
+      }
+      return target.insertOne(message, options);
+    };
+    const value = Reflect.get(target, property, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const api = accountApi(t, { ...isolated, messages: raceMessages });
+  const results = await Promise.all([
+    api('/api/chat', { text: 'One simultaneous message.', clientMessageId }, writer.cookie),
+    api('/api/chat', { text: 'One simultaneous message.', clientMessageId }, writer.cookie)
+  ]);
+  assert.equal(insertAttempts, 2);
+  assert.deepEqual(results.map(result => result.status), [201, 201]);
+  assert.deepEqual(results[0].data, results[1].data);
+  assert.equal(results[0].data.message.clientMessageId, clientMessageId);
+  assert.equal(await isolated.messages.countDocuments(), 1);
+  assert.deepEqual((await api('/api/chat')).data.messages, [results[0].data.message]);
+});
+
+test('leaderboard exposes public saved balances with tied ranks and reflects claims and renames', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated, { verifyTurnstile: async () => true, randomInt: () => 20 });
+  assert.deepEqual((await api('/api/leaderboard')).data, { entries: [], totalPlayers: 0 });
+  const password = '12345678';
+  const players = {};
+  for (const username of ['bravo', 'Alpha', 'zero_player', 'claim_player']) {
+    const registered = await api('/api/register', { username, password });
+    assert.equal(registered.status, 201);
+    players[username] = registered;
+    await isolated.users.updateOne({ usernameKey: username.toLowerCase() }, { $set: {
+      balance: username === 'zero_player' ? 0 : username === 'claim_player' ? 5 : 20,
+      email: `${username.toLowerCase()}@example.test`, lastEmailAttemptAt: new Date()
+    } });
+  }
+  const row = (username, rank, balance) => ({ rank, username, accountId: players[username].data.user.accountId, balance });
+  const initial = await api('/api/leaderboard');
+  assert.equal(initial.status, 200);
+  assert.deepEqual(initial.data, { entries: [row('Alpha', 1, 20), row('bravo', 1, 20), row('claim_player', 3, 5), row('zero_player', 4, 0)], totalPlayers: 4 });
+  for (const entry of initial.data.entries) assert.deepEqual(Object.keys(entry).sort(), ['accountId', 'balance', 'rank', 'username']);
+  const claim = await api('/api/claim', { turnstileToken: 'test-token' }, players.claim_player.cookie);
+  assert.equal(claim.status, 200);
+  assert.equal(claim.data.awarded, 20);
+  assert.equal(claim.data.user.balance, 25);
+  assert.deepEqual((await api('/api/leaderboard')).data, {
+    entries: [row('claim_player', 1, 25), row('Alpha', 2, 20), row('bravo', 2, 20), row('zero_player', 4, 0)], totalPlayers: 4
+  });
+  const renamed = await api('/api/account/username', { username: 'zeta', currentPassword: password }, players.Alpha.cookie, 'PATCH');
+  assert.equal(renamed.status, 200);
+  assert.deepEqual((await api('/api/leaderboard')).data, {
+    entries: [row('claim_player', 1, 25), row('bravo', 2, 20), { ...row('Alpha', 2, 20), username: 'zeta' }, row('zero_player', 4, 0)], totalPlayers: 4
+  });
+});
+
+test('leaderboard retains deterministic competition ranks, limits results to 100, and persists after reconnecting', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const players = Array.from({ length: 105 }, (_, index) => ({
+    _id: new ObjectId(index.toString(16).padStart(24, '0')),
+    username: `player_${index.toString().padStart(3, '0')}`,
+    usernameKey: `player_${index.toString().padStart(3, '0')}`,
+    accountId: `PPR-${crypto.randomUUID().toUpperCase()}`,
+    balance: Math.floor(index / 3), passwordHash: 'private-password-hash'
+  }));
+  await isolated.users.insertMany([...players].reverse());
+  const sorted = [...players].sort((first, second) => second.balance - first.balance || first.usernameKey.localeCompare(second.usernameKey));
+  const expectedEntries = sorted.slice(0, 100).map((player, index) => ({
+    rank: sorted.findIndex(candidate => candidate.balance === player.balance) + 1,
+    username: player.username, accountId: player.accountId, balance: player.balance
+  }));
+  const expected = { entries: expectedEntries, totalPlayers: 105 };
+  const leaderboard = await api('/api/leaderboard');
+  assert.equal(leaderboard.status, 200);
+  assert.deepEqual(leaderboard.data, expected);
+  assert.deepEqual(leaderboard.data.entries.slice(0, 4).map(entry => entry.rank), [1, 1, 1, 4]);
+  const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => reconnected.client.close());
+  assert.deepEqual((await accountApi(t, reconnected)('/api/leaderboard')).data, expected);
+  assert.equal(await reconnected.users.countDocuments(), 105);
+});
+
+test('leaderboard URLs serve the website directly', async () => {
+  for (const route of ['/leaderboard', '/leaderboard/']) {
+    const response = await fetch(base + route);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    assert.match(await response.text(), /Pepper TCG/i);
+  }
 });
 
 test('public profiles can be read anonymously and only include public account details', async () => {

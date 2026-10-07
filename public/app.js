@@ -1,14 +1,17 @@
 const $ = (id) => document.getElementById(id);
-const routePath = location.pathname.replace(/\/+$/, '') || '/';
-const profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
-const viewingPublicProfile = !!profileRoute;
-const pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : 'home';
-const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog', announcements: '/announcements' }[pageKind];
-const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
-document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true };
+let routePath = '';
+let profileRoute = null;
+let viewingPublicProfile = false;
+let pageKind = 'home';
+let routeRevision = 0;
+let profileLoadRevision = 0;
+let authRevision = 0;
+let userIdentityRevision = 0;
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true, chatMessages: [], chatOutbox: [], chatReply: null, leaderboard: null, leaderboardSignature: null };
+const chatInFlight = new Set();
 let turnstileScriptPromise;
 let chatLoadPromise;
+let chatRevision = 0;
 let claimRewardAnimation;
 let changelogLoadPromise;
 let changelogRevision = 0;
@@ -20,6 +23,10 @@ let presenceLoadPromise;
 let presenceRefreshQueued = false;
 let presenceRevision = 0;
 let presenceSuspended = false;
+let leaderboardLoadPromise;
+let leaderboardRefreshQueued = false;
+let leaderboardRevision = 0;
+let chatHighlightTimer;
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -69,19 +76,25 @@ function setUser(user) {
   if (!user || (state.user && state.user.username !== user.username)) clearClaimReward();
   const previousPresenceIdentity = state.user?.accountId || state.user?.username || null;
   state.user = user;
+  authRevision++;
   renderChangelogEditor();
   renderAnnouncementEditor();
   if (previousPresenceIdentity !== (user?.accountId || user?.username || null)) {
+    userIdentityRevision++;
+    clearChatReply();
+    if (state.chatOutbox.length) {
+      state.chatOutbox = [];
+      renderChat(state.chatMessages);
+    }
     presenceRevision++;
     void loadPresence(true);
+  } else if (user && state.chatOutbox.some(item => item.username !== user.username)) {
+    state.chatOutbox.forEach(item => { item.username = user.username; });
+    renderChat(state.chatMessages);
   }
   $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
     author.href = profileHref(author.dataset.username);
   });
-  if (viewingPublicProfile && state.profile && isOwnProfile(state.profile.username)) {
-    location.replace('/profile');
-    return;
-  }
   if (!viewingPublicProfile) {
     $('profileDescription').textContent = user
       ? 'Your account and tokens.'
@@ -129,8 +142,13 @@ function setUser(user) {
     message($('claimMessage'), '');
   }
   renderClaim();
+  $('chatMessages').querySelectorAll('.chat-reply-button').forEach(button => { button.hidden = !user || button.closest('.chat-row').matches('.is-pending, .is-failed'); });
+  if (state.leaderboard) renderLeaderboard(state.leaderboard);
   document.body.classList.remove('auth-loading');
   if (state.chatFollowLatest) scrollChatToLatest();
+  if (viewingPublicProfile && (isOwnProfile(state.profile?.username || '') || isOwnProfile(routeProfileUsername()))) {
+    navigateTo('/profile', { replace: true, focus: false, scroll: false });
+  }
 }
 
 function formatTime(ms) {
@@ -284,7 +302,7 @@ function setAuthMode(mode) {
 
 function openAccount() {
   setChatOpen(false);
-  if (state.user) location.assign('/settings');
+  if (state.user) navigateTo('/settings');
   else { setAuthMode('signup'); $('authDialog').showModal(); }
 }
 
@@ -325,52 +343,101 @@ $('resetTurnstile').addEventListener('click', () => { message($('claimMessage'),
 $('profileRetry').addEventListener('click', loadProfile);
 $('changelogRetry').addEventListener('click', () => loadChangelog());
 $('announcementRetry').addEventListener('click', () => loadAnnouncements());
+$('leaderboardRetry').addEventListener('click', () => loadLeaderboard(true));
 $('year').textContent = new Date().getFullYear();
 
-if (pageKind === 'profile') {
-  document.title = 'Profile — Pepper TCG';
-  document.body.classList.add('profile-route');
-  $('tokensTitle').textContent = 'Hourly claim';
-  $('tokensIntro').textContent = 'Claim a random 10–20 tokens every hour.';
-  $('home').hidden = true;
-  $('profileIntro').hidden = false;
-  $('cards').hidden = true;
-  if (viewingPublicProfile) {
-    document.body.classList.add('public-profile-route');
-    $('profileDescription').textContent = 'Loading profile…';
-    $('profileAccountTitle').textContent = 'About';
-    $('tokens').hidden = true;
-  }
-} else if (pageKind === 'pack') {
-  document.title = 'Pack opening test — Pepper TCG';
-  document.body.classList.add('pack-route');
-  $('home').hidden = true;
-  $('tokens').hidden = true;
-} else if (pageKind === 'settings') {
-  document.title = 'Settings — Pepper TCG';
-  document.body.classList.add('settings-route');
-  $('home').hidden = true;
-  $('tokens').hidden = true;
-  $('cards').hidden = true;
-  $('settingsPage').hidden = false;
-} else if (pageKind === 'changelog') {
-  document.title = 'Changelog — Pepper TCG';
-  document.body.classList.add('changelog-route');
-  $('home').hidden = true;
-  $('tokens').hidden = true;
-  $('cards').hidden = true;
-  $('changelogPage').hidden = false;
-} else if (pageKind === 'announcements') {
-  document.title = 'Announcements — Pepper TCG';
-  document.body.classList.add('announcements-route');
-  $('home').hidden = true;
-  $('tokens').hidden = true;
-  $('cards').hidden = true;
-  $('announcementsPage').hidden = false;
-} else {
-  $('tokens').hidden = true;
-  $('cards').hidden = true;
+function routeProfileUsername() {
+  try { return profileRoute ? decodeURIComponent(profileRoute[1]) : ''; }
+  catch { return ''; }
 }
+
+function isAppPath(pathname) {
+  const path = pathname.replace(/\/+$/, '') || '/';
+  return ['/', '/profile', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard'].includes(path) || /^\/profile\/[^/]+$/.test(path);
+}
+
+function renderRoute() {
+  routeRevision++;
+  profileLoadRevision++;
+  routePath = location.pathname.replace(/\/+$/, '') || '/';
+  profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
+  viewingPublicProfile = !!profileRoute;
+  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs/test' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : 'home';
+  if (viewingPublicProfile && isOwnProfile(routeProfileUsername())) {
+    navigateTo('/profile', { replace: true, focus: false, scroll: false });
+    return;
+  }
+  const navigationPath = { home: '/', profile: '/profile', pack: '/packs/test', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard' }[pageKind];
+  document.querySelectorAll('.main-nav a[aria-current], .account-dropdown a[aria-current]').forEach(link => link.removeAttribute('aria-current'));
+  const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
+  document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
+  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route');
+  if (pageKind !== 'home') document.body.classList.add(`${pageKind}-route`);
+  document.body.classList.toggle('public-profile-route', viewingPublicProfile);
+  ['home', 'profileIntro', 'tokens', 'cards', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage'].forEach(id => { $(id).hidden = true; });
+  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'cards', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage' }[pageKind];
+  $(sectionId).hidden = false;
+  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Pack opening test — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG' }[pageKind];
+  state.profile = null;
+  $('profileRetry').hidden = true;
+  $('profileTitle').textContent = 'Profile';
+  $('profileAccountTitle').textContent = viewingPublicProfile ? 'About' : 'Account';
+  if (pageKind === 'profile') {
+    $('tokensTitle').textContent = 'Hourly claim';
+    $('tokensIntro').textContent = 'Claim a random 10–20 tokens every hour.';
+    if (viewingPublicProfile) {
+      removeTurnstile();
+      void loadProfile();
+    } else {
+      $('tokens').hidden = false;
+      $('profileDescription').textContent = state.user ? 'Your account and tokens.' : 'Sign up or log in to see your account and tokens.';
+      $('profileDetails').hidden = !state.user;
+      if (state.user) renderProfileDetails(state.user);
+      renderClaim();
+    }
+  } else removeTurnstile();
+  if (pageKind === 'changelog') void loadChangelog(true);
+  if (pageKind === 'announcements') void loadAnnouncements(true);
+  if (pageKind === 'leaderboard') void loadLeaderboard(true);
+}
+
+function focusRouteHeading() {
+  if ($('chat').classList.contains('open')) return;
+  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'cardsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle' }[pageKind];
+  $(headingId).tabIndex = -1;
+  $(headingId).focus({ preventScroll: true });
+}
+
+function navigateTo(href, { replace = false, focus = true, scroll = true } = {}) {
+  const url = new URL(href, location.href);
+  if (url.origin !== location.origin || !isAppPath(url.pathname)) return false;
+  const target = `${url.pathname}${url.search}${url.hash}`;
+  const current = `${location.pathname}${location.search}${location.hash}`;
+  if (target !== current) {
+    history.replaceState({ ...history.state, pepperScroll: [window.scrollX, window.scrollY] }, '', current);
+    history[replace ? 'replaceState' : 'pushState']({ pepperScroll: [0, 0] }, '', target);
+    renderRoute();
+  }
+  $('accountMenu').open = false;
+  if (scroll) window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  if (focus) focusRouteHeading();
+  return true;
+}
+
+document.addEventListener('click', event => {
+  const link = event.target.closest('a[href]');
+  if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.hasAttribute('download') || (link.target && link.target !== '_self')) return;
+  const url = new URL(link.href, location.href);
+  if (url.origin !== location.origin || !isAppPath(url.pathname) || (url.hash && url.pathname === location.pathname && url.search === location.search)) return;
+  event.preventDefault();
+  navigateTo(url.href, { focus: !link.closest('#chat') });
+});
+window.addEventListener('popstate', () => {
+  renderRoute();
+  const [left, top] = history.state?.pepperScroll || [0, 0];
+  window.scrollTo({ left, top, behavior: 'instant' });
+});
+history.scrollRestoration = 'manual';
 
 $('authForm').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -396,7 +463,7 @@ $('authForm').addEventListener('submit', async (event) => {
     else if (pageKind === 'settings') $('settingsPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'changelog') $('changelogPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'announcements') $('announcementsPage').scrollIntoView({ behavior: 'smooth' });
-    else location.assign('/profile');
+    else if (pageKind !== 'leaderboard') navigateTo('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
   } finally { button.disabled = false; }
@@ -408,22 +475,35 @@ $('claimForm').addEventListener('submit', async (event) => {
   if (!state.turnstileToken) { message($('claimMessage'), 'Complete Cloudflare verification first.'); return; }
   const button = $('claimForm').querySelector('button');
   const token = state.turnstileToken;
-  const claimingUser = state.user;
+  const claimingIdentity = state.user.accountId || state.user.username;
+  const claimingRevision = userIdentityRevision;
+  const claimIsCurrent = () => userIdentityRevision === claimingRevision && (state.user?.accountId || state.user?.username) === claimingIdentity;
+  const mergeClaimFields = user => {
+    const merged = { ...state.user };
+    if ((user.lastClaimAt || 0) < (state.user.lastClaimAt || 0)) return merged;
+    ['balance', 'lastClaimAt', 'nextClaimAt', 'hourlyTokenMin', 'hourlyTokenMax'].forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(user, key)) merged[key] = user[key];
+    });
+    return merged;
+  };
   state.claimSubmitting = true;
   button.disabled = true;
   clearClaimReward();
   message($('claimMessage'), 'Claiming tokens…');
   try {
     const data = await api('claim', { method: 'POST', body: JSON.stringify({ turnstileToken: token }) });
-    if (state.user !== claimingUser) return;
-    setUser(data.user);
+    if (!claimIsCurrent()) return;
+    setUser(mergeClaimFields(data.user));
+    leaderboardRevision++;
+    void loadLeaderboard(true);
     message($('claimMessage'), 'Rolling your reward…', true);
     if (await revealClaimReward(data.awarded)) {
       message($('claimMessage'), `${data.awarded} tokens added to your balance.`, true);
     }
   } catch (error) {
-    if (state.user !== claimingUser) return;
-    if (error.user) setUser(error.user);
+    if (!claimIsCurrent()) return;
+    if (error.user) setUser(mergeClaimFields(error.user));
+    if (error.status === 401) setUser(null);
     message($('claimMessage'), error.message);
     resetTurnstile();
   } finally { state.claimSubmitting = false; button.disabled = !state.turnstileToken; }
@@ -944,12 +1024,19 @@ $('usernameForm').addEventListener('submit', async (event) => {
   setAccountSubmitting(true);
   message($('usernameMessage'), '');
   const previousUsername = state.user.username;
+  const updatingIdentity = state.user.accountId || state.user.username;
+  const updatingRevision = userIdentityRevision;
   try {
     const { user } = await api('account/username', { method: 'PATCH', body: JSON.stringify({
       username: $('newUsername').value,
       currentPassword: $('usernameCurrentPassword').value
     }) });
-    setUser(user);
+    if (userIdentityRevision !== updatingRevision || (state.user?.accountId || state.user?.username) !== updatingIdentity) return;
+    const updatedUser = { ...user };
+    if ((state.user.lastClaimAt || 0) > (user.lastClaimAt || 0)) {
+      ['balance', 'lastClaimAt', 'nextClaimAt', 'hourlyTokenMin', 'hourlyTokenMax'].forEach(key => { updatedUser[key] = state.user[key]; });
+    }
+    setUser(updatedUser);
     $('chatMessages').querySelectorAll('.chat-author').forEach(author => {
       if (author.dataset.username.toLowerCase() !== previousUsername.toLowerCase()) return;
       author.dataset.username = user.username;
@@ -959,6 +1046,8 @@ $('usernameForm').addEventListener('submit', async (event) => {
     });
     message($('usernameMessage'), 'Username updated.', true);
     void loadChat(true);
+    leaderboardRevision++;
+    void loadLeaderboard(true);
   } catch (error) {
     settingsError($('usernameMessage'), error);
   } finally {
@@ -993,15 +1082,20 @@ $('passwordForm').addEventListener('submit', async (event) => {
 });
 
 async function loadProfile() {
+  if (pageKind !== 'profile' || !viewingPublicProfile || !profileRoute) return;
+  const revision = routeRevision;
+  const loadRevision = ++profileLoadRevision;
+  const usernamePath = profileRoute[1];
   state.profile = null;
   $('profileRetry').hidden = true;
   $('profileDetails').hidden = true;
   $('profileDescription').textContent = 'Loading profile…';
   try {
-    const { profile } = await api(`profiles/${profileRoute[1]}`);
+    const { profile } = await api(`profiles/${usernamePath}`);
+    if (revision !== routeRevision || loadRevision !== profileLoadRevision) return;
     state.profile = profile;
     if (isOwnProfile(profile.username)) {
-      location.replace('/profile');
+      navigateTo('/profile', { replace: true, focus: false, scroll: false });
       return;
     }
     document.title = `${profile.username} — Pepper TCG`;
@@ -1011,12 +1105,134 @@ async function loadProfile() {
     renderClaim();
     $('profileDetails').hidden = false;
   } catch (error) {
+    if (revision !== routeRevision || loadRevision !== profileLoadRevision) return;
     document.title = 'Profile unavailable — Pepper TCG';
     $('profileTitle').textContent = 'Profile unavailable';
     $('profileDescription').textContent = error.message;
     $('profileRetry').hidden = false;
   }
 }
+
+function renderLeaderboard(data) {
+  const signature = JSON.stringify([data.entries, data.totalPlayers, state.user?.accountId || null]);
+  if (signature === state.leaderboardSignature) return;
+  state.leaderboardSignature = signature;
+  const focusedAccountId = document.activeElement?.closest('#leaderboardRows tr')?.dataset.accountId;
+  const fragment = document.createDocumentFragment();
+  for (const entry of data.entries) {
+    const row = document.createElement('tr');
+    row.dataset.accountId = entry.accountId;
+    const own = !!state.user?.accountId && state.user.accountId === entry.accountId;
+    row.classList.toggle('leaderboard-own-row', own);
+    const rank = document.createElement('td');
+    rank.textContent = entry.rank.toLocaleString();
+    const player = document.createElement('td');
+    const profile = document.createElement('a');
+    profile.className = 'leaderboard-profile';
+    profile.href = profileHref(entry.username);
+    profile.textContent = entry.username;
+    profile.setAttribute('aria-label', `View ${entry.username}'s profile`);
+    player.append(profile);
+    if (own) {
+      const badge = document.createElement('span');
+      badge.className = 'leaderboard-you';
+      badge.textContent = 'You';
+      player.append(badge);
+    }
+    const balance = document.createElement('td');
+    balance.textContent = entry.balance.toLocaleString();
+    row.append(rank, player, balance);
+    fragment.append(row);
+  }
+  $('leaderboardRows').replaceChildren(fragment);
+  if (focusedAccountId) {
+    Array.from($('leaderboardRows').children).find(row => row.dataset.accountId === focusedAccountId)?.querySelector('a').focus({ preventScroll: true });
+  }
+  $('leaderboardSummary').textContent = `Showing ${data.entries.length.toLocaleString()} of ${data.totalPlayers.toLocaleString()} ${data.totalPlayers === 1 ? 'player' : 'players'}. Updates every 15 seconds.`;
+}
+
+function loadLeaderboard(refresh = false) {
+  if (pageKind !== 'leaderboard' && !refresh) return Promise.resolve();
+  if (leaderboardLoadPromise) {
+    if (refresh) leaderboardRefreshQueued = true;
+    return leaderboardLoadPromise;
+  }
+  const revision = leaderboardRevision;
+  leaderboardLoadPromise = (async () => {
+    try {
+      const data = await api('leaderboard');
+      if (revision !== leaderboardRevision) return;
+      state.leaderboard = data;
+      renderLeaderboard(data);
+      message($('leaderboardMessage'), data.entries.length ? '' : 'No players yet.');
+      $('leaderboardRetry').hidden = true;
+    } catch {
+      if (revision !== leaderboardRevision) return;
+      message($('leaderboardMessage'), 'The leaderboard could not load. Please try again.');
+      $('leaderboardRetry').hidden = false;
+    }
+  })().finally(() => {
+    leaderboardLoadPromise = null;
+    if (leaderboardRefreshQueued) {
+      leaderboardRefreshQueued = false;
+      void loadLeaderboard();
+    }
+  });
+  return leaderboardLoadPromise;
+}
+
+function clearChatReply() {
+  state.chatReply = null;
+  $('chatReplyPreview').hidden = true;
+  $('chatReplyAuthor').textContent = '';
+  $('chatReplyText').textContent = '';
+}
+
+function chooseChatReply(messageId) {
+  if (!state.user) return;
+  const item = state.chatMessages.find(item => item.id === messageId);
+  if (!item) return;
+  state.chatReply = { id: item.id, username: item.username, text: item.text };
+  $('chatReplyAuthor').textContent = item.username;
+  $('chatReplyText').textContent = item.text;
+  $('chatReplyPreview').hidden = false;
+  message($('chatMessage'), '');
+  $('chatInput').focus({ preventScroll: true });
+}
+
+$('cancelChatReply').addEventListener('click', () => { clearChatReply(); $('chatInput').focus({ preventScroll: true }); });
+
+function jumpToChatMessage(messageId) {
+  const container = $('chatMessages');
+  const row = Array.from(container.children).find(row => row.dataset.messageId === messageId);
+  if (!row) {
+    message($('chatMessage'), 'The original message is no longer in recent chat.');
+    return;
+  }
+  state.chatFollowLatest = false;
+  const top = container.scrollTop + row.getBoundingClientRect().top - container.getBoundingClientRect().top - (container.clientHeight - row.clientHeight) / 2;
+  container.scrollTo({ top, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  container.querySelectorAll('.is-reply-highlighted').forEach(item => item.classList.remove('is-reply-highlighted'));
+  row.classList.add('is-reply-highlighted');
+  row.tabIndex = -1;
+  row.focus({ preventScroll: true });
+  window.clearTimeout(chatHighlightTimer);
+  chatHighlightTimer = window.setTimeout(() => {
+    Array.from(container.children).find(item => item.dataset.messageId === messageId)?.classList.remove('is-reply-highlighted');
+  }, 2500);
+}
+
+$('chatMessages').addEventListener('click', event => {
+  const reply = event.target.closest('button[data-reply-id]');
+  const quote = event.target.closest('button[data-reply-jump]');
+  const retry = event.target.closest('button[data-retry-client-id]');
+  if (reply) chooseChatReply(reply.dataset.replyId);
+  else if (quote) jumpToChatMessage(quote.dataset.replyJump);
+  else if (retry) {
+    const pending = state.chatOutbox.find(item => item.clientMessageId === retry.dataset.retryClientId);
+    if (pending?.status === 'failed') void sendChatEntry(pending);
+  }
+});
 
 function scrollChatToLatest() {
   const container = $('chatMessages');
@@ -1032,14 +1248,94 @@ new ResizeObserver(() => {
   if (state.chatFollowLatest) scrollChatToLatest();
 }).observe($('chatMessages'));
 
+function createChatRow(item) {
+  const row = document.createElement('div');
+  row.className = 'chat-row';
+  row.dataset.messageId = item.id;
+  if (item.clientMessageId) row.dataset.clientMessageId = item.clientMessageId;
+  row.dataset.signature = JSON.stringify(item);
+  row.classList.toggle('is-pending', item.status === 'pending');
+  row.classList.toggle('is-failed', item.status === 'failed');
+  const head = document.createElement('div');
+  head.className = 'chat-row-head';
+  const author = document.createElement('a');
+  author.className = 'chat-author';
+  author.dataset.username = item.username;
+  author.href = profileHref(item.username);
+  author.textContent = item.username;
+  author.setAttribute('aria-label', `View ${item.username}'s profile`);
+  const time = document.createElement('time');
+  time.dateTime = item.createdAt;
+  time.textContent = new Date(item.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+  head.append(author, time);
+  row.append(head);
+  if (item.replyTo) {
+    const quote = document.createElement(item.replyTo.available ? 'button' : 'div');
+    quote.className = 'chat-reply-quote';
+    if (item.replyTo.available) {
+      quote.type = 'button';
+      quote.dataset.replyJump = item.replyTo.id;
+      quote.setAttribute('aria-label', `View original message from ${item.replyTo.username}: ${item.replyTo.text}`);
+    }
+    const quoteAuthor = document.createElement('span');
+    quoteAuthor.className = 'chat-reply-quote-author';
+    quoteAuthor.textContent = `Reply to ${item.replyTo.username}`;
+    const quoteText = document.createElement('span');
+    quoteText.className = 'chat-reply-quote-text';
+    quoteText.textContent = item.replyTo.text;
+    quote.append(quoteAuthor, quoteText);
+    if (!item.replyTo.available) {
+      const unavailable = document.createElement('span');
+      unavailable.className = 'chat-reply-unavailable';
+      unavailable.textContent = 'Original message is no longer available.';
+      quote.append(unavailable);
+    }
+    row.append(quote);
+  }
+  const body = document.createElement('p');
+  body.textContent = item.text;
+  const reply = document.createElement('button');
+  reply.type = 'button';
+  reply.className = 'chat-reply-button';
+  reply.dataset.replyId = item.id;
+  reply.textContent = 'Reply';
+  reply.hidden = !state.user || !!item.status;
+  reply.setAttribute('aria-label', `Reply to ${item.username}: ${item.text}`);
+  row.append(body, reply);
+  if (item.status) {
+    const status = document.createElement('span');
+    status.className = 'chat-message-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.textContent = item.status === 'pending' ? 'Sending…' : `Not sent. ${item.error || 'Please try again.'}`;
+    row.append(status);
+    if (item.status === 'failed') {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'chat-retry-button';
+      retry.dataset.retryClientId = item.clientMessageId;
+      retry.textContent = 'Retry';
+      retry.disabled = chatInFlight.has(item.clientMessageId);
+      retry.setAttribute('aria-label', `Retry sending: ${item.text}`);
+      row.append(retry);
+    }
+  }
+  return row;
+}
+
 function renderChat(messages) {
-  const latest = messages.slice(-100);
-  const signature = latest.map(item => `${item.id}:${item.username}`).join(',');
+  const canonical = messages.slice(-100);
+  state.chatMessages = canonical;
+  const savedClientIds = new Set(canonical.map(item => item.clientMessageId).filter(Boolean));
+  state.chatOutbox = state.chatOutbox.filter(item => !savedClientIds.has(item.clientMessageId));
+  const latest = [...canonical, ...state.chatOutbox].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const signature = JSON.stringify(latest);
   if (signature === state.chatSignature) return;
   const container = $('chatMessages');
-  const focusedAuthor = document.activeElement?.closest('.chat-author');
-  const focusedMessageId = focusedAuthor && container.contains(focusedAuthor)
-    ? focusedAuthor.closest('.chat-row').dataset.messageId : null;
+  const focused = document.activeElement;
+  const focusedRow = focused?.closest('.chat-row');
+  const focusedMessageId = focusedRow && container.contains(focusedRow) ? focusedRow.dataset.messageId : null;
+  const focusedSelector = focused?.classList.contains('chat-author') ? '.chat-author' : focused?.classList.contains('chat-reply-button') ? '.chat-reply-button' : focused?.classList.contains('chat-reply-quote') ? '.chat-reply-quote' : focused?.classList.contains('chat-retry-button') ? '.chat-retry-button' : null;
   const followLatest = state.chatSignature === null || state.chatFollowLatest;
   const retainedIds = new Set(latest.map(item => item.id));
   const top = container.getBoundingClientRect().top;
@@ -1049,7 +1345,6 @@ function renderChat(messages) {
   const previousScrollTop = container.scrollTop;
   state.chatSignature = signature;
   state.chatFollowLatest = followLatest;
-  const fragment = document.createDocumentFragment();
   if (!latest.length) {
     const empty = document.createElement('div');
     empty.className = 'chat-empty';
@@ -1058,31 +1353,33 @@ function renderChat(messages) {
     state.chatFollowLatest = true;
     return;
   }
-  for (const item of latest) {
-    const row = document.createElement('div');
-    row.className = 'chat-row';
-    row.dataset.messageId = item.id;
-    const head = document.createElement('div');
-    head.className = 'chat-row-head';
-    const author = document.createElement('a');
-    author.className = 'chat-author';
-    author.dataset.username = item.username;
-    author.href = profileHref(item.username);
-    author.textContent = item.username;
-    author.setAttribute('aria-label', `View ${item.username}'s profile`);
-    const time = document.createElement('time');
-    time.dateTime = item.createdAt;
-    time.textContent = new Date(item.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-    const body = document.createElement('p');
-    body.textContent = item.text;
-    head.append(author, time);
-    row.append(head, body);
-    fragment.append(row);
+  const existing = new Map(Array.from(container.children).filter(row => row.dataset.messageId).map(row => [row.dataset.messageId, row]));
+  for (const child of Array.from(container.childNodes)) {
+    if (!retainedIds.has(child.dataset?.messageId)) child.remove();
   }
-  container.replaceChildren(fragment);
-  if (focusedMessageId) {
-    const focusedRow = Array.from(container.children).find(row => row.dataset.messageId === focusedMessageId);
-    focusedRow?.querySelector('.chat-author').focus({ preventScroll: true });
+  latest.forEach((item, index) => {
+    let row = existing.get(item.id);
+    if (!row || row.dataset.signature !== JSON.stringify(item)) {
+      const updated = createChatRow(item);
+      if (row) {
+        updated.classList.toggle('is-reply-highlighted', row.classList.contains('is-reply-highlighted'));
+        row.replaceWith(updated);
+      }
+      row = updated;
+    }
+    if (container.children[index] !== row) container.insertBefore(row, container.children[index] || null);
+  });
+  if (focusedMessageId && !focused.isConnected) {
+    const restored = Array.from(container.children).find(row => row.dataset.messageId === focusedMessageId);
+    if (restored) {
+      const target = (focusedSelector ? restored.querySelector(focusedSelector) : restored) || restored;
+      if (!target.matches('a, button')) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
+    else {
+      container.tabIndex = -1;
+      container.focus({ preventScroll: true });
+    }
   }
   if (followLatest) {
     scrollChatToLatest();
@@ -1090,7 +1387,15 @@ function renderChat(messages) {
     container.scrollTop = previousScrollTop;
     if (anchor) {
       const retainedAnchor = Array.from(container.children).find(row => row.dataset.messageId === anchor.dataset.messageId);
-      container.scrollTop += retainedAnchor.getBoundingClientRect().top - top - anchorOffset;
+      if (retainedAnchor) container.scrollTop += retainedAnchor.getBoundingClientRect().top - top - anchorOffset;
+    }
+  }
+  if (state.chatReply) {
+    const target = latest.find(item => item.id === state.chatReply.id);
+    if (target && (target.username !== state.chatReply.username || target.text !== state.chatReply.text)) {
+      state.chatReply = { id: target.id, username: target.username, text: target.text };
+      $('chatReplyAuthor').textContent = target.username;
+      $('chatReplyText').textContent = target.text;
     }
   }
 }
@@ -1101,9 +1406,11 @@ async function loadChat(refresh = false) {
     if (refresh) return loadChat(true);
     return;
   }
+  const revision = chatRevision;
   chatLoadPromise = (async () => {
     try {
       const data = await api('chat');
+      if (revision !== chatRevision) return;
       renderChat(data.messages);
     } catch (error) {
       if (state.chatSignature === null) $('chatMessages').textContent = 'Chat is unavailable right now. Please try again.';
@@ -1113,40 +1420,99 @@ async function loadChat(refresh = false) {
   finally { chatLoadPromise = null; }
 }
 
-$('chatForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const input = $('chatInput');
-  const button = $('chatForm').querySelector('button');
-  button.disabled = true;
+async function sendChatEntry(entry) {
+  const identity = state.user?.accountId || state.user?.username;
+  if (chatInFlight.has(entry.clientMessageId) || !identity || identity !== entry.identity || !state.chatOutbox.includes(entry)) return;
+  const sendingRevision = userIdentityRevision;
+  const sendingIsCurrent = () => userIdentityRevision === sendingRevision && identity === (state.user?.accountId || state.user?.username);
+  chatInFlight.add(entry.clientMessageId);
   message($('chatMessage'), '');
+  entry.status = 'pending';
+  entry.error = null;
+  state.chatFollowLatest = true;
+  renderChat(state.chatMessages);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15000);
   try {
-    await api('chat', { method: 'POST', body: JSON.stringify({ text: input.value }) });
-    input.value = '';
-    state.chatFollowLatest = true;
-    scrollChatToLatest();
-    await loadChat();
+    const data = await api('chat', { method: 'POST', signal: controller.signal, body: JSON.stringify({
+      text: entry.text,
+      clientMessageId: entry.clientMessageId,
+      ...(entry.replyTo ? { replyToId: entry.replyTo.id } : {})
+    }) });
+    if (!sendingIsCurrent()) return;
+    chatRevision++;
+    state.chatOutbox = state.chatOutbox.filter(item => item.clientMessageId !== entry.clientMessageId);
+    if (data.message) renderChat([...state.chatMessages.filter(item => item.id !== data.message.id), data.message]);
+    else renderChat(state.chatMessages);
+    void loadChat(true);
   } catch (error) {
-    message($('chatMessage'), error.message);
-  } finally { button.disabled = false; }
+    if (!sendingIsCurrent()) return;
+    if (error.status === 401) {
+      setUser(null);
+      message($('chatMessage'), error.message);
+    } else if (state.chatOutbox.includes(entry)) {
+      entry.status = 'failed';
+      entry.error = error.name === 'AbortError' ? 'Sending timed out. Try again.' : error.message;
+      renderChat(state.chatMessages);
+    }
+  } finally {
+    window.clearTimeout(timeout);
+    chatInFlight.delete(entry.clientMessageId);
+    $('chatMessages').querySelectorAll('.chat-retry-button').forEach(button => {
+      if (button.dataset.retryClientId === entry.clientMessageId) button.disabled = false;
+    });
+  }
+}
+
+$('chatForm').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!state.user) return;
+  const input = $('chatInput');
+  const text = input.value.trim();
+  if (!text) {
+    message($('chatMessage'), 'Write a message first.');
+    input.focus();
+    return;
+  }
+  const clientMessageId = crypto.randomUUID();
+  const reply = state.chatReply;
+  const entry = {
+    id: `local:${clientMessageId}`,
+    clientMessageId,
+    username: state.user.username,
+    text,
+    createdAt: new Date().toISOString(),
+    replyTo: reply ? { ...reply, available: true } : null,
+    identity: state.user.accountId || state.user.username,
+    status: 'pending',
+    error: null
+  };
+  state.chatOutbox.push(entry);
+  input.value = '';
+  clearChatReply();
+  void sendChatEntry(entry);
 });
 
+renderRoute();
+const initialAuthRevision = authRevision;
 fetch('/api/me', { credentials: 'same-origin' })
   .then(response => response.json())
-  .then(data => setUser(data.user))
-  .catch(() => setUser(null));
+  .then(data => { if (authRevision === initialAuthRevision) setUser(data.user); })
+  .catch(() => { if (authRevision === initialAuthRevision) setUser(null); });
 setInterval(renderClaim, 1000);
-if (viewingPublicProfile) loadProfile();
 loadChat();
 setInterval(loadChat, 4000);
 loadChangelog();
 loadAnnouncements();
 setInterval(() => { if (!document.hidden) { loadChangelog(); loadAnnouncements(); } }, 60000);
+setInterval(() => { if (!document.hidden && pageKind === 'leaderboard') void loadLeaderboard(); }, 15000);
 loadPresence();
 setInterval(() => loadPresence(), 20000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     loadChangelog();
     loadAnnouncements();
+    if (pageKind === 'leaderboard') void loadLeaderboard(true);
     void loadPresence(true);
   }
 });

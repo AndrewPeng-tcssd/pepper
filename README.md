@@ -36,6 +36,14 @@ Read site news at `/announcements`. The same permanent changelog owner can publi
 
 The live player count above chat shows unique signed-in players with an open site page. Pages refresh the count and their activity every 20 seconds. Multiple tabs or devices count once per account, signed-out sessions stop counting immediately, and closed or disconnected pages age out after 75 seconds without activity. Guests can read the count without being counted.
 
+Select **Reply** on a chat message to quote it in your next message. You can cancel the reply while keeping your draft. Reply quotes keep the original message text after older messages leave the chat history, and follow the author's current username. Select an available quote to jump to the original message.
+
+Your own messages appear immediately while the server saves them. Other players receive the saved message on the next chat update. Failed sends show a retry option; retrying the same message does not create a duplicate if it was already saved.
+
+Moving between the site's pages keeps chat open, with the same messages, draft, reply selection, and scroll position. Navigation updates the main page without reloading the site; browser Back and Forward work too. Opening a new tab or manually refreshing still starts a new page.
+
+The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player links to their profile.
+
 ## Cloudflare verification
 
 The hourly token claim uses Cloudflare Turnstile. On `localhost` in a non-production run, the site uses [Cloudflare's test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) so you can test the claim flow without creating a Cloudflare account. For any deployed site, create a Turnstile widget for that hostname and set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. Keep the secret key private. The server verifies each token with Cloudflare before adding tokens. Test keys must not be used for a deployed site.
@@ -54,7 +62,8 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - A live count of unique signed-in players, shared across server instances and updated automatically above chat.
 - Click a username in chat to view that member's public profile, including their username, join date, token balance, and last and next claim details. Clicking your own username opens `/profile`, your account and token claim page. Other public profiles also open directly at `/profile/USERNAME`.
 - Cloudflare Turnstile verification and a random reward of 10–20 tokens once every rolling hour per account. Each whole-number reward is chosen on the server, and MongoDB adds it with an atomic update that also enforces the claim timer.
-- A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 50 messages; signed-in users can post. Messages are saved in MongoDB. Posting has length and speed limits.
+- A shared public chat in a fixed left sidebar on desktop and a left-side panel on narrow screens. Everyone can read the latest 100 messages; signed-in users can post and reply. Messages are saved in MongoDB. Posting has length and speed limits. Page navigation preserves the chat and drafts.
+- A public token leaderboard with current balances, shared ranks for ties, and profile links.
 - A pack opening animation test at `/packs/test`. It reveals five blank cards and can be reset. It does not use tokens or save cards.
 
 The planned pack price shown on the site is a placeholder. There is currently no pack or payment checkout.

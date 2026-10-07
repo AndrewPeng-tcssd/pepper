@@ -91,12 +91,14 @@ async function connectMongo(options = {}) {
       users.createIndex({ usernameKey: 1 }, { unique: true }),
       users.createIndex({ accountId: 1 }, { unique: true, partialFilterExpression: { accountId: { $type: 'string', $gt: '' } } }),
       users.createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } }),
+      users.createIndex({ balance: -1, usernameKey: 1, _id: 1 }),
       sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       sessions.createIndex({ lastSeenAt: 1, expiresAt: 1, userId: 1 }),
       verificationTokens.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       verificationTokens.createIndex({ userId: 1, purpose: 1 }),
       messages.createIndex({ createdAt: -1, _id: -1 }),
       messages.createIndex({ userId: 1, createdAt: -1, _id: -1 }),
+      messages.createIndex({ userId: 1, clientMessageId: 1 }, { unique: true, partialFilterExpression: { clientMessageId: { $type: 'string' } } }),
       changelog.createIndex({ createdAt: -1, _id: -1 }),
       announcements.createIndex({ createdAt: -1, _id: -1 })
     ]);
