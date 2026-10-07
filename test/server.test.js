@@ -281,6 +281,7 @@ test('public chat can be read, and only signed-in users can post', async () => {
   const post = await request('/api/chat', { text: 'Hello, Pepper TCG!' }, signedUp.cookie);
   assert.equal(post.status, 201);
   assert.equal(post.data.message.username, username);
+  assert.equal(post.data.message.accountId, signedUp.data.user.accountId);
   assert.equal(post.data.message.text, 'Hello, Pepper TCG!');
   assert.equal(post.data.message.replyTo, null);
   assert.equal(post.data.message.clientMessageId, null);
@@ -307,6 +308,62 @@ test('chat reply targets require valid IDs and saved parent messages', async t =
   assert.deepEqual((await api('/api/chat')).data.messages, [noReply.data.message]);
 });
 
+test('chat rejects replies to the same permanent account before cooldown even after names are changed or reclaimed', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const password = '12345678';
+  const author = await api('/api/register', { username: 'self_author', password });
+  const other = await api('/api/register', { username: 'different_author', password });
+  const parent = await api('/api/chat', { text: 'My original message.' }, author.cookie);
+  assert.equal(parent.status, 201);
+  assert.equal(parent.data.message.accountId, author.data.user.accountId);
+  const selfReply = await api('/api/chat', { text: 'A reply to myself.', replyToId: parent.data.message.id }, author.cookie);
+  assert.equal(selfReply.status, 400);
+  assert.deepEqual(selfReply.data, { error: 'You cannot reply to your own message.' });
+  assert.equal(await isolated.messages.countDocuments(), 1);
+  const renamed = await api('/api/account/username', { username: 'renamed_self_author', currentPassword: password }, author.cookie, 'PATCH');
+  assert.equal(renamed.status, 200);
+  const reclaimed = await api('/api/account/username', { username: 'self_author', currentPassword: password }, other.cookie, 'PATCH');
+  assert.equal(reclaimed.status, 200);
+  assert.notEqual(reclaimed.data.user.accountId, author.data.user.accountId);
+  const renamedSelfReply = await api('/api/chat', { text: 'Still my own message.', replyToId: parent.data.message.id }, author.cookie);
+  assert.equal(renamedSelfReply.status, 400);
+  assert.deepEqual(renamedSelfReply.data, { error: 'You cannot reply to your own message.' });
+  assert.equal(await isolated.messages.countDocuments(), 1);
+  const currentParent = (await api('/api/chat')).data.messages[0];
+  assert.equal(currentParent.username, 'renamed_self_author');
+  assert.equal(currentParent.accountId, author.data.user.accountId);
+  const otherReply = await api('/api/chat', { text: 'A reply from a different account.', replyToId: parent.data.message.id }, other.cookie);
+  assert.equal(otherReply.status, 201);
+  assert.equal(otherReply.data.message.username, 'self_author');
+  assert.equal(otherReply.data.message.accountId, other.data.user.accountId);
+  assert.deepEqual(otherReply.data.message.replyTo, { id: parent.data.message.id, username: 'renamed_self_author', text: 'My original message.', available: true });
+  assert.equal(await isolated.messages.countDocuments(), 2);
+  assert.deepEqual((await api('/api/chat')).data.messages, [currentParent, otherReply.data.message]);
+});
+
+test('legacy chat self-replies use normalized names while legacy and missing authors expose no account ID', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const writer = await api('/api/register', { username: 'legacy_reply', password: '12345678' });
+  const ownLegacy = { _id: new ObjectId(), username: '  LeGaCy_RePlY  ', text: 'My legacy message.', createdAt: new Date(Date.now() - 60000) };
+  const otherLegacy = { _id: new ObjectId(), username: 'older_player', text: 'Someone else wrote this.', createdAt: new Date(Date.now() - 50000) };
+  const missingAuthor = { _id: new ObjectId(), userId: new ObjectId(), username: 'missing_author', text: 'An author that no longer exists.', createdAt: new Date(Date.now() - 40000) };
+  await isolated.messages.insertMany([ownLegacy, otherLegacy, missingAuthor]);
+  const history = await api('/api/chat');
+  for (const message of history.data.messages) assert.equal(message.accountId, null);
+  const rejected = await api('/api/chat', { text: 'Reply to my old message.', replyToId: ownLegacy._id.toString() }, writer.cookie);
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(rejected.data, { error: 'You cannot reply to your own message.' });
+  assert.equal(await isolated.messages.countDocuments(), 3);
+  const allowed = await api('/api/chat', { text: 'Reply to someone else.', replyToId: otherLegacy._id.toString() }, writer.cookie);
+  assert.equal(allowed.status, 201);
+  assert.equal(allowed.data.message.accountId, writer.data.user.accountId);
+  assert.deepEqual(allowed.data.message.replyTo, { id: otherLegacy._id.toString(), username: 'older_player', text: 'Someone else wrote this.', available: true });
+  assert.equal(await isolated.messages.countDocuments(), 4);
+  assert.deepEqual((await api('/api/chat')).data.messages.find(message => message.id === allowed.data.message.id), allowed.data.message);
+});
+
 test('chat replies use authoritative shallow quotes and follow the parent account through renames and restarts', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);
@@ -324,7 +381,7 @@ test('chat replies use authoritative shallow quotes and follow the parent accoun
   }, writer.cookie);
   assert.equal(reply.status, 201);
   assert.deepEqual(reply.data.message.replyTo, quote);
-  assert.deepEqual(Object.keys(reply.data.message).sort(), ['clientMessageId', 'createdAt', 'id', 'replyTo', 'text', 'username']);
+  assert.deepEqual(Object.keys(reply.data.message).sort(), ['accountId', 'clientMessageId', 'createdAt', 'id', 'replyTo', 'text', 'username']);
   const nested = await api('/api/chat', { text: 'Replying to that reply.', replyToId: reply.data.message.id }, third.cookie);
   assert.equal(nested.status, 201);
   assert.deepEqual(nested.data.message.replyTo, { id: reply.data.message.id, username: 'quote_writer', text: 'My reply.', available: true });
@@ -417,6 +474,9 @@ test('chat retries return the original saved message before cooldown or payload 
   const emptyRetry = await api('/api/chat', { text: '', clientMessageId }, writer.cookie);
   assert.equal(emptyRetry.status, 201);
   assert.deepEqual(emptyRetry.data, first.data);
+  const selfTargetRetry = await api('/api/chat', { text: 'A changed self-reply payload.', replyToId: first.data.message.id, clientMessageId }, writer.cookie);
+  assert.equal(selfTargetRetry.status, 201);
+  assert.deepEqual(selfTargetRetry.data, first.data);
   assert.equal(await isolated.messages.countDocuments(), 1);
   assert.deepEqual((await api('/api/chat')).data.messages, [first.data.message]);
   const otherMessage = await api('/api/chat', { text: 'Another account owns its own message.', clientMessageId, username: 'retry_writer', userId: writer.data.user.accountId }, other.cookie);

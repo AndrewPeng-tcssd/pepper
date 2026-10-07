@@ -452,42 +452,43 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, a
     res.json({ entries, totalPlayers });
   });
 
-  const publicMessage = (message, authorNames, availableMessageIds) => ({
+  const publicMessage = (message, authors, availableMessageIds) => ({
     id: message._id.toString(),
-    username: authorNames.get(message.userId?.toString()) ?? message.username,
+    username: authors.get(message.userId?.toString())?.username ?? message.username,
+    accountId: authors.get(message.userId?.toString())?.accountId ?? null,
     text: message.text,
     createdAt: message.createdAt.toISOString(),
     clientMessageId: message.clientMessageId ?? null,
     replyTo: message.replyTo ? {
       id: message.replyTo.id.toString(),
-      username: authorNames.get(message.replyTo.userId?.toString()) ?? message.replyTo.username,
+      username: authors.get(message.replyTo.userId?.toString())?.username ?? message.replyTo.username,
       text: message.replyTo.text,
       available: availableMessageIds.has(message.replyTo.id.toString())
     } : null
   });
-  async function messageAuthorNames(chatMessages) {
+  async function messageAuthors(chatMessages) {
     const authorIds = [...new Map(chatMessages.flatMap(message => [message.userId, message.replyTo?.userId])
       .filter(Boolean).map(userId => [userId.toString(), userId])).values()];
     const authors = authorIds.length ? await users.find(
-      { _id: { $in: authorIds } }, { projection: { username: 1 } }
+      { _id: { $in: authorIds } }, { projection: { username: 1, accountId: 1 } }
     ).toArray() : [];
-    return new Map(authors.map(author => [author._id.toString(), author.username]));
+    return new Map(authors.map(author => [author._id.toString(), { username: author.username, accountId: author.accountId ?? null }]));
   }
   app.get('/api/chat', async (req, res) => {
     const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
-    const authorNames = await messageAuthorNames(latest);
+    const authors = await messageAuthors(latest);
     const availableMessageIds = new Set(latest.map(message => message._id.toString()));
     res.json({ messages: latest.reverse().map(message => publicMessage(
-      message, authorNames, availableMessageIds
+      message, authors, availableMessageIds
     )) });
   });
   async function sendPublicChatMessage(res, message) {
-    const [retained, authorNames] = await Promise.all([
+    const [retained, authors] = await Promise.all([
       messages.find({}, { projection: { _id: 1 } }).sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray(),
-      messageAuthorNames([message])
+      messageAuthors([message])
     ]);
     const availableMessageIds = new Set(retained.map(entry => entry._id.toString()));
-    res.status(201).json({ message: publicMessage(message, authorNames, availableMessageIds) });
+    res.status(201).json({ message: publicMessage(message, authors, availableMessageIds) });
   }
   app.post('/api/chat', requireUser, rateLimit(12, 60 * 1000), async (req, res) => {
     const requestedClientMessageId = req.body?.clientMessageId;
@@ -519,6 +520,13 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, a
       if (!parent) {
         if (await replayIfSaved()) return;
         return sendError(res, 404, 'The message you are replying to is no longer in chat.');
+      }
+      const isOwnMessage = parent.userId
+        ? parent.userId.toString() === req.user._id.toString()
+        : String(parent.username || '').trim().toLowerCase() === req.user.username.trim().toLowerCase();
+      if (isOwnMessage) {
+        if (await replayIfSaved()) return;
+        return sendError(res, 400, 'You cannot reply to your own message.');
       }
       const parentAuthor = parent.userId ? await users.findOne(
         { _id: parent.userId }, { projection: { username: 1 } }

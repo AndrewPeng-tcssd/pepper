@@ -142,7 +142,12 @@ function setUser(user) {
     message($('claimMessage'), '');
   }
   renderClaim();
-  $('chatMessages').querySelectorAll('.chat-reply-button').forEach(button => { button.hidden = !user || button.closest('.chat-row').matches('.is-pending, .is-failed'); });
+  if (state.chatReply && isOwnChatMessage(state.chatReply)) clearChatReply();
+  $('chatMessages').querySelectorAll('.chat-reply-button').forEach(button => {
+    const item = state.chatMessages.find(item => item.id === button.dataset.replyId);
+    button.hidden = !user || !item || isOwnChatMessage(item);
+    if (button.hidden && document.activeElement === button) button.closest('.chat-row').querySelector('.chat-author').focus({ preventScroll: true });
+  });
   if (state.leaderboard) renderLeaderboard(state.leaderboard);
   document.body.classList.remove('auth-loading');
   if (state.chatFollowLatest) scrollChatToLatest();
@@ -1181,6 +1186,10 @@ function loadLeaderboard(refresh = false) {
   return leaderboardLoadPromise;
 }
 
+function isOwnChatMessage(item) {
+  return !!state.user && (item.accountId ? item.accountId === state.user.accountId : isOwnProfile(String(item.username || '').trim()));
+}
+
 function clearChatReply() {
   state.chatReply = null;
   $('chatReplyPreview').hidden = true;
@@ -1191,8 +1200,8 @@ function clearChatReply() {
 function chooseChatReply(messageId) {
   if (!state.user) return;
   const item = state.chatMessages.find(item => item.id === messageId);
-  if (!item) return;
-  state.chatReply = { id: item.id, username: item.username, text: item.text };
+  if (!item || isOwnChatMessage(item)) return;
+  state.chatReply = { id: item.id, accountId: item.accountId, username: item.username, text: item.text };
   $('chatReplyAuthor').textContent = item.username;
   $('chatReplyText').textContent = item.text;
   $('chatReplyPreview').hidden = false;
@@ -1299,7 +1308,7 @@ function createChatRow(item) {
   reply.className = 'chat-reply-button';
   reply.dataset.replyId = item.id;
   reply.textContent = 'Reply';
-  reply.hidden = !state.user || !!item.status;
+  reply.hidden = !state.user || !!item.status || isOwnChatMessage(item);
   reply.setAttribute('aria-label', `Reply to ${item.username}: ${item.text}`);
   row.append(body, reply);
   if (item.status) {
@@ -1372,7 +1381,8 @@ function renderChat(messages) {
   if (focusedMessageId && !focused.isConnected) {
     const restored = Array.from(container.children).find(row => row.dataset.messageId === focusedMessageId);
     if (restored) {
-      const target = (focusedSelector ? restored.querySelector(focusedSelector) : restored) || restored;
+      let target = (focusedSelector ? restored.querySelector(focusedSelector) : restored) || restored;
+      if (target.hidden) target = restored.querySelector('.chat-author') || restored;
       if (!target.matches('a, button')) target.tabIndex = -1;
       target.focus({ preventScroll: true });
     }
@@ -1392,8 +1402,10 @@ function renderChat(messages) {
   }
   if (state.chatReply) {
     const target = latest.find(item => item.id === state.chatReply.id);
-    if (target && (target.username !== state.chatReply.username || target.text !== state.chatReply.text)) {
-      state.chatReply = { id: target.id, username: target.username, text: target.text };
+    if (target && isOwnChatMessage(target)) {
+      clearChatReply();
+    } else if (target && (target.accountId !== state.chatReply.accountId || target.username !== state.chatReply.username || target.text !== state.chatReply.text)) {
+      state.chatReply = { id: target.id, accountId: target.accountId, username: target.username, text: target.text };
       $('chatReplyAuthor').textContent = target.username;
       $('chatReplyText').textContent = target.text;
     }
@@ -1476,9 +1488,15 @@ $('chatForm').addEventListener('submit', event => {
   }
   const clientMessageId = crypto.randomUUID();
   const reply = state.chatReply;
+  if (reply && isOwnChatMessage(reply)) {
+    clearChatReply();
+    message($('chatMessage'), 'You cannot reply to your own message.');
+    return;
+  }
   const entry = {
     id: `local:${clientMessageId}`,
     clientMessageId,
+    accountId: state.user.accountId ?? null,
     username: state.user.username,
     text,
     createdAt: new Date().toISOString(),
