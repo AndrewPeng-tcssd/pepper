@@ -4,6 +4,7 @@ const path = require('node:path');
 const { ObjectId } = require('mongodb');
 const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory, resolveChangelogOwner, createAccountId, ensureAccountId } = require('./mongo');
 const { createMailer } = require('./mailer');
+const { registerTrading } = require('./trading');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOURLY_TOKEN_MIN = 10;
@@ -48,7 +49,7 @@ const sendError = (res, status, message) => res.status(status).json({ error: mes
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
 
-function createApp({ users, sessions, messages, verificationTokens, changelog, announcements, siteSettings }, options = {}) {
+function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, tradeMessages, cardDefinitions, cardInstances, siteSettings }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
   const randomInt = options.randomInt || crypto.randomInt;
@@ -365,6 +366,8 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, a
     res.json({ user: await signedInUser(user), awarded });
   });
 
+  registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser });
+
   const publicChangelogEntry = (entry) => ({
     id: entry._id.toString(),
     title: entry.title,
@@ -550,7 +553,7 @@ function createApp({ users, sessions, messages, verificationTokens, changelog, a
     await sendPublicChatMessage(res, message);
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/packs'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/packs'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs/test', (req, res) => res.redirect(302, '/#cards'));

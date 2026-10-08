@@ -44,7 +44,7 @@
           localStorage.setItem(storageKey, currentTheme);
           showSaveMessage('');
         } catch {
-          showSaveMessage('Appearance changed for this visit. Your browser could not save it.');
+          showSaveMessage('Appearance changed; saving unavailable.');
         }
       });
     });

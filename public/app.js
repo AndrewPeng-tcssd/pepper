@@ -27,6 +27,18 @@ let leaderboardLoadPromise;
 let leaderboardRefreshQueued = false;
 let leaderboardRevision = 0;
 let chatHighlightTimer;
+const trading = { identity: null, trades: null, signature: null, recipient: null, lookupRevision: 0, lookupLoading: false, review: null, submitting: false, sendUncertain: false, action: null, actionRetry: null, refreshQueued: false, sessionId: null, session: null, sessionRevision: 0, sessionDraft: null, confirmReviewVersion: null, chatMessages: [], chatSignature: null, chatOutbox: [], chatRevision: 0 };
+let tradeLoadPromise;
+let tradeRevision = 0;
+const tradeInventories = { offered: newTradeInventory() };
+let tradeSessionLoadPromise;
+let tradeSessionRefreshQueued = false;
+let tradeChatLoadPromise;
+let tradeChatRefreshQueued = false;
+
+function newTradeInventory(ownerId = null) {
+  return { ownerId, cards: null, selected: [], loading: false, error: null, notice: '', signature: null, loadPromise: null, refreshQueued: false };
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/${path}`, {
@@ -75,7 +87,7 @@ function renderProfileDetails(profile) {
 function renderOverviewProfile(user) {
   $('overviewProfileDetails').hidden = !user;
   $('overviewProfileGuest').hidden = !!user;
-  $('overviewProfileGuest').textContent = 'Sign up or log in to see your profile and tokens.';
+  $('overviewProfileGuest').textContent = 'Log in to view profile.';
   $('overviewProfileName').textContent = user?.username || '';
   $('overviewProfileBalance').textContent = user ? user.balance.toLocaleString() : '0';
   $('overviewProfileJoined').textContent = user?.createdAt ? formatProfileDate(user.createdAt) : 'Not available';
@@ -109,7 +121,7 @@ function setUser(user) {
   if (!viewingPublicProfile) {
     $('profileDescription').textContent = user
       ? 'Your account and tokens.'
-      : 'Sign up or log in to see your account and tokens.';
+      : 'Log in for account details.';
     $('profileDetails').hidden = !user;
     if (user) renderProfileDetails(user);
   }
@@ -149,7 +161,7 @@ function setUser(user) {
     $('accountBalance').textContent = '0';
     removeTurnstile();
     $('claimTitle').textContent = 'Sign in to claim';
-    $('claimDescription').textContent = 'Sign up or log in to claim a random 10–20 tokens each hour.';
+    $('claimDescription').textContent = 'Log in to claim tokens.';
     message($('claimMessage'), '');
   }
   renderClaim();
@@ -161,6 +173,7 @@ function setUser(user) {
   });
   if (state.leaderboard) renderLeaderboard(state.leaderboard);
   document.body.classList.remove('auth-loading');
+  syncTradingUser();
   if (state.chatFollowLatest) scrollChatToLatest();
   if (viewingPublicProfile && (isOwnProfile(state.profile?.username || '') || isOwnProfile(routeProfileUsername()))) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
@@ -186,8 +199,8 @@ function renderClaim() {
   $('claimCooldown').hidden = ready;
   $('claimTitle').textContent = ready ? 'Ready to claim' : 'Next claim';
   $('claimDescription').textContent = ready
-    ? 'Complete the check below, then claim a random 10–20 tokens.'
-    : 'You can claim again when the timer ends.';
+    ? 'Verify, then claim 10–20 tokens.'
+    : 'Claim after the timer ends.';
   if (ready && state.turnstileWidgetId === null && !state.turnstileLoading && !state.turnstileFailed) loadTurnstile();
   if (!ready) { removeTurnstile(); $('cooldownClock').textContent = formatTime(remaining); }
 }
@@ -275,7 +288,7 @@ async function loadTurnstile() {
   const generation = ++state.turnstileGeneration;
   try {
     const config = await api('turnstile-config');
-    if (!config.siteKey) throw new Error('Cloudflare verification is not configured yet.');
+    if (!config.siteKey) throw new Error('Cloudflare verification is unavailable.');
     await loadTurnstileScript();
     if (generation !== state.turnstileGeneration || !state.user) return;
     state.turnstileWidgetId = window.turnstile.render('#turnstileWidget', {
@@ -284,12 +297,12 @@ async function loadTurnstile() {
       size: window.matchMedia('(max-width: 450px)').matches ? 'compact' : 'normal',
       callback: token => { if (generation === state.turnstileGeneration) { setClaimToken(token); message($('claimMessage'), ''); } },
       'expired-callback': () => { if (generation === state.turnstileGeneration) setClaimToken(null); },
-      'error-callback': () => { if (generation === state.turnstileGeneration) { setClaimToken(null); message($('claimMessage'), 'Verification could not finish. Reset it and try again.'); } }
+      'error-callback': () => { if (generation === state.turnstileGeneration) { setClaimToken(null); message($('claimMessage'), 'Verification failed. Reset and retry.'); } }
     });
     message($('claimMessage'), '');
     window.setTimeout(() => {
       if (generation === state.turnstileGeneration && !state.turnstileToken && !$('turnstileWidget').querySelector('iframe')) {
-        message($('claimMessage'), 'Cloudflare verification could not load. Reset verification and try again.');
+        message($('claimMessage'), 'Verification unavailable. Reset and retry.');
       }
     }, 8000);
   } catch (error) {
@@ -312,7 +325,7 @@ function setAuthMode(mode) {
   $('authHint').hidden = signup;
   $('authHint').textContent = signup
     ? ''
-    : 'no more email signup for u sry';
+    : 'No email signup, sorry.';
   message($('authMessage'), '');
 }
 
@@ -342,7 +355,7 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && 
 window.matchMedia('(min-width: 851px)').addEventListener('change', () => setChatOpen(false));
 setChatOpen(false);
 
-['accountButton', 'claimJoin', 'chatJoin', 'settingsJoin'].forEach(id => $(id).addEventListener('click', openAccount));
+['accountButton', 'claimJoin', 'chatJoin', 'settingsJoin', 'tradingJoin'].forEach(id => $(id).addEventListener('click', openAccount));
 document.addEventListener('click', (event) => {
   if (!$('accountMenu').contains(event.target)) $('accountMenu').open = false;
 });
@@ -369,7 +382,7 @@ function routeProfileUsername() {
 
 function isAppPath(pathname) {
   const path = pathname.replace(/\/+$/, '') || '/';
-  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard'].includes(path) || /^\/profile\/[^/]+$/.test(path);
+  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading'].includes(path) || /^\/profile\/[^/]+$/.test(path);
 }
 
 function renderRoute() {
@@ -382,35 +395,36 @@ function renderRoute() {
   }
   profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
   viewingPublicProfile = !!profileRoute;
-  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : 'home';
+  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : routePath === '/trading' ? 'trading' : 'home';
   if (viewingPublicProfile && isOwnProfile(routeProfileUsername())) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
     return;
   }
-  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard' }[pageKind];
+  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard', trading: '/trading' }[pageKind];
   document.querySelectorAll('.main-nav a[aria-current], .account-dropdown a[aria-current]').forEach(link => link.removeAttribute('aria-current'));
   const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
   document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route');
+  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route', 'trading-route');
   if (pageKind !== 'home') document.body.classList.add(`${pageKind}-route`);
   document.body.classList.toggle('public-profile-route', viewingPublicProfile);
-  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage'].forEach(id => { $(id).hidden = true; });
-  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage' }[pageKind];
+  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage', 'tradingPage'].forEach(id => { $(id).hidden = true; });
+  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage', trading: 'tradingPage' }[pageKind];
   $(sectionId).hidden = false;
-  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG' }[pageKind];
+  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG' }[pageKind];
   state.profile = null;
   $('profileRetry').hidden = true;
+  $('profileTrade').hidden = true;
   $('profileTitle').textContent = 'Profile';
   $('profileAccountTitle').textContent = viewingPublicProfile ? 'About' : 'Account';
   if (pageKind === 'profile') {
     $('tokensTitle').textContent = 'Hourly claim';
-    $('tokensIntro').textContent = 'Claim a random 10–20 tokens every hour.';
+    $('tokensIntro').textContent = '10–20 tokens every hour.';
     if (viewingPublicProfile) {
       removeTurnstile();
       void loadProfile();
     } else {
       $('tokens').hidden = false;
-      $('profileDescription').textContent = state.user ? 'Your account and tokens.' : 'Sign up or log in to see your account and tokens.';
+      $('profileDescription').textContent = state.user ? 'Your account and tokens.' : 'Log in for account details.';
       $('profileDetails').hidden = !state.user;
       if (state.user) renderProfileDetails(state.user);
       renderClaim();
@@ -419,11 +433,16 @@ function renderRoute() {
   if (pageKind === 'changelog') void loadChangelog(true);
   if (pageKind === 'announcements') void loadAnnouncements(true);
   if (pageKind === 'leaderboard') void loadLeaderboard(true);
+  if (pageKind === 'trading') {
+    prefillTradingRecipient();
+    renderTradingState();
+    if (state.user) { void loadTrades(true); void loadTradeSession(true); void loadTradeChat(true); refreshTradeInventories(); }
+  }
 }
 
 function focusRouteHeading() {
   if ($('chat').classList.contains('open')) return;
-  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle' }[pageKind];
+  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle', trading: 'tradingTitle' }[pageKind];
   $(headingId).tabIndex = -1;
   $(headingId).focus({ preventScroll: true });
 }
@@ -476,7 +495,7 @@ $('authForm').addEventListener('submit', async (event) => {
     const data = await api(signup ? 'register' : 'login', { method: 'POST', body: JSON.stringify(body) });
     if (data.pending) {
       $('password').value = '';
-      message($('authMessage'), data.message, true);
+      message($('authMessage'), 'Check your sign-in email.', true);
       return;
     }
     setUser(data.user);
@@ -487,6 +506,7 @@ $('authForm').addEventListener('submit', async (event) => {
     else if (pageKind === 'settings') $('settingsPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'changelog') $('changelogPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'announcements') $('announcementsPage').scrollIntoView({ behavior: 'smooth' });
+    else if (pageKind === 'trading') $('tradingPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind !== 'leaderboard') navigateTo('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -522,7 +542,7 @@ $('claimForm').addEventListener('submit', async (event) => {
     void loadLeaderboard(true);
     message($('claimMessage'), 'Rolling your reward…', true);
     if (await revealClaimReward(data.awarded)) {
-      message($('claimMessage'), `${data.awarded} tokens added to your balance.`, true);
+      message($('claimMessage'), `${data.awarded} tokens added.`, true);
     }
   } catch (error) {
     if (!claimIsCurrent()) return;
@@ -544,6 +564,7 @@ async function signOut() {
     await api('logout', { method: 'POST', body: '{}' });
     setUser(null);
     if (pageKind === 'settings') $('settingsJoin').focus();
+    else if (pageKind === 'trading') $('tradingJoin').focus();
   } catch (error) {
     message($('accountMessage'), error.message);
     if (pageKind !== 'settings') {
@@ -564,6 +585,7 @@ function setAccountSubmitting(submitting) {
   ['usernameSubmit', 'passwordSubmit', 'logoutButton', 'headerLogoutButton'].forEach(id => {
     $(id).disabled = submitting;
   });
+  renderTradingState();
 }
 
 function renderChangelogEditor() {
@@ -679,7 +701,7 @@ async function loadChangelog(refresh = false) {
       if (revision !== changelogRevision) return;
       if (pageKind === 'changelog') {
         changelogLoadFailed = true;
-        message($('changelogMessage'), 'The changelog could not load. Please try again.');
+        message($('changelogMessage'), 'Changelog unavailable. Try again.');
         $('changelogRetry').hidden = false;
       }
     }
@@ -740,7 +762,7 @@ async function deleteChangelogEntry(entryId) {
     changelogRevision++;
     state.changelogEntries = data.entries;
     renderChangelog(data.entries, data.latestVersion);
-    message($('changelogMessage'), 'Entry deleted. The site version is updated.', true);
+    message($('changelogMessage'), 'Entry deleted; build version updated.', true);
     deleted = true;
     void loadChangelog(true);
   } catch (error) {
@@ -774,7 +796,7 @@ $('changelogForm').addEventListener('submit', async event => {
     state.changelogEntries = [data.entry, ...(state.changelogEntries || []).filter(entry => entry.id !== data.entry.id)];
     renderChangelog(state.changelogEntries, data.latestVersion);
     $('changelogForm').reset();
-    message($('changelogFormMessage'), 'Changelog entry added. The site version is updated.', true);
+    message($('changelogFormMessage'), 'Entry added; build version updated.', true);
     void loadChangelog(true);
   } catch (error) {
     if (!changelogPermissionError(error)) message($('changelogFormMessage'), error.message);
@@ -892,7 +914,7 @@ async function loadAnnouncements(refresh = false) {
     } catch (error) {
       if (revision !== announcementRevision) return;
       announcementLoadFailed = true;
-      message($('announcementMessage'), 'Announcements could not load. Please try again.');
+      message($('announcementMessage'), 'Announcements unavailable. Try again.');
       $('announcementRetry').hidden = false;
     }
   })();
@@ -1085,7 +1107,7 @@ $('passwordForm').addEventListener('submit', async (event) => {
   if (state.accountSubmitting) return;
   message($('passwordMessage'), '');
   if ($('newPassword').value !== $('confirmPassword').value) {
-    message($('passwordMessage'), 'The new passwords do not match.');
+    message($('passwordMessage'), 'New passwords do not match.');
     $('confirmPassword').focus();
     return;
   }
@@ -1096,7 +1118,7 @@ $('passwordForm').addEventListener('submit', async (event) => {
       newPassword: $('newPassword').value
     }) });
     $('passwordForm').reset();
-    message($('passwordMessage'), 'Password updated. Other devices have been signed out.', true);
+    message($('passwordMessage'), 'Password updated; other sessions ended.', true);
   } catch (error) {
     settingsError($('passwordMessage'), error);
   } finally {
@@ -1104,6 +1126,491 @@ $('passwordForm').addEventListener('submit', async (event) => {
     setAccountSubmitting(false);
   }
 });
+
+function tradeCardSnapshot(card) {
+  return { id: card.id, cardId: card.cardId, name: card.name, rarity: card.rarity, setName: card.setName, imageUrl: card.imageUrl || null };
+}
+
+function tradeCardMetadata(card) {
+  const details = document.createElement('span');
+  details.className = 'trading-copy-details';
+  const name = document.createElement('strong');
+  name.textContent = card.name;
+  const meta = document.createElement('span');
+  meta.className = 'trading-copy-meta';
+  meta.textContent = [card.rarity, card.setName].filter(Boolean).join(' · ');
+  const id = document.createElement('code');
+  id.textContent = `Copy ${card.id}`;
+  details.append(name, meta, id);
+  return details;
+}
+
+function tradeCardArtwork(card) {
+  if (!card.imageUrl) return null;
+  try {
+    const url = new URL(card.imageUrl, location.origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const image = document.createElement('img');
+    image.className = 'trading-copy-art';
+    image.src = url.href;
+    image.alt = '';
+    image.loading = 'lazy';
+    image.referrerPolicy = 'no-referrer';
+    image.addEventListener('error', () => image.remove(), { once: true });
+    return image;
+  } catch { return null; }
+}
+
+function renderTradeAssets(element, tokens, cards = []) {
+  const tokenAmount = document.createElement('span');
+  tokenAmount.className = 'trading-assets-tokens';
+  tokenAmount.textContent = `${tokens.toLocaleString()} tokens`;
+  element.replaceChildren(tokenAmount);
+  if (!cards.length) return;
+  const count = document.createElement('span');
+  count.className = 'trading-assets-count';
+  count.textContent = `${cards.length} ${cards.length === 1 ? 'card' : 'cards'}`;
+  const list = document.createElement('ul');
+  list.className = 'trading-asset-cards';
+  for (const card of cards) {
+    const item = document.createElement('li');
+    const art = tradeCardArtwork(card);
+    if (art) item.append(art);
+    item.append(tradeCardMetadata(card));
+    list.append(item);
+  }
+  element.append(count, list);
+}
+
+function tradeProfileLink(player) {
+  const link = document.createElement('a');
+  link.href = profileHref(player.username);
+  link.textContent = player.username;
+  link.title = `Permanent account ID: ${player.accountId}`;
+  return link;
+}
+
+function tradeButton(label, action, id, disabled = false) {
+  const button = document.createElement('button');
+  button.className = 'button';
+  button.type = 'button';
+  button.textContent = label;
+  button.dataset.tradeAction = action;
+  button.dataset.tradeId = id;
+  button.disabled = disabled;
+  return button;
+}
+
+function tradingIdentityIsCurrent(identity, revision) {
+  return !!identity && identity === state.user?.accountId && revision === userIdentityRevision;
+}
+function prefillTradingRecipient() {
+  if ($('tradingRecipient').value || trading.review) return;
+  const username = new URLSearchParams(location.search).get('to');
+  if (username) $('tradingRecipient').value = username.slice(0, 32);
+}
+function ownTradeSide(trade) {
+  const sender = trade.sender.accountId === state.user?.accountId;
+  return { tokens: sender ? trade.offeredTokens : trade.requestedTokens, cards: (sender ? trade.offeredCards : trade.requestedCards) || [], confirmed: sender ? trade.senderConfirmed : trade.recipientConfirmed };
+}
+function partnerTradeSide(trade) {
+  const sender = trade.sender.accountId === state.user?.accountId;
+  return { player: sender ? trade.recipient : trade.sender, tokens: sender ? trade.requestedTokens : trade.offeredTokens, cards: (sender ? trade.requestedCards : trade.offeredCards) || [], confirmed: sender ? trade.recipientConfirmed : trade.senderConfirmed };
+}
+function activeTrade(trade) { return ['pending', 'negotiating'].includes(trade.status); }
+function acceptedTradeRequest(trade) { return trade.requestAccepted === true || ['negotiating', 'accepted'].includes(trade.status); }
+function tradeStatusLabel(status) { return { pending: 'Requested', negotiating: 'In progress', accepted: 'Completed', declined: 'Declined', cancelled: 'Cancelled' }[status] || status; }
+function newestTrade(incoming, previous) {
+  if (!previous || incoming.id !== previous.id) return incoming;
+  const incomingVersion = incoming.version || 0, previousVersion = previous.version || 0;
+  if (incomingVersion < previousVersion) return previous;
+  if (!activeTrade(previous) && activeTrade(incoming)) return previous;
+  if (incomingVersion === previousVersion) {
+    if ((new Date(incoming.updatedAt).getTime() || 0) < (new Date(previous.updatedAt).getTime() || 0)) return previous;
+    if (activeTrade(previous) && activeTrade(incoming) && (previous.senderConfirmed && !incoming.senderConfirmed || previous.recipientConfirmed && !incoming.recipientConfirmed)) return previous;
+  }
+  return incoming;
+}
+function unavailableTradeCards(cards) { return cards.filter(card => !(tradeInventories.offered.cards || []).some(owned => owned.id === card.id)); }
+function tradingBusy() { return trading.submitting || !!trading.action || state.accountSubmitting; }
+function mergeTradingUser(user) { if (user?.accountId === state.user?.accountId) setUser({ ...state.user, ...user }); }
+function rememberTrade(trade) {
+  trade = newestTrade(trade, trading.trades?.find(item => item.id === trade.id));
+  const all = [trade, ...(trading.trades || []).filter(item => item.id !== trade.id)].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  trading.trades = [...all.filter(activeTrade), ...all.filter(item => !activeTrade(item)).slice(0, 100)];
+}
+function syncTradingUser() {
+  const identity = state.user?.accountId || null, changed = trading.identity !== identity;
+  if (changed) {
+    tradeRevision++; trading.lookupRevision++; trading.sessionRevision++; trading.chatRevision++;
+    Object.assign(trading, { identity, trades: null, signature: null, recipient: null, lookupLoading: false, review: null, submitting: false, sendUncertain: false, action: null, actionRetry: null, sessionId: null, session: null, sessionDraft: null, confirmReviewVersion: null, chatMessages: [], chatSignature: null, chatOutbox: [] });
+    tradeInventories.offered = newTradeInventory(identity); $('tradingForm').reset(); $('tradingChatForm').reset();
+    ['tradingLookupMessage', 'tradingFormMessage', 'tradingMessage', 'tradingActionMessage', 'tradingSessionMessage', 'tradingChatMessage'].forEach(id => message($(id), ''));
+    $('tradingRetry').hidden = true; ['tradingReceived', 'tradingSent', 'tradingHistory', 'tradingChatMessages', 'tradingSessionCards', 'tradingOwnReadonly', 'tradingPartnerAssets'].forEach(id => $(id).replaceChildren());
+    $('tradingSessionCards').removeAttribute('data-signature');
+  } else if (state.user) {
+    trading.chatOutbox.forEach(entry => { if (entry.identity === identity) entry.sender.username = state.user.username; });
+  }
+  renderTradingState();
+  if (pageKind === 'trading') { prefillTradingRecipient(); if (changed && identity) { void loadTrades(true); refreshTradeInventories(); } }
+}
+function renderOwnCardPicker(containerId, countId, messageId, selected, disabled) {
+  const inventory = tradeInventories.offered, container = $(containerId), missing = unavailableTradeCards(selected);
+  $(countId).textContent = `${selected.length} / 50 selected`; container.setAttribute('aria-busy', String(inventory.loading));
+  const status = $(messageId);
+  status.textContent = inventory.error ? 'Cards unavailable. Try refreshing.' : inventory.loading && !inventory.cards ? 'Loading your tradable cards…' : missing.length ? 'Remove unavailable card copies.' : inventory.cards?.length === 0 ? 'No tradable cards yet.' : 'Choose your card copies.';
+  status.classList.toggle('trading-inventory-error', !!inventory.error || missing.length > 0);
+  const signature = JSON.stringify([inventory.cards, selected, disabled]); if (container.dataset.signature === signature) return; container.dataset.signature = signature;
+  const focused = document.activeElement?.closest(`#${containerId} [data-card-id]`), focusedId = focused?.dataset.cardId, focusedTag = focused?.tagName;
+  const selectedIds = new Set(selected.map(card => card.id));
+  container.replaceChildren(...[...(inventory.cards || []), ...missing].map(card => {
+    const available = (inventory.cards || []).some(owned => owned.id === card.id), checked = selectedIds.has(card.id);
+    const row = document.createElement('div'); row.className = 'trading-card-choice'; row.classList.toggle('is-selected', checked); row.classList.toggle('is-unavailable', !available);
+    const label = document.createElement('label'), input = document.createElement('input'); input.type = 'checkbox'; input.checked = checked; input.dataset.cardId = card.id;
+    input.disabled = disabled || !available || (!checked && selected.length >= 50); input.setAttribute('aria-label', `Give ${card.name}, copy ${card.id}`); label.append(input);
+    const art = tradeCardArtwork(card); if (art) label.append(art); label.append(tradeCardMetadata(card)); row.append(label);
+    if (!available) {
+      const notice = document.createElement('span'); notice.className = 'trading-unavailable-label'; notice.textContent = 'Unavailable';
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'button'; remove.textContent = 'Remove'; remove.dataset.cardId = card.id; remove.dataset.removeCard = 'true'; remove.disabled = disabled;
+      remove.setAttribute('aria-label', `Remove unavailable ${card.name}, copy ${card.id}`); row.append(notice, remove);
+    }
+    return row;
+  }));
+  if (focusedId) Array.from(container.querySelectorAll('[data-card-id]')).find(item => item.dataset.cardId === focusedId && item.tagName === focusedTag && !item.disabled)?.focus({ preventScroll: true });
+}
+function loadTradeInventory(side = 'offered', refresh = false) {
+  if (side !== 'offered') return Promise.resolve();
+  const inventory = tradeInventories.offered; if (pageKind !== 'trading' || !state.user || !inventory.ownerId) return Promise.resolve();
+  if (tradingBusy()) { inventory.refreshQueued = true; return Promise.resolve(); }
+  if (inventory.loadPromise) { if (refresh) inventory.refreshQueued = true; return inventory.loadPromise; }
+  const identity = state.user.accountId, identityRevision = userIdentityRevision, revision = tradeRevision;
+  const current = () => tradeInventories.offered === inventory && tradingIdentityIsCurrent(identity, identityRevision);
+  inventory.loading = true; inventory.error = null;
+  inventory.loadPromise = (async () => {
+    try {
+      const data = await api('trades/inventory'); if (!current()) return;
+      if (revision !== tradeRevision) { inventory.refreshQueued = true; return; }
+      if (data.owner.accountId !== identity) throw new Error('Collection changed. Please refresh.');
+      inventory.cards = data.cards.filter(card => card.tradable === true).map(tradeCardSnapshot);
+    } catch (error) { if (!current()) return; if (error.status === 401) { setUser(null); return; } inventory.error = error.message; }
+    finally { if (!current()) return; inventory.loading = false; inventory.loadPromise = null; renderTradingState(); if (inventory.refreshQueued) { inventory.refreshQueued = false; void loadTradeInventory(); } }
+  })();
+  renderTradingState(); return inventory.loadPromise;
+}
+function refreshTradeInventories() { if (trading.session?.status === 'negotiating') void loadTradeInventory('offered', true); }
+function renderTradingState() {
+  const loading = document.body.classList.contains('auth-loading'), busy = tradingBusy() || !!trading.actionRetry;
+  $('tradingAuthLoading').hidden = !loading; $('tradingGuest').hidden = loading || !!state.user; $('tradingAccount').hidden = loading || !state.user;
+  $('tradingBalance').textContent = state.user ? state.user.balance.toLocaleString() : '0'; $('tradingLayout').hidden = !!trading.sessionId; $('tradingSession').hidden = !trading.sessionId;
+  $('tradingRecipient').disabled = busy || !!trading.review; $('tradingLookup').disabled = busy || !!trading.review || trading.lookupLoading;
+  $('tradingLookup').textContent = trading.lookupLoading ? 'Finding…' : 'Find player';
+  $('tradingForm').hidden = !!trading.review; $('tradingReviewPanel').hidden = !trading.review; $('tradingReview').disabled = busy || trading.lookupLoading;
+  $('tradingSend').disabled = busy; $('tradingSend').textContent = trading.submitting ? 'Sending…' : trading.sendUncertain ? 'Retry sending request' : 'Send trade request';
+  $('tradingEdit').disabled = busy || trading.sendUncertain; $('tradingRefresh').disabled = tradingBusy() || !!tradeLoadPromise; $('tradingRetry').disabled = tradingBusy() || !!tradeLoadPromise;
+  $('tradingActionRetry').hidden = !trading.actionRetry; $('tradingActionRetry').disabled = tradingBusy(); $('tradingRecipientPreview').hidden = !trading.recipient;
+  $('tradingSessionBack').disabled = busy;
+  if (trading.recipient) { $('tradingRecipientProfile').textContent = trading.recipient.username; $('tradingRecipientProfile').href = profileHref(trading.recipient.username); $('tradingRecipientId').textContent = trading.recipient.accountId; }
+  if (trading.review) { $('tradingReviewRecipient').textContent = trading.review.recipient.username; $('tradingReviewRecipient').href = profileHref(trading.review.recipient.username); $('tradingReviewAccountId').textContent = trading.review.recipient.accountId; }
+  $('tradingSessionInventoryRefresh').disabled = busy || tradeInventories.offered.loading;
+  renderTradeLists(); renderTradeSession();
+}
+function renderTradeCard(trade) {
+  const own = ownTradeSide(trade), partner = partnerTradeSide(trade), row = document.createElement('article'); row.className = 'trading-card trading-offer-card'; row.dataset.tradeId = trade.id;
+  const heading = document.createElement('h3'); heading.append(trade.sender.accountId === state.user.accountId ? 'With ' : 'From ', tradeProfileLink(partner.player));
+  const status = document.createElement('span'); status.className = `trading-status trading-status-${trade.status}`; status.textContent = tradeStatusLabel(trade.status);
+  const header = document.createElement('div'); header.className = 'trading-offer-heading'; header.append(heading, status);
+  const terms = document.createElement('dl'); terms.className = 'trading-terms';
+  const ownLabel = document.createElement('dt'); ownLabel.textContent = trade.status === 'accepted' ? 'You gave' : 'Your offer';
+  const ownAssets = document.createElement('dd'); renderTradeAssets(ownAssets, own.tokens, own.cards);
+  const partnerLabel = document.createElement('dt'); partnerLabel.textContent = trade.status === 'accepted' ? 'You received' : 'Their offer';
+  const partnerAssets = document.createElement('dd'); renderTradeAssets(partnerAssets, partner.tokens, partner.cards); terms.append(ownLabel, ownAssets, partnerLabel, partnerAssets);
+  const date = document.createElement('p'); date.className = 'trading-date'; date.textContent = `Updated ${formatProfileDate(trade.updatedAt, true)}`;
+  const actions = document.createElement('div'), disabled = tradingBusy() || !!trading.actionRetry; actions.className = 'trading-actions'; actions.append(tradeButton(trade.status === 'pending' ? 'Open request' : activeTrade(trade) ? 'Open trade' : 'View trade', 'open', trade.id, disabled));
+  if (trade.status === 'pending' && trade.recipient.accountId === state.user.accountId) actions.append(tradeButton('Accept request', 'join', trade.id, disabled), tradeButton('Decline', 'decline', trade.id, disabled));
+  else if (activeTrade(trade)) actions.append(tradeButton('Cancel trade', 'cancel', trade.id, disabled));
+  row.append(header); if (acceptedTradeRequest(trade)) row.append(terms); row.append(date, actions); return row;
+}
+function renderTradeLists() {
+  if (!state.user || !trading.trades) { ['tradingReceivedEmpty', 'tradingSentEmpty', 'tradingHistoryEmpty'].forEach(id => { $(id).hidden = true; }); return; }
+  const signature = JSON.stringify([trading.trades, state.user.accountId, state.user.username, tradingBusy(), trading.actionRetry]); if (signature === trading.signature) return; trading.signature = signature;
+  const focused = document.activeElement?.closest('#tradingLists button[data-trade-action]'), focusedId = focused?.dataset.tradeId, focusedAction = focused?.dataset.tradeAction;
+  const received = trading.trades.filter(trade => activeTrade(trade) && trade.recipient.accountId === state.user.accountId), sent = trading.trades.filter(trade => activeTrade(trade) && trade.sender.accountId === state.user.accountId), history = trading.trades.filter(trade => !activeTrade(trade));
+  for (const [id, emptyId, trades] of [['tradingReceived', 'tradingReceivedEmpty', received], ['tradingSent', 'tradingSentEmpty', sent], ['tradingHistory', 'tradingHistoryEmpty', history]]) { $(id).replaceChildren(...trades.map(renderTradeCard)); $(emptyId).hidden = trades.length > 0; }
+  if (focusedId) Array.from($('tradingLists').querySelectorAll('button[data-trade-action]')).find(button => button.dataset.tradeId === focusedId && button.dataset.tradeAction === focusedAction && !button.disabled)?.focus({ preventScroll: true });
+}
+function loadTrades(refresh = false) {
+  if (pageKind !== 'trading' || !state.user) return Promise.resolve();
+  if (tradingBusy()) { trading.refreshQueued = true; return Promise.resolve(); }
+  if (tradeLoadPromise) { if (refresh) trading.refreshQueued = true; return tradeLoadPromise; }
+  const identity = state.user.accountId, identityRevision = userIdentityRevision, revision = tradeRevision, accountRevision = authRevision;
+  if (!trading.trades) message($('tradingMessage'), 'Loading trades…'); $('tradingLists').setAttribute('aria-busy', 'true');
+  tradeLoadPromise = (async () => {
+    try {
+      const data = await api('trades'); if (!tradingIdentityIsCurrent(identity, identityRevision)) return;
+      if (revision !== tradeRevision) { trading.refreshQueued = true; return; }
+      trading.trades = data.trades.map(trade => newestTrade(trade, trading.trades?.find(previous => previous.id === trade.id))); if (accountRevision === authRevision) mergeTradingUser(data.user);
+      if (trading.actionRetry) { const recovered = trading.trades.find(trade => trade.id === trading.actionRetry.id); if (recovered) reconcileTradeAction(recovered); }
+      if (trading.sendUncertain && trading.review) { const recovered = trading.trades.find(trade => trade.clientOfferId === trading.review.clientOfferId && trade.sender.accountId === identity); if (recovered) finishSendingTrade(recovered); }
+      if (trading.sessionId) { const session = trading.trades.find(trade => trade.id === trading.sessionId); if (session) updateTradeSession(session); }
+      message($('tradingMessage'), ''); $('tradingRetry').hidden = true; renderTradingState();
+    } catch (error) {
+      if (!tradingIdentityIsCurrent(identity, identityRevision) || revision !== tradeRevision) return;
+      if (error.status === 401) { setUser(null); return; }
+      message($('tradingMessage'), trading.trades ? 'Refresh failed. Previous trades shown.' : 'Trades unavailable. Try again.'); $('tradingRetry').hidden = false;
+    }
+  })().finally(() => { tradeLoadPromise = null; $('tradingLists').setAttribute('aria-busy', 'false'); renderTradingState(); if (trading.refreshQueued) { trading.refreshQueued = false; void loadTrades(); } });
+  renderTradingState(); return tradeLoadPromise;
+}
+function invalidateTradeReview() { if (trading.submitting || trading.sendUncertain) return; trading.review = null; message($('tradingFormMessage'), ''); renderTradingState(); }
+async function findTradingRecipient() {
+  if (!state.user || trading.lookupLoading || tradingBusy() || trading.review) return;
+  const username = $('tradingRecipient').value.trim(); trading.recipient = null;
+  if (!username) { message($('tradingLookupMessage'), 'Enter a player username.'); $('tradingRecipient').focus(); renderTradingState(); return; }
+  const revision = ++trading.lookupRevision, identity = state.user.accountId, identityRevision = userIdentityRevision;
+  trading.lookupLoading = true; message($('tradingLookupMessage'), 'Finding player…'); renderTradingState();
+  try {
+    const { profile } = await api(`profiles/${encodeURIComponent(username)}`); if (!tradingIdentityIsCurrent(identity, identityRevision) || revision !== trading.lookupRevision) return;
+    if (profile.accountId === identity) throw new Error('Choose another player.'); if (!profile.accountId) throw new Error('Account ID unavailable.');
+    trading.recipient = { username: profile.username, accountId: profile.accountId }; $('tradingRecipient').value = profile.username; message($('tradingLookupMessage'), 'Player found. Check account ID.', true);
+  } catch (error) { if (tradingIdentityIsCurrent(identity, identityRevision) && revision === trading.lookupRevision) message($('tradingLookupMessage'), error.message); }
+  finally { if (tradingIdentityIsCurrent(identity, identityRevision) && revision === trading.lookupRevision) { trading.lookupLoading = false; renderTradingState(); } }
+}
+function selectedTradeSnapshots(selected) { return selected.map(card => tradeCardSnapshot(tradeInventories.offered.cards.find(owned => owned.id === card.id))).sort((a, b) => a.id.localeCompare(b.id)); }
+function validTradeContribution(tokens, cards, element) {
+  const fail = text => { element.classList.remove('trading-draft-info'); message(element, text); if (element.id === 'tradingDraftMessage' && trading.sessionDraft) trading.sessionDraft.error = text; return false; };
+  if (!Number.isSafeInteger(tokens) || tokens < 0 || cards.length > 50) return fail('Invalid tokens or card count.');
+  if (unavailableTradeCards(cards).length) return fail('Remove unavailable card copies.');
+  if (cards.length && tradeInventories.offered.loading) return fail('Wait for cards to refresh.');
+  if (element.id === 'tradingDraftMessage' && trading.sessionDraft) trading.sessionDraft.error = null;
+  return true;
+}
+$('tradingRecipient').addEventListener('input', () => { trading.lookupRevision++; trading.lookupLoading = false; trading.recipient = null; message($('tradingLookupMessage'), ''); invalidateTradeReview(); });
+$('tradingLookup').addEventListener('click', findTradingRecipient);
+$('tradingForm').addEventListener('submit', async event => {
+  event.preventDefault(); if (!state.user || tradingBusy() || trading.lookupLoading) return;
+  if (!trading.recipient) { await findTradingRecipient(); if (trading.recipient) message($('tradingFormMessage'), 'Check player, then review request.'); return; }
+  trading.review = { recipient: { ...trading.recipient }, clientOfferId: crypto.randomUUID(), identity: state.user.accountId };
+  message($('tradingFormMessage'), ''); renderTradingState(); $('tradingReviewTitle').focus({ preventScroll: true });
+});
+$('tradingEdit').addEventListener('click', () => { if (trading.submitting || trading.sendUncertain) return; invalidateTradeReview(); $('tradingRecipient').focus({ preventScroll: true }); });
+function finishSendingTrade(trade) {
+  rememberTrade(trade); trading.review = null; trading.sendUncertain = false; trading.recipient = null; trading.lookupRevision++; $('tradingForm').reset(); message($('tradingLookupMessage'), '');
+  message($('tradingFormMessage'), `Request sent to ${trade.recipient.username}.`, true); openTradeSession(trade.id, trade);
+}
+async function sendTradingOffer() {
+  const request = trading.review;
+  if (!request || request.identity !== state.user?.accountId || tradingBusy() || trading.actionRetry) return;
+  const identityRevision = userIdentityRevision; tradeRevision++; trading.submitting = true; message($('tradingFormMessage'), 'Sending trade request…'); renderTradingState();
+  try {
+    const data = await api('trades', { method: 'POST', body: JSON.stringify({ recipientAccountId: request.recipient.accountId, offeredTokens: 0, offeredCardIds: [], clientOfferId: request.clientOfferId }) });
+    if (!tradingIdentityIsCurrent(request.identity, identityRevision)) return; tradeRevision++; mergeTradingUser(data.user); finishSendingTrade(data.trade);
+  } catch (error) {
+    if (!tradingIdentityIsCurrent(request.identity, identityRevision)) return; tradeRevision++; if (error.status === 401) { setUser(null); return; }
+    mergeTradingUser(error.user); trading.sendUncertain = !error.status || error.status >= 500; message($('tradingFormMessage'), trading.sendUncertain ? 'Result unknown. Retry safely.' : error.message);
+  } finally { if (tradingIdentityIsCurrent(request.identity, identityRevision)) { trading.submitting = false; renderTradingState(); void loadTrades(true); void loadTradeSession(true); refreshTradeInventories(); } }
+}
+$('tradingSend').addEventListener('click', sendTradingOffer);
+function newSessionDraft(trade) { const own = ownTradeSide(trade); return { tokens: own.tokens, cards: own.cards.map(tradeCardSnapshot), baseVersion: trade.version, dirty: false }; }
+function sameContribution(side, payload) { return side.tokens === payload.tokens && JSON.stringify(side.cards.map(card => card.id).sort()) === JSON.stringify([...payload.cardIds].sort()); }
+function reconcileTradeAction(trade) {
+  const retry = trading.actionRetry;
+  if (retry?.id === trade.id) {
+    const recovered = (retry.action === 'join' && trade.status === 'negotiating') || (retry.action === 'contribution' && trade.version > retry.payload.version && sameContribution(ownTradeSide(trade), retry.payload)) || (retry.action === 'confirm' && (ownTradeSide(trade).confirmed || trade.status === 'accepted')) || (retry.action === 'cancel' && trade.status === 'cancelled') || (retry.action === 'decline' && trade.status === 'declined');
+    if (recovered) { if (retry.action === 'contribution' && trading.sessionId === trade.id) trading.sessionDraft = newSessionDraft(trade); trading.actionRetry = null; message($('tradingActionMessage'), 'Done. Latest trade shown.', true); }
+    else if (!activeTrade(trade)) { trading.actionRetry = null; message($('tradingActionMessage'), `Trade ${tradeStatusLabel(trade.status).toLowerCase()}.`); }
+  }
+}
+function updateTradeSession(trade, saved = false) {
+  if (trade.id !== trading.sessionId) return;
+  const previous = trading.session;
+  trade = newestTrade(trade, previous);
+  trading.session = trade;
+  if (!trading.sessionDraft || !trading.sessionDraft.dirty || saved) trading.sessionDraft = newSessionDraft(trade);
+  if (trading.confirmReviewVersion !== trade.version) trading.confirmReviewVersion = null;
+  if (previous && !trading.action) {
+    if (previous.status !== 'accepted' && trade.status === 'accepted') message($('tradingActionMessage'), 'Trade completed. Assets transferred.', true);
+    else if (activeTrade(previous) && !activeTrade(trade)) message($('tradingActionMessage'), `Trade ${trade.status}.`);
+    else if (trade.version > previous.version) message($('tradingActionMessage'), previous.status === 'pending' && trade.status === 'negotiating' ? 'Request accepted. Choose your offer.' : 'Offers changed. Confirm again.');
+  }
+  if (trade.status === 'negotiating' && previous?.status !== 'negotiating') refreshTradeInventories();
+  reconcileTradeAction(trade);
+  renderTradeSession();
+}
+function openTradeSession(id, trade = null) {
+  if (!state.user || tradingBusy() && !trading.submitting) return;
+  if (trading.sessionId !== id) {
+    trading.sessionRevision++; trading.chatRevision++; trading.sessionId = id; trading.session = null; trading.sessionDraft = null; trading.confirmReviewVersion = null; trading.chatMessages = []; trading.chatSignature = null; $('tradingChatInput').value = '';
+    $('tradingChatMessages').replaceChildren();
+    message($('tradingSessionMessage'), 'Loading trade…'); message($('tradingChatMessage'), ''); $('tradingSessionRetry').hidden = true;
+    message($('tradingActionMessage'), '');
+  }
+  if (trade) updateTradeSession(trade); renderTradingState(); void loadTradeSession(true); void loadTradeChat(true); $('tradingSessionTitle').focus({ preventScroll: true });
+}
+$('tradingSessionBack').addEventListener('click', () => {
+  trading.sessionRevision++; trading.chatRevision++; trading.sessionId = null; trading.session = null; trading.sessionDraft = null; trading.confirmReviewVersion = null;
+  renderTradingState(); $('tradingCreateTitle').tabIndex = -1; $('tradingCreateTitle').focus({ preventScroll: true });
+});
+function renderTradeSession() {
+  const trade = trading.session; $('tradingSessionContent').hidden = !trade;
+  if (!trade || !state.user) {
+    $('tradingSessionTitle').textContent = 'Trade session';
+    ['tradingSessionStatus', 'tradingSessionDescription', 'tradingSessionAccountId', 'tradingOwnConfirmed', 'tradingPartnerConfirmed'].forEach(id => { $(id).textContent = ''; });
+    ['tradingOwnReadonly', 'tradingPartnerAssets'].forEach(id => $(id).replaceChildren());
+    return;
+  }
+  const own = ownTradeSide(trade), partner = partnerTradeSide(trade), sender = trade.sender.accountId === state.user.accountId;
+  const pending = trade.status === 'pending', requestAccepted = acceptedTradeRequest(trade), editable = trade.status === 'negotiating', busy = tradingBusy() || !!trading.actionRetry, draft = trading.sessionDraft;
+  $('tradingOwnOffer').hidden = !requestAccepted; $('tradingPartnerOffer').hidden = !requestAccepted;
+  $('tradingSessionTitle').textContent = `Trade with ${partner.player.username}`; $('tradingSessionStatus').textContent = tradeStatusLabel(trade.status); $('tradingSessionStatus').className = `trading-status trading-status-${trade.status}`;
+  $('tradingSessionAccountId').textContent = `Permanent account ID: ${partner.player.accountId}`;
+  $('tradingSessionDescription').textContent = pending ? sender ? 'Wait for request acceptance.' : 'Accept this trade request.' : trade.status === 'negotiating' ? 'Choose your own offer.' : trade.status === 'accepted' ? 'Trade completed. Assets transferred.' : `Trade ${trade.status}.`;
+  $('tradingOwnConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : own.confirmed ? 'You confirmed' : 'You have not confirmed';
+  $('tradingPartnerConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : partner.confirmed ? `${partner.player.username} confirmed` : `${partner.player.username} has not confirmed`;
+  $('tradingOwnConfirmed').classList.toggle('success', !!own.confirmed); $('tradingPartnerConfirmed').classList.toggle('success', !!partner.confirmed);
+  if (!requestAccepted) {
+    ['tradingOwnReadonly', 'tradingPartnerAssets', 'tradingSessionCards'].forEach(id => $(id).replaceChildren());
+    $('tradingSessionCards').removeAttribute('data-signature');
+    $('tradingSessionTokens').value = '0';
+  } else { renderTradeAssets($('tradingOwnReadonly'), own.tokens, own.cards); renderTradeAssets($('tradingPartnerAssets'), partner.tokens, partner.cards); }
+  $('tradingOwnReadonly').hidden = editable; $('tradingContributionForm').hidden = !editable;
+  if (editable && draft) {
+    if ($('tradingSessionTokens').value !== String(draft.tokens)) $('tradingSessionTokens').value = draft.tokens; $('tradingSessionTokens').disabled = busy;
+    renderOwnCardPicker('tradingSessionCards', 'tradingSessionCardCount', 'tradingSessionInventoryMessage', draft.cards, busy);
+    const changed = draft.baseVersion !== trade.version;
+    message($('tradingDraftMessage'), draft.error || (changed ? 'Offers changed. Review updated terms.' : draft.dirty ? 'Unsaved changes.' : 'Offer saved.'), !draft.error && !changed && !draft.dirty);
+    $('tradingDraftMessage').classList.toggle('trading-draft-info', !draft.error && (changed || draft.dirty));
+    $('tradingUseLatest').hidden = !changed; $('tradingUseLatest').disabled = busy;
+    $('tradingContributionSave').disabled = busy || !draft.dirty || changed || unavailableTradeCards(draft.cards).length > 0; $('tradingContributionSave').textContent = trading.action?.action === 'contribution' ? 'Saving…' : 'Save my offer';
+  }
+  $('tradingSessionRules').textContent = trade.status === 'negotiating' ? 'Both players must confirm.' : pending ? 'Wait for request acceptance.' : 'This trade has ended.';
+  const actions = $('tradingSessionActions'), focusedAction = document.activeElement?.closest('#tradingSessionActions button')?.dataset.tradeAction; actions.replaceChildren();
+  if (pending && !sender) actions.append(tradeButton('Accept request', 'join', trade.id, busy), tradeButton('Decline', 'decline', trade.id, busy));
+  if (trade.status === 'negotiating') actions.append(tradeButton(own.confirmed ? 'You confirmed' : 'Review & confirm', 'review-confirm', trade.id, busy || own.confirmed || draft.dirty || draft.baseVersion !== trade.version));
+  if (activeTrade(trade)) actions.append(tradeButton('Cancel trade', 'cancel', trade.id, busy));
+  if (focusedAction) Array.from(actions.children).find(button => button.dataset.tradeAction === focusedAction && !button.disabled)?.focus({ preventScroll: true });
+  $('tradingConfirmReview').hidden = trading.confirmReviewVersion !== trade.version || trade.status !== 'negotiating' || !!draft?.dirty || !!own.confirmed;
+  $('tradingConfirmFinal').disabled = busy || trading.confirmReviewVersion !== trade.version || !!draft?.dirty; $('tradingConfirmBack').disabled = busy;
+  const chatVisible = requestAccepted; $('tradingPrivateChat').hidden = !chatVisible; $('tradingChatForm').hidden = trade.status !== 'negotiating'; $('tradingChatClosed').hidden = !chatVisible || trade.status === 'negotiating';
+  $('tradingChatSend').disabled = trading.chatOutbox.some(entry => entry.tradeId === trade.id && entry.status === 'sending'); renderTradeChat();
+}
+function loadTradeSession(refresh = false) {
+  if (pageKind !== 'trading' || !state.user || !trading.sessionId) return Promise.resolve();
+  if (tradingBusy()) { tradeSessionRefreshQueued = true; return Promise.resolve(); }
+  if (tradeSessionLoadPromise) { if (refresh) tradeSessionRefreshQueued = true; return tradeSessionLoadPromise; }
+  const identity = state.user.accountId, identityRevision = userIdentityRevision, sessionRevision = trading.sessionRevision, id = trading.sessionId, revision = tradeRevision, accountRevision = authRevision;
+  const current = () => tradingIdentityIsCurrent(identity, identityRevision) && sessionRevision === trading.sessionRevision && id === trading.sessionId;
+  tradeSessionLoadPromise = (async () => {
+    try {
+      const data = await api(`trades/${encodeURIComponent(id)}`); if (!current()) return; if (revision !== tradeRevision) { tradeSessionRefreshQueued = true; return; }
+      rememberTrade(data.trade); updateTradeSession(data.trade); if (accountRevision === authRevision) mergeTradingUser(data.user);
+      message($('tradingSessionMessage'), ''); $('tradingSessionRetry').hidden = true; void loadTradeChat();
+    } catch (error) {
+      if (!current()) return; if (error.status === 401) { setUser(null); return; } message($('tradingSessionMessage'), trading.session ? 'Refresh failed. Previous terms shown.' : error.message); $('tradingSessionRetry').hidden = false;
+    }
+  })().finally(() => { tradeSessionLoadPromise = null; renderTradingState(); if (tradeSessionRefreshQueued) { tradeSessionRefreshQueued = false; void loadTradeSession(); } });
+  return tradeSessionLoadPromise;
+}
+async function actOnTrade(id, action, payload = {}) {
+  if (!state.user || tradingBusy()) return; if (trading.actionRetry && (trading.actionRetry.id !== id || trading.actionRetry.action !== action)) return;
+  const identity = state.user.accountId, identityRevision = userIdentityRevision, actionRouteRevision = routeRevision, actionSessionRevision = trading.sessionRevision; trading.action = { id, action }; tradeRevision++;
+  message($('tradingActionMessage'), { join: 'Accepting request…', contribution: 'Saving your offer…', confirm: 'Confirming trade…', decline: 'Declining trade…', cancel: 'Cancelling trade…' }[action]); renderTradingState();
+  try {
+    const data = await api(`trades/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(payload) });
+    if (!tradingIdentityIsCurrent(identity, identityRevision)) return; tradeRevision++; rememberTrade(data.trade); trading.actionRetry = null; updateTradeSession(data.trade, action === 'contribution'); mergeTradingUser(data.user);
+    if (action === 'join' && trading.sessionId !== id && actionRouteRevision === routeRevision && actionSessionRevision === trading.sessionRevision) { trading.action = null; openTradeSession(id, data.trade); }
+    const result = data.trade.status === 'accepted' ? 'Trade completed. Assets transferred.' : { join: 'Request accepted. Choose your offer.', contribution: 'Saved. Both confirmations reset.', confirm: 'Confirmed. Waiting for partner.', decline: 'Trade declined.', cancel: 'Trade cancelled.' }[action];
+    message($('tradingActionMessage'), result, true); trading.confirmReviewVersion = null;
+    if (data.trade.status === 'accepted') { leaderboardRevision++; void loadLeaderboard(true); }
+  } catch (error) {
+    if (!tradingIdentityIsCurrent(identity, identityRevision)) return; tradeRevision++; if (error.status === 401) { setUser(null); return; } mergeTradingUser(error.user);
+    trading.actionRetry = !error.status || error.status >= 500 ? { id, action, payload: { ...payload, ...(payload.cardIds ? { cardIds: [...payload.cardIds] } : {}) }, identity } : null;
+    if (error.status === 409) trading.confirmReviewVersion = null;
+    message($('tradingActionMessage'), trading.actionRetry ? 'Result unknown. Retry safely.' : error.message);
+  } finally { if (tradingIdentityIsCurrent(identity, identityRevision)) { trading.action = null; renderTradingState(); void loadTrades(true); void loadTradeSession(true); refreshTradeInventories(); } }
+}
+function handleTradeAction(event) {
+  const button = event.target.closest('button[data-trade-action]'); if (!button || button.disabled || !state.user) return;
+  const id = button.dataset.tradeId, action = button.dataset.tradeAction;
+  if (action === 'open') { openTradeSession(id, trading.trades?.find(trade => trade.id === id)); return; }
+  if (action === 'review-confirm') { trading.confirmReviewVersion = trading.session?.version; renderTradeSession(); $('tradingConfirmFinal').focus({ preventScroll: true }); return; }
+  if (['join', 'decline', 'cancel'].includes(action)) void actOnTrade(id, action);
+}
+$('tradingLists').addEventListener('click', handleTradeAction); $('tradingSessionActions').addEventListener('click', handleTradeAction);
+$('tradingSessionTokens').addEventListener('input', () => { if (!trading.sessionDraft) return; trading.sessionDraft.tokens = $('tradingSessionTokens').value; trading.sessionDraft.dirty = true; trading.sessionDraft.error = null; trading.confirmReviewVersion = null; renderTradeSession(); });
+$('tradingUseLatest').addEventListener('click', () => { if (!trading.sessionDraft || !trading.session || tradingBusy()) return; trading.sessionDraft.baseVersion = trading.session.version; trading.sessionDraft.error = null; trading.confirmReviewVersion = null; renderTradeSession(); });
+$('tradingContributionForm').addEventListener('submit', event => {
+  event.preventDefault(); const draft = trading.sessionDraft, trade = trading.session; if (!draft || trade?.status !== 'negotiating' || tradingBusy() || !draft.dirty) return;
+  if (draft.baseVersion !== trade.version) { renderTradeSession(); return; } const tokens = Number(draft.tokens); if (!validTradeContribution(tokens, draft.cards, $('tradingDraftMessage'))) return;
+  void actOnTrade(trade.id, 'contribution', { tokens, cardIds: selectedTradeSnapshots(draft.cards).map(card => card.id), version: draft.baseVersion });
+});
+$('tradingConfirmFinal').addEventListener('click', () => { const trade = trading.session; if (trade?.status === 'negotiating' && trading.confirmReviewVersion === trade.version && !trading.sessionDraft?.dirty) void actOnTrade(trade.id, 'confirm', { version: trade.version }); });
+$('tradingConfirmBack').addEventListener('click', () => { trading.confirmReviewVersion = null; renderTradeSession(); });
+$('tradingActionRetry').addEventListener('click', () => { const retry = trading.actionRetry; if (retry?.identity === state.user?.accountId) void actOnTrade(retry.id, retry.action, retry.payload); });
+$('tradingSessionRetry').addEventListener('click', () => loadTradeSession(true));
+['tradingRefresh', 'tradingRetry'].forEach(id => $(id).addEventListener('click', () => { void loadTrades(true); void loadTradeSession(true); refreshTradeInventories(); }));
+$('tradingSessionInventoryRefresh').addEventListener('click', refreshTradeInventories);
+for (const containerId of ['tradingSessionCards']) {
+  const edit = (id, checked) => {
+    if (tradingBusy() || trading.actionRetry || trading.session?.status !== 'negotiating' || !trading.sessionDraft) return;
+    const cards = trading.sessionDraft.cards;
+    if (checked) { const card = tradeInventories.offered.cards?.find(card => card.id === id); if (!card || cards.length >= 50 || cards.some(card => card.id === id)) return; cards.push(tradeCardSnapshot(card)); }
+    else { const index = cards.findIndex(card => card.id === id); if (index >= 0) cards.splice(index, 1); }
+    trading.sessionDraft.dirty = true; trading.sessionDraft.error = null; trading.confirmReviewVersion = null; renderTradeSession();
+  };
+  $(containerId).addEventListener('change', event => { const input = event.target.closest('input[data-card-id]'); if (input && !input.disabled) edit(input.dataset.cardId, input.checked); });
+  $(containerId).addEventListener('click', event => { const button = event.target.closest('button[data-remove-card]'); if (button && !button.disabled) edit(button.dataset.cardId, false); });
+}
+function renderTradeChat() {
+  const trade = trading.session; if (!trade || !acceptedTradeRequest(trade)) return;
+  const outbox = trading.chatOutbox.filter(entry => entry.tradeId === trade.id && entry.identity === state.user?.accountId), signature = JSON.stringify([trading.chatMessages, outbox, trade.status, state.user?.username]);
+  if (signature === trading.chatSignature) return; trading.chatSignature = signature;
+  const container = $('tradingChatMessages'), follow = container.scrollHeight - container.scrollTop - container.clientHeight < 80 || !container.children.length;
+  const receivedIds = new Set(trading.chatMessages.map(item => `${item.sender.accountId}:${item.clientMessageId}`)), entries = [...trading.chatMessages, ...outbox.filter(item => !receivedIds.has(`${item.sender.accountId}:${item.clientMessageId}`))];
+  container.replaceChildren(...entries.map(entry => {
+    const row = document.createElement('article'); row.className = 'trading-chat-row';
+    const header = document.createElement('div'); header.className = 'trading-chat-meta'; header.append(tradeProfileLink(entry.sender));
+    const time = document.createElement('time'); time.dateTime = entry.createdAt; time.textContent = formatProfileDate(entry.createdAt, true); header.append(time);
+    const body = document.createElement('p'); body.textContent = entry.body; row.append(header, body);
+    if (entry.status) { const status = document.createElement('span'); status.className = 'trading-chat-send-status'; status.textContent = entry.status === 'sending' ? 'Sending…' : entry.error || 'Could not send.'; row.append(status); }
+    if (entry.status === 'failed') { const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'button'; retry.textContent = trade.status === 'negotiating' ? 'Retry message' : 'Check message result'; retry.dataset.tradeChatRetry = entry.clientMessageId; row.append(retry); }
+    return row;
+  })); if (follow) container.scrollTop = container.scrollHeight;
+}
+function loadTradeChat(refresh = false) {
+  const trade = trading.session; if (pageKind !== 'trading' || !state.user || !trade || !acceptedTradeRequest(trade)) return Promise.resolve();
+  if (tradeChatLoadPromise) { if (refresh) tradeChatRefreshQueued = true; return tradeChatLoadPromise; }
+  const identity = state.user.accountId, identityRevision = userIdentityRevision, sessionRevision = trading.sessionRevision, chatRevision = trading.chatRevision, id = trade.id;
+  const current = () => tradingIdentityIsCurrent(identity, identityRevision) && sessionRevision === trading.sessionRevision && id === trading.sessionId;
+  tradeChatLoadPromise = (async () => {
+    try {
+      const data = await api(`trades/${encodeURIComponent(id)}/messages`); if (!current()) return; if (chatRevision !== trading.chatRevision) { tradeChatRefreshQueued = true; return; }
+      trading.chatMessages = data.messages; const known = new Set(data.messages.map(item => `${item.sender.accountId}:${item.clientMessageId}`)); trading.chatOutbox = trading.chatOutbox.filter(item => item.tradeId !== id || !known.has(`${item.sender.accountId}:${item.clientMessageId}`));
+      message($('tradingChatMessage'), data.messages.length ? '' : 'No messages yet.'); $('tradingChatRetry').hidden = true; renderTradeChat();
+    } catch (error) { if (!current()) return; if (error.status === 401) { setUser(null); return; } message($('tradingChatMessage'), 'Chat unavailable. Try again.'); $('tradingChatRetry').hidden = false; }
+  })().finally(() => { tradeChatLoadPromise = null; if (tradeChatRefreshQueued) { tradeChatRefreshQueued = false; void loadTradeChat(); } }); return tradeChatLoadPromise;
+}
+async function sendTradeChatEntry(entry) {
+  if (entry.identity !== state.user?.accountId || entry.status === 'sending' || entry.tradeId !== trading.sessionId || !trading.chatOutbox.includes(entry)) return;
+  if (!trading.session || !acceptedTradeRequest(trading.session) || (trading.session.status !== 'negotiating' && entry.status !== 'failed')) return;
+  const identityRevision = userIdentityRevision; entry.status = 'sending'; entry.error = null; renderTradeSession();
+  try {
+    const data = await api(`trades/${encodeURIComponent(entry.tradeId)}/messages`, { method: 'POST', body: JSON.stringify({ body: entry.body, clientMessageId: entry.clientMessageId }) });
+    if (!tradingIdentityIsCurrent(entry.identity, identityRevision)) return; trading.chatRevision++; trading.chatOutbox = trading.chatOutbox.filter(item => item !== entry);
+    if (entry.tradeId === trading.sessionId) { trading.chatMessages = [...trading.chatMessages.filter(item => item.id !== data.message.id), data.message].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt) || a.id.localeCompare(b.id)).slice(-100); message($('tradingChatMessage'), trading.session?.status === 'negotiating' ? '' : 'Message was sent.', true); }
+  } catch (error) {
+    if (!tradingIdentityIsCurrent(entry.identity, identityRevision)) return; if (error.status === 401) { setUser(null); return; } entry.status = 'failed'; entry.error = error.message;
+    if (error.status === 409) void loadTradeSession(true);
+  } finally { if (tradingIdentityIsCurrent(entry.identity, identityRevision) && entry.tradeId === trading.sessionId) { renderTradeSession(); void loadTradeChat(true); } }
+}
+$('tradingChatForm').addEventListener('submit', event => {
+  event.preventDefault(); const trade = trading.session, body = $('tradingChatInput').value.trim();
+  if (!state.user || !trade || trade.status !== 'negotiating' || !body || trading.chatOutbox.some(entry => entry.tradeId === trade.id && entry.status === 'sending')) return;
+  if (body.length > 1000) { message($('tradingChatMessage'), 'Use 1,000 characters or fewer.'); return; }
+  const entry = { tradeId: trade.id, identity: state.user.accountId, clientMessageId: crypto.randomUUID(), sender: { username: state.user.username, accountId: state.user.accountId }, body, createdAt: new Date().toISOString(), status: 'new' };
+  trading.chatOutbox.push(entry); $('tradingChatInput').value = ''; message($('tradingChatMessage'), ''); void sendTradeChatEntry(entry);
+});
+$('tradingChatMessages').addEventListener('click', event => { const button = event.target.closest('button[data-trade-chat-retry]'); if (button) { const entry = trading.chatOutbox.find(item => item.clientMessageId === button.dataset.tradeChatRetry && item.tradeId === trading.sessionId); if (entry) void sendTradeChatEntry(entry); } });
+$('tradingChatRetry').addEventListener('click', () => loadTradeChat(true));
 
 async function loadProfile() {
   if (pageKind !== 'profile' || !viewingPublicProfile || !profileRoute) return;
@@ -1128,6 +1635,8 @@ async function loadProfile() {
     renderProfileDetails(profile);
     renderClaim();
     $('profileDetails').hidden = false;
+    $('profileTrade').href = `/trading?to=${encodeURIComponent(profile.username)}`;
+    $('profileTrade').hidden = false;
   } catch (error) {
     if (revision !== routeRevision || loadRevision !== profileLoadRevision) return;
     document.title = 'Profile unavailable — Pepper TCG';
@@ -1172,7 +1681,7 @@ function renderLeaderboard(data) {
   if (focusedAccountId) {
     Array.from($('leaderboardRows').children).find(row => row.dataset.accountId === focusedAccountId)?.querySelector('a').focus({ preventScroll: true });
   }
-  $('leaderboardSummary').textContent = `Showing ${data.entries.length.toLocaleString()} of ${data.totalPlayers.toLocaleString()} ${data.totalPlayers === 1 ? 'player' : 'players'}. Updates every 15 seconds.`;
+  $('leaderboardSummary').textContent = `${data.entries.length.toLocaleString()} of ${data.totalPlayers.toLocaleString()} ${data.totalPlayers === 1 ? 'player' : 'players'}`;
 }
 
 function loadLeaderboard(refresh = false) {
@@ -1192,7 +1701,7 @@ function loadLeaderboard(refresh = false) {
       $('leaderboardRetry').hidden = true;
     } catch {
       if (revision !== leaderboardRevision) return;
-      message($('leaderboardMessage'), 'The leaderboard could not load. Please try again.');
+      message($('leaderboardMessage'), 'Leaderboard unavailable. Try again.');
       $('leaderboardRetry').hidden = false;
     }
   })().finally(() => {
@@ -1234,7 +1743,7 @@ function jumpToChatMessage(messageId) {
   const container = $('chatMessages');
   const row = Array.from(container.children).find(row => row.dataset.messageId === messageId);
   if (!row) {
-    message($('chatMessage'), 'The original message is no longer in recent chat.');
+    message($('chatMessage'), 'Original message unavailable.');
     return;
   }
   state.chatFollowLatest = false;
@@ -1303,7 +1812,7 @@ function createChatRow(item) {
     if (item.replyTo.available) {
       quote.type = 'button';
       quote.dataset.replyJump = item.replyTo.id;
-      quote.setAttribute('aria-label', `View original message from ${item.replyTo.username}: ${item.replyTo.text}`);
+      quote.setAttribute('aria-label', `View ${item.replyTo.username}'s original message: ${item.replyTo.text}`);
     }
     const quoteAuthor = document.createElement('span');
     quoteAuthor.className = 'chat-reply-quote-author';
@@ -1315,7 +1824,7 @@ function createChatRow(item) {
     if (!item.replyTo.available) {
       const unavailable = document.createElement('span');
       unavailable.className = 'chat-reply-unavailable';
-      unavailable.textContent = 'Original message is no longer available.';
+      unavailable.textContent = 'Original message unavailable.';
       quote.append(unavailable);
     }
     row.append(quote);
@@ -1444,7 +1953,7 @@ async function loadChat(refresh = false) {
       if (revision !== chatRevision) return;
       renderChat(data.messages);
     } catch (error) {
-      if (state.chatSignature === null) $('chatMessages').textContent = 'Chat is unavailable right now. Please try again.';
+      if (state.chatSignature === null) $('chatMessages').textContent = 'Chat unavailable. Try again.';
     }
   })();
   try { await chatLoadPromise; }
@@ -1509,7 +2018,7 @@ $('chatForm').addEventListener('submit', event => {
   const reply = state.chatReply;
   if (reply && isOwnChatMessage(reply)) {
     clearChatReply();
-    message($('chatMessage'), 'You cannot reply to your own message.');
+    message($('chatMessage'), 'Cannot reply to yourself.');
     return;
   }
   const entry = {
@@ -1543,6 +2052,8 @@ loadChangelog();
 loadAnnouncements();
 setInterval(() => { if (!document.hidden) { loadChangelog(); loadAnnouncements(); } }, 60000);
 setInterval(() => { if (!document.hidden && pageKind === 'leaderboard') void loadLeaderboard(); }, 15000);
+setInterval(() => { if (!document.hidden && pageKind === 'trading') { void loadTrades(); refreshTradeInventories(); } }, 10000);
+setInterval(() => { if (!document.hidden && pageKind === 'trading' && trading.sessionId) { void loadTradeSession(); void loadTradeChat(); } }, 4000);
 loadPresence();
 setInterval(() => loadPresence(), 20000);
 document.addEventListener('visibilitychange', () => {
@@ -1550,6 +2061,7 @@ document.addEventListener('visibilitychange', () => {
     loadChangelog();
     loadAnnouncements();
     if (pageKind === 'leaderboard') void loadLeaderboard(true);
+    if (pageKind === 'trading') { void loadTrades(true); void loadTradeSession(true); void loadTradeChat(true); refreshTradeInventories(); }
     void loadPresence(true);
   }
 });
@@ -1582,7 +2094,7 @@ function resetPack() {
   openPackButton.disabled = false;
   demoPackButton.disabled = false;
   replayPackButton.hidden = true;
-  packHelp.textContent = 'Open the pack below, or use the button.';
+  packHelp.textContent = 'Open the demo pack.';
   packStatus.textContent = 'Ready';
   demoPackButton.focus();
 }
@@ -1607,7 +2119,7 @@ function openDemoPack() {
     revealCards.hidden = false;
     packStage.dataset.phase = 'revealed';
     packStatus.textContent = '5 blank cards';
-    packHelp.textContent = 'Press Reset to open it again.';
+    packHelp.textContent = 'Reset to open again.';
     replayPackButton.hidden = false;
     cards.forEach((card, index) => packLater(() => card.classList.add('is-dealt'), reducePackMotion.matches ? 0 : index * 110));
     packLater(() => { if (pageKind === 'home') replayPackButton.focus({ preventScroll: true }); }, reducePackMotion.matches ? 0 : 1000);

@@ -1,6 +1,6 @@
 # Pepper TCG
 
-A private development version of the pepper trading card game website. Accounts, hourly token claims, balances, and chat work now. Card artwork, packs, and paid token bundles are placeholders until those details are ready.
+A private development version of the pepper trading card game website. Accounts, hourly token claims, balances, private trading sessions, and chat work now. Card artwork, packs, and paid token bundles are placeholders until those details are ready.
 
 ## Run it locally
 
@@ -13,7 +13,7 @@ A private development version of the pepper trading card game website. Accounts,
    MONGODB_DB=pepper_tcg
    ```
 
-   Keep the real connection string private. `.env` is excluded by `.gitignore`.
+   Use MongoDB Atlas or a MongoDB replica set so confirmed trades can update token balances and card ownership in one transaction. A standalone MongoDB server can store requests, but confirmations require a replica set. Keep the real connection string private. `.env` is excluded by `.gitignore`.
 4. Run `npm start`, then open `http://localhost:3000` in Chrome. Use `/profile` for the hourly token claim and Overview (`/`) for the pack animation test. The Packs page at `/packs` shows “Coming soon.” Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
 
 ## Accounts
@@ -44,6 +44,22 @@ Moving between the site's pages keeps chat open, with the same messages, draft, 
 
 The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player links to their profile.
 
+## Trading
+
+At `/trading`, send a trade request to another player's permanent account ID. The recipient can accept or decline it. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
+
+Both players must confirm the same current contributions before anything moves. Changing either contribution clears both confirmations, so each player reviews the new terms. Trades can exchange cards, tokens, or both, including gifts, and each side may include up to 50 cards. Separate copies of the same card are separate inventory items. Both sides cannot be empty when confirming.
+
+Requests and contribution changes do not reserve or move assets. The second confirmation checks both balances, card ownership, and tradability, then transfers everything together. If a player cannot afford their part or a card is no longer available, nothing moves. Either player can cancel a pending or joined session. Repeating a completed confirmation does not transfer assets again.
+
+Only the two players can view a session and its chat. The Trading page shows all active sessions and the latest 100 completed sessions. Private chat shows the latest 100 messages in order and remains readable after closing a session. Sessions, messages, and completed trades stay saved through server restarts and follow each player's current username. Retrying a message does not create a duplicate.
+
+Card trading uses catalog definitions and uniquely owned card copies saved in MongoDB. Inventory lists actual tradable copies, and contributions retain the card descriptions shown when selected. The framework does not issue demo cards to players. Packs still show “Coming soon,” and the animation test does not grant cards. Real pack issuance and purchases remain to be implemented.
+
+Existing pending offers become trade requests. Their sender's saved contribution stays hidden until the request is accepted, and the recipient then chooses their own contribution. Completed trade history stays intact.
+
+For server-side rewards, `cards.js` exports `upsertCardDefinition(store, { id, name, rarity, setName, imageUrl })` and `grantCards(store, { ownerAccountId, cardIds, grantId })`. `cardIds` are catalog IDs; repeated IDs issue distinct copies. Use a fresh UUID for each reward's `grantId` and reuse it when retrying that reward. A retry returns the original copy IDs, even after those cards have been traded. Reusing a grant ID for another owner or different contents is rejected. Future pack code can pass `{ session }` as a third argument inside its active MongoDB transaction to combine payment and issuance. There is no public card-issuing endpoint.
+
 ## Cloudflare verification
 
 The hourly token claim uses Cloudflare Turnstile. On `localhost` in a non-production run, the site uses [Cloudflare's test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) so you can test the claim flow without creating a Cloudflare account. For any deployed site, create a Turnstile widget for that hostname and set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. Keep the secret key private. The server verifies each token with Cloudflare before adding tokens. Test keys must not be used for a deployed site.
@@ -57,6 +73,7 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Username and password sign-up and login; sign out. Existing email logins remain available for accounts that already have an email. Passwords are salted and hashed.
 - Account details, username and password changes, and appearance settings at `/settings`, with light or dark mode saved per browser.
 - Persistent MongoDB account balances.
+- Private trading sessions with each player's own card and token selections, two confirmations, private chat, actual owned card inventories, cancellation, decline, saved history, and atomic transfers.
 - Public changelog entries saved in MongoDB, with publishing and deletion restricted to the original `675` account and an automatic footer version.
 - Public announcements styled like changelog entries, with publishing and deletion restricted to the same permanent owner.
 - A live count of unique signed-in players, shared across server instances and updated automatically above chat.
@@ -73,4 +90,4 @@ The Packs page at `/packs` currently displays “Coming soon.” There is curren
 
 Run behind HTTPS, configure real Cloudflare Turnstile keys, and add password recovery and chat moderation before accepting public users. Review privacy and payment requirements before accepting real users or payments. Back up MongoDB regularly once people use the site.
 
-Run the automated account and claim check with `npm test`.
+Run the automated account, claim, and trading checks with `npm test`. The trading tests start isolated local MongoDB replica sets automatically and seed test cards only in their temporary databases.

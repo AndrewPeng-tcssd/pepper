@@ -13,8 +13,8 @@ if (!/^[a-f0-9]{64}$/.test(token || '') || !['signup', 'login'].includes(purpose
   const signup = purpose === 'signup';
   title.textContent = signup ? 'Verify your email' : 'Confirm sign in';
   message.textContent = signup
-    ? 'Select the button to activate your account.'
-    : 'Select the button to finish signing in.';
+    ? 'Activate your account below.'
+    : 'Confirm sign-in below.';
   button.textContent = signup ? 'Verify email' : 'Confirm sign in';
   button.hidden = false;
 }

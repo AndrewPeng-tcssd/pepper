@@ -81,6 +81,11 @@ async function connectMongo(options = {}) {
     const verificationTokens = db.collection('verification_tokens');
     const changelog = db.collection('changelog');
     const announcements = db.collection('announcements');
+    const trades = db.collection('trades');
+    const tradeMessages = db.collection('trade_messages');
+    const cardDefinitions = db.collection('card_definitions');
+    const cardInstances = db.collection('card_instances');
+    const cardGrants = db.collection('card_grants');
     const siteSettings = db.collection('site_settings');
     let existingIndexes = [];
     try { existingIndexes = await users.indexes(); }
@@ -100,7 +105,15 @@ async function connectMongo(options = {}) {
       messages.createIndex({ userId: 1, createdAt: -1, _id: -1 }),
       messages.createIndex({ userId: 1, clientMessageId: 1 }, { unique: true, partialFilterExpression: { clientMessageId: { $type: 'string' } } }),
       changelog.createIndex({ createdAt: -1, _id: -1 }),
-      announcements.createIndex({ createdAt: -1, _id: -1 })
+      announcements.createIndex({ createdAt: -1, _id: -1 }),
+      trades.createIndex({ senderUserId: 1, clientOfferId: 1 }, { unique: true }),
+      trades.createIndex({ senderUserId: 1, updatedAt: -1, _id: -1 }),
+      trades.createIndex({ recipientUserId: 1, updatedAt: -1, _id: -1 }),
+      tradeMessages.createIndex({ tradeId: 1, createdAt: -1, _id: -1 }),
+      tradeMessages.createIndex({ tradeId: 1, senderUserId: 1, clientMessageId: 1 }, { unique: true }),
+      cardInstances.createIndex({ ownerUserId: 1, tradable: 1, acquiredAt: -1, _id: 1 }),
+      cardInstances.createIndex({ cardId: 1, ownerUserId: 1 }),
+      cardGrants.createIndex({ ownerUserId: 1, createdAt: -1 })
     ]);
     await backfillAccountIds(users);
     await siteSettings.updateOne(
@@ -110,7 +123,7 @@ async function connectMongo(options = {}) {
     );
     await resolveChangelogOwner(users, siteSettings);
     await trimChatHistory(messages);
-    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, siteSettings };
+    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, trades, tradeMessages, cardDefinitions, cardInstances, cardGrants, siteSettings };
   } catch (error) {
     await client.close();
     throw error;
