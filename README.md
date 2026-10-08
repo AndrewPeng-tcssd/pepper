@@ -46,7 +46,7 @@ The public `/leaderboard` page ranks the top 100 players by their current token 
 
 ## Trading
 
-At `/trading`, send a trade request to another player's permanent account ID. The recipient can accept or decline it. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
+At `/trading`, enter a player's username and send a request with one click. Requests use their permanent account ID internally. Incoming requests appear in a bottom-right popup across the site; accepting opens the trade session. The recipient can also accept or decline from Trading. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
 
 Both players must confirm the same current contributions before anything moves. Changing either contribution clears both confirmations, so each player reviews the new terms. Trades can exchange cards, tokens, or both, including gifts, and each side may include up to 50 cards. Separate copies of the same card are separate inventory items. Both sides cannot be empty when confirming.
 

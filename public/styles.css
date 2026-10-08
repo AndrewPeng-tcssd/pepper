@@ -198,24 +198,11 @@ input:focus { border-color: var(--accent); }
 .trading-help code, .trading-account-id code { overflow-wrap: anywhere; font-size: 12px; }
 .trading-form { display: grid; gap: 18px; margin-top: 24px; }
 .trading-form label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 600; }
-.trading-recipient-input { display: flex; flex-wrap: wrap; gap: 8px; }
-.trading-recipient-input input { flex: 1 1 135px; min-width: 0; }
-.trading-recipient-input .button { flex: 0 0 auto; }
-.trading-amounts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .trading-form .form-message { margin: 0 !important; }
 .trading-form > .button { justify-self: start; }
-.trading-recipient { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
-.trading-recipient a { overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
-.trading-recipient span { color: var(--muted); font-size: 12px; }
-.trading-recipient code { overflow-wrap: anywhere; font-size: 12px; }
-.trading-review { display: grid; gap: 16px; margin-top: 24px; }
-.trading-review h3 { margin: 0; font-size: 19px; }
-.trading-review > p { margin: 0; overflow-wrap: anywhere; }
-.trading-review > p a { font-weight: 600; }
 .trading-terms { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 1fr); gap: 12px; margin: 20px 0; font-size: 14px; }
 .trading-terms dt { color: var(--muted); }
 .trading-terms dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-weight: 650; text-align: right; font-variant-numeric: tabular-nums; }
-.trading-review .trading-terms { margin: 0; padding: 16px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .trading-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .trading-primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .trading-primary:hover { border-color: var(--accent-dark); background: var(--accent-dark); }
@@ -261,7 +248,6 @@ input:focus { border-color: var(--accent); }
 .trading-asset-cards { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
 .trading-asset-cards li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
 .trading-assets-tokens { overflow-wrap: anywhere; }
-#tradingReviewAvailability:empty { display: none; }
 .trading-session { margin-top: 28px; }
 .trading-session-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 24px 0 14px; }
 .trading-session-heading h2 { margin: 0; overflow-wrap: anywhere; font-size: 28px; }
@@ -292,6 +278,19 @@ input:focus { border-color: var(--accent); }
 #tradingDraftMessage.trading-draft-info { color: var(--muted); }
 #tradingSessionRules { max-width: 760px; }
 #tradingChatClosed { margin-top: 16px; }
+
+.trade-notification { position: fixed; z-index: 45; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); width: min(340px, calc(100vw - 32px)); max-height: calc(100svh - 32px); overflow-y: auto; padding: 22px; border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 40px var(--dialog-shadow); }
+.trade-notification h2 { margin-bottom: 10px; font-size: 20px; }
+.trade-notification p { margin: 0; overflow-wrap: anywhere; font-size: 14px; }
+.trade-notification a { font-weight: 650; }
+.trade-notification .trading-help { margin-top: 8px; font-size: 12px; }
+.trade-notification .trading-actions { margin-top: 18px; }
+.trade-notification .trading-primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.trade-notification .trading-primary:hover { border-color: var(--accent-dark); background: var(--accent-dark); }
+.trade-notification .form-message:empty { display: none; }
+.trade-notification .form-message:not(:empty) { margin-top: 12px; font-size: 13px; }
+
+@media (max-width: 600px) { .trade-notification { right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); padding: 20px; } }
 
 @media (max-width: 700px) { .trading-session-grid { grid-template-columns: minmax(0, 1fr); } }
 

@@ -7,8 +7,8 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=40">
-  <script src="/app.js?v=38" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=41">
+  <script src="/app.js?v=39" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -227,13 +227,11 @@
         </section>
         <div class="trading-layout" id="tradingLayout">
           <section class="trading-create trading-card" aria-labelledby="tradingCreateTitle">
-            <h2 id="tradingCreateTitle">Request a trade</h2><p class="trading-help">Send a trade request.</p>
+            <h2 id="tradingCreateTitle">Request a trade</h2>
             <form class="trading-form" id="tradingForm">
-              <div><label for="tradingRecipient">Player username</label><div class="trading-recipient-input"><input id="tradingRecipient" name="recipient" maxlength="32" autocomplete="off" spellcheck="false" required><button class="button" id="tradingLookup" type="button">Find player</button></div></div>
-              <p class="form-message" id="tradingLookupMessage" role="status"></p><div class="trading-recipient" id="tradingRecipientPreview" hidden><a id="tradingRecipientProfile"></a><span>Permanent account ID</span><code id="tradingRecipientId"></code></div>
-              <button class="button" id="tradingReview" type="submit">Review trade request</button>
+              <div><label for="tradingRecipient">Player username</label><input id="tradingRecipient" name="recipient" maxlength="32" autocomplete="off" spellcheck="false" required></div>
+              <button class="button" id="tradingSend" type="submit">Send request</button>
             </form>
-            <div class="trading-review" id="tradingReviewPanel" role="region" aria-labelledby="tradingReviewTitle" hidden><h3 id="tradingReviewTitle" tabindex="-1">Review trade request</h3><p>To <a id="tradingReviewRecipient"></a></p><p class="trading-help">Permanent account ID: <code id="tradingReviewAccountId"></code></p><p class="trading-help">Offers unlock after request acceptance.</p><div class="trading-actions"><button class="button trading-primary" id="tradingSend" type="button">Send trade request</button><button class="button" id="tradingEdit" type="button">Edit request</button></div></div>
             <p class="form-message" id="tradingFormMessage" role="status"></p>
           </section>
           <div class="trading-offers" id="tradingLists" aria-busy="false">
@@ -367,6 +365,12 @@
   </main>
 
   <footer><span>Pepper TCG · Build <a href="/changelog">v<span id="siteVersion"></span></a></span><span>© <span id="year"></span></span></footer>
+
+  <aside class="trade-notification" id="tradeNotification" aria-labelledby="tradeNotificationTitle" hidden>
+    <div aria-live="polite" aria-atomic="true"><h2 id="tradeNotificationTitle">Trade request</h2><p><a id="tradeNotificationSender"></a> wants to trade.</p><p class="trading-help" id="tradeNotificationCount" hidden></p></div>
+    <p class="form-message" id="tradeNotificationMessage" role="status"></p>
+    <div class="trading-actions"><button class="button trading-primary" id="tradeNotificationAccept" type="button">Accept</button><button class="button" id="tradeNotificationDismiss" type="button">Later</button></div>
+  </aside>
 
   <dialog id="authDialog" aria-labelledby="authTitle">
     <div class="dialog-content">
