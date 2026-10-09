@@ -117,7 +117,7 @@ input:focus { border-color: var(--accent); }
 .friends-sidebar { display: grid; gap: 20px; min-width: 0; }
 .friends-sidebar > section, .friends-request, .friends-chat { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .friends-sidebar h2, .friends-chat h2 { font-size: 21px; }
-.friends-sidebar > section > p, #friendChatEmpty { color: var(--muted); font-size: 14px; }
+.friends-sidebar > section > p, #friendConversationsEmpty { color: var(--muted); font-size: 14px; }
 .friends-request { display: grid; gap: 10px; }
 .friends-request h2 { margin-bottom: 6px; }
 .friends-request label { font-size: 13px; font-weight: 600; }
@@ -134,10 +134,16 @@ input:focus { border-color: var(--accent); }
 .friend-last-message-date { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .friend-unread { min-width: 20px; padding: 3px 6px; border-radius: 99px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; text-align: center; }
 #friendConversations { max-height: 380px; overflow-y: auto; }
+.friend-conversation-row { padding: 16px; }
+.friend-conversation-row .friend-row-name { font-size: 15px; }
+.friend-conversation-row .friend-last-message { font-size: 13px; }
+.friend-conversation-row .friend-last-message-date { font-size: 11px; }
 .friend-request-row { flex-wrap: wrap; }
 .friend-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .friend-row-actions .button { min-height: 36px; padding: 7px 10px; font-size: 12px; }
 .friends-chat .player-identity { overflow-wrap: anywhere; }
+.friend-chat-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.friend-chat-heading h2 { margin: 0; }
 .friend-chat-messages { display: flex; flex-direction: column; gap: 14px; min-height: 260px; max-height: 480px; margin: 22px 0; padding: 16px 0; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .friend-chat-row { align-self: flex-start; max-width: 94%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); overflow-wrap: anywhere; }
 .friend-chat-own { align-self: flex-end; background: var(--accent-soft); }

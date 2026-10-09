@@ -16,7 +16,7 @@ function deferred() { let resolve; const promise = new Promise(done => { resolve
 
 // Run the complete production module with DOM, time, and API boundaries replaced.
 function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, network, options = {}) {
-  const elements = new Map(), calls = [], timers = new Map(), intervals = [], listeners = new Map(), pickers = [];
+  const elements = new Map(), calls = [], timers = new Map(), intervals = [], listeners = new Map(), pickers = [], navigations = [];
   const clock = { now: Date.now() };
   let context, timerId = 0;
   const node = (id = '', attrs = '', tagName = '') => {
@@ -56,6 +56,10 @@ function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, n
       if (context.state.user?.accountId !== value?.accountId) context.userIdentityRevision++;
       context.state.user = value; context.window.PepperFriends.syncUser();
     },
+    navigateTo(href, options) {
+      navigations.push({ href, options }); context.window.location.search = ''; context.pageKind = 'friends'; context.routeRevision++;
+      context.window.PepperFriends.onRoute(); return true;
+    },
     api: async (route, options = {}) => {
       const call = { route, method: options.method || 'GET', payload: options.body ? JSON.parse(options.body) : null }; calls.push(call);
       const result = network ? await network(call) : undefined;
@@ -72,7 +76,7 @@ function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, n
   vm.runInContext(source.replace('window.PepperFriends = { syncUser, onRoute, load, openConversation };', 'window.PepperFriends = { syncUser, onRoute, load, inspect: () => friends, openConversation, loadMessages, requestFriend, perform, sendMessage, act, render, markRead };'), context);
   boundary.setUser(user);
   return {
-    api: context.window.PepperFriends, elements, calls, timers, intervals, listeners, pickers, context, snapshot, setUser: boundary.setUser,
+    api: context.window.PepperFriends, elements, calls, timers, intervals, listeners, pickers, navigations, context, snapshot, setUser: boundary.setUser,
     navigate(page, search = '') { context.pageKind = page; context.window.location.search = search; context.routeRevision++; context.window.PepperFriends.onRoute(); },
     async runNextTimer() {
       const item = [...timers].sort((a, b) => a[1].at - b[1].at)[0]; assert.ok(item, 'A retry is scheduled');
@@ -367,10 +371,11 @@ test('message lists show previews, dates, and unread counts and sort unread conv
   const newestRead = history('read', 0, '2026-10-08T13:00:00Z', local);
   const ui = harness(local, { friends: [newestRead, olderUnread, noHistory, newerUnread], incoming: [], outgoing: [] }); await tick();
   const rows = ui.elements.get('friendConversations').children;
-  assert.deepEqual(rows.map(row => row.dataset.friendId), [newerUnread.id, olderUnread.id, newestRead.id]);
+  assert.deepEqual(rows.map(row => row.dataset.friendId), [newerUnread.id, olderUnread.id, newestRead.id, noHistory.id]);
   assert.equal(ui.elements.get('friendConversationsEmpty').hidden, true);
   assert.equal(ui.elements.get('friendsList').children.length, 4);
   assert.match(allText(rows[0]), /Latest from newer/); assert.match(allText(rows[2]), /You: Latest from read/);
+  assert.match(allText(rows[3]), /No messages yet\./);
   const date = descendants(rows[0]).find(item => item.tagName === 'TIME');
   assert.equal(date.dateTime, newerUnread.lastMessage.createdAt); assert.ok(date.textContent.length > 0);
   assert.ok(rows[0]['aria-label'].includes('Latest from newer')); assert.ok(rows[0]['aria-label'].includes(date.textContent));
@@ -497,4 +502,97 @@ test('a delayed send receipt keeps the latest displayed message as the read snap
   assert.equal(reads(ui).at(-1).payload.messageId, newer.id);
   const rows = ui.elements.get('friendChatMessages').children;
   assert.match(allText(rows[0]), /Older send/); assert.match(allText(rows[1]), /Newer incoming/);
+});
+
+test('Messages starts with every accepted friend and Back restores that list and its keyboard focus', async () => {
+  const friend = friendship('other');
+  const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }); await tick();
+  assert.equal(ui.elements.get('friendInbox').hidden, false);
+  assert.equal(ui.elements.get('friendChatContent').hidden, true);
+  assert.equal(ui.elements.get('friendChatBack').hidden, true);
+  assert.equal(ui.elements.has('friendChatEmpty'), false);
+  assert.equal(ui.elements.get('friendConversations').children.length, 1);
+  assert.match(allText(ui.elements.get('friendConversations')), /other.*No messages yet\./);
+  const row = ui.elements.get('friendConversations').children[0];
+  const username = descendants(row).find(item => item.textContent === 'other');
+  ui.elements.get('friendsPage').dispatch('click', username); await tick();
+  assert.equal(ui.elements.get('friendInbox').hidden, true);
+  assert.equal(ui.elements.get('friendChatContent').hidden, false);
+  assert.equal(ui.elements.get('friendChatBack').hidden, false);
+  ui.elements.get('friendChatInput').value = 'Unfinished reply';
+  ui.elements.get('friendChatBack').click();
+  assert.equal(ui.api.inspect().selectedId, null);
+  assert.equal(ui.elements.get('friendInbox').hidden, false);
+  assert.equal(ui.elements.get('friendChatContent').hidden, true);
+  assert.equal(ui.elements.get('friendChatBack').hidden, true);
+  const restoredRow = ui.elements.get('friendConversations').children[0];
+  assert.equal(ui.context.document.activeElement, restoredRow);
+  assert.equal(ui.navigations.length, 0, 'Back without a deep link stays local');
+  ui.elements.get('friendsPage').dispatch('click', restoredRow); await tick();
+  assert.equal(ui.elements.get('friendChatInput').value, 'Unfinished reply');
+});
+
+test('an empty Messages inbox displays the no-friends state without a conversation placeholder', async () => {
+  const ui = harness(player('local')); await tick();
+  assert.equal(ui.elements.get('friendInbox').hidden, false);
+  assert.equal(ui.elements.get('friendConversationsEmpty').hidden, false);
+  assert.equal(ui.elements.get('friendConversations').children.length, 0);
+  assert.equal(ui.elements.get('friendChatContent').hidden, true);
+  assert.equal(ui.elements.get('friendChatBack').hidden, true);
+});
+
+test('Back removes a notification deep link so refreshes cannot reopen the abandoned conversation', async () => {
+  const friend = friendship('other');
+  const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }, undefined, { search: `?conversation=${friend.id}` }); await tick();
+  assert.equal(ui.api.inspect().selectedId, friend.id);
+  ui.elements.get('friendChatBack').click(); await tick();
+  assert.equal(ui.context.window.location.search, '');
+  assert.equal(ui.navigations.length, 1);
+  assert.equal(ui.navigations[0].href, '/friends');
+  assert.deepEqual({ ...ui.navigations[0].options }, { replace: true, focus: false, scroll: false });
+  assert.equal(ui.api.inspect().selectedId, null);
+  ui.api.onRoute(); await ui.api.load(); await tick();
+  assert.equal(ui.api.inspect().selectedId, null);
+  assert.equal(ui.elements.get('friendInbox').hidden, false);
+  ui.navigate('games'); ui.navigate('friends'); await tick();
+  assert.equal(ui.api.inspect().selectedId, null);
+});
+
+test('Back invalidates delayed conversation loads and read acknowledgements', async () => {
+  const friend = friendship('other'), incoming = message(friend.player, 'Old conversation response');
+  for (const mode of ['messages', 'read']) {
+    const delayed = deferred();
+    friend.lastMessage = incoming; friend.unreadCount = 1;
+    const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }, call => {
+      if (call.route.endsWith('/messages')) return mode === 'messages' ? delayed.promise : { friend, messages: [incoming] };
+      if (call.route.endsWith('/read')) return delayed.promise;
+    });
+    await tick(); ui.api.openConversation(friend.id); await tick(); ui.elements.get('friendChatBack').click();
+    delayed.resolve(mode === 'messages' ? { friend, messages: [incoming] } : { friend: { ...friend, unreadCount: 0 } }); await tick();
+    assert.equal(ui.api.inspect().selectedId, null, mode);
+    assert.equal(ui.api.inspect().messages.length, 0, mode);
+    assert.equal(ui.elements.get('friendInbox').hidden, false, mode);
+    assert.equal(ui.api.inspect().entries[0].unreadCount, 1, mode);
+    if (mode === 'messages') assert.equal(reads(ui).length, 0);
+  }
+});
+
+test('pending messages still retry to their original friend after Back and another selection', async () => {
+  const local = player('local'), first = friendship('first'), second = friendship('second'); let attempts = 0;
+  const ui = harness(local, { friends: [first, second], incoming: [], outgoing: [] }, call => {
+    if (call.method === 'POST' && call.route.endsWith('/messages')) {
+      if (++attempts === 1) throw Object.assign(new Error('Too fast'), { status: 429, retryAfterMs: 200 });
+      return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
+    }
+  });
+  await tick(); ui.api.openConversation(first.id); await tick(); send(ui, 'Queued for first'); await tick();
+  ui.elements.get('friendChatBack').click(); assert.equal(ui.api.inspect().outbox.length, 1);
+  ui.api.openConversation(second.id); await tick();
+  while (posts(ui).length < 2) await ui.runNextTimer();
+  assert.equal(posts(ui)[0].route, `friends/${first.id}/messages`);
+  assert.equal(posts(ui)[1].route, `friends/${first.id}/messages`);
+  assert.deepEqual(posts(ui)[0].payload, posts(ui)[1].payload);
+  assert.equal(ui.api.inspect().selectedId, second.id);
+  assert.equal(ui.api.inspect().outbox.length, 0);
+  assert.doesNotMatch(allText(ui.elements.get('friendChatMessages')), /Queued for first/);
 });

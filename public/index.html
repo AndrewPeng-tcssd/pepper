@@ -7,12 +7,12 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=52">
+  <link rel="stylesheet" href="/styles.css?v=53">
   <script src="/player-picker.js?v=1" defer></script>
   <script src="/app.js?v=52" defer></script>
   <script src="/games.js?v=4" defer></script>
   <script src="/moderation.js?v=7" defer></script>
-  <script src="/friends.js?v=2" defer></script>
+  <script src="/friends.js?v=3" defer></script>
   <script src="/notifications.js?v=1" defer></script>
   <script src="/news-comments.js?v=1" defer></script>
   <script src="/announcement-popup.js?v=1" defer></script>
@@ -300,7 +300,6 @@
       <div id="friendsAccount" hidden>
         <div class="friends-layout">
           <div class="friends-sidebar">
-            <section aria-labelledby="friendConversationsTitle"><h2 id="friendConversationsTitle">Messages</h2><p id="friendConversationsEmpty">No messages yet.</p><div class="friends-list" id="friendConversations"></div></section>
             <form class="friends-request" id="friendRequestForm">
               <h2>Add a friend</h2>
               <label for="friendUsername">Username</label><div class="player-picker"><input id="friendUsername" maxlength="24" autocomplete="off" spellcheck="false" required placeholder="Player username"></div>
@@ -312,7 +311,8 @@
             <section aria-labelledby="friendOutgoingTitle"><h2 id="friendOutgoingTitle">Sent requests</h2><p id="friendOutgoingEmpty">No sent requests.</p><div class="friends-list" id="friendOutgoing"></div></section>
           </div>
           <section class="friends-chat" id="friendChat" aria-labelledby="friendChatTitle">
-            <h2 id="friendChatTitle">Messages</h2><p id="friendChatEmpty">Choose a friend.</p>
+            <div class="friend-chat-heading"><button class="button" id="friendChatBack" type="button" aria-label="Back to messages" hidden>← Back</button><h2 id="friendChatTitle" tabindex="-1">Messages</h2></div>
+            <div id="friendInbox"><p id="friendConversationsEmpty">No friends yet.</p><div class="friends-list" id="friendConversations"></div></div>
             <div id="friendChatContent" hidden>
               <div id="friendChatPlayer"></div>
               <div class="friend-chat-messages" id="friendChatMessages" role="log" aria-live="polite" aria-relevant="additions"></div>

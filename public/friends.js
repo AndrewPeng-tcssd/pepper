@@ -50,9 +50,9 @@
     const name = document.createElement('span'); name.className = 'friend-row-name';
     const username = document.createElement('span'); username.textContent = friend.player.username;
     name.append(username, playerRoleBadges(friend.player)); details.append(name);
-    if (conversation && friend.lastMessage) {
+    if (conversation) {
       const preview = document.createElement('span'); preview.className = 'friend-last-message';
-      preview.textContent = `${friend.lastMessage.sender?.accountId === friends.identity ? 'You: ' : ''}${friend.lastMessage.text}`;
+      preview.textContent = friend.lastMessage ? `${friend.lastMessage.sender?.accountId === friends.identity ? 'You: ' : ''}${friend.lastMessage.text}` : 'No messages yet.';
       details.append(preview); label.push(preview.textContent);
     }
     identity.append(profileAvatar(friend.player, 'player-avatar', true), details); row.append(identity);
@@ -77,9 +77,9 @@
     friends.listSignature = signature;
     const focused = document.activeElement?.closest('[data-friend-action]'), renderedControls = [];
     el('friendsEmpty').hidden = friends.entries.length > 0;
-    const entries = sortFriends(friends.entries), conversations = entries.filter(friend => friend.lastMessage);
-    el('friendConversationsEmpty').hidden = conversations.length > 0;
-    for (const [id, list, conversation] of [['friendConversations', conversations, true], ['friendsList', entries, false]]) {
+    const entries = sortFriends(friends.entries);
+    el('friendConversationsEmpty').hidden = entries.length > 0;
+    for (const [id, list, conversation] of [['friendConversations', entries, true], ['friendsList', entries, false]]) {
       const rows = list.map(friend => friendRow(friend, conversation)); renderedControls.push(...rows); el(id).replaceChildren(...rows);
     }
     for (const [id, emptyId, entries, incoming] of [
@@ -103,7 +103,8 @@
   }
   function renderChat() {
     const friend = selectedFriend();
-    el('friendChatEmpty').hidden = !!friend; el('friendChatContent').hidden = !friend;
+    el('friendInbox').hidden = !!friend; el('friendChatContent').hidden = !friend;
+    el('friendChatBack').hidden = !friend; el('friendChatBack').disabled = !active() || state.accountSubmitting;
     el('friendChatInput').disabled = !active() || !friend || friend.player.banned || state.accountSubmitting;
     el('friendChatSend').disabled = !active() || !friend || friend.player.banned || state.accountSubmitting;
     if (!friend) { el('friendChatPlayer').replaceChildren(); el('friendChatMessages').replaceChildren(); return; }
@@ -253,6 +254,14 @@
     render(); void loadMessages();
     el('friendChatInput').focus({ preventScroll: true });
   }
+  function closeConversation() {
+    if (!active() || state.accountSubmitting) return;
+    const id = friends.selectedId;
+    friends.requestedId = null; clearConversation(); render();
+    if (new URLSearchParams(window.location.search).has('conversation')) navigateTo('/friends', { replace: true, focus: false, scroll: false });
+    const row = Array.from(el('friendConversations').children).find(control => control.dataset.friendId === id);
+    (row || el('friendChatTitle')).focus({ preventScroll: true });
+  }
   function reconcileMessages(messages) {
     friends.messages = messages.slice().sort(messageOrder).slice(-100);
     const receipts = new Set(messages.filter(item => item.sender.accountId === friends.identity).map(item => item.clientMessageId).filter(Boolean));
@@ -376,6 +385,7 @@
   el('friendRequestForm').addEventListener('submit', event => void requestFriend(event));
   el('friendUsername').addEventListener('input', () => { friends.requestDraft = null; message(el('friendRequestMessage'), ''); });
   el('friendChatForm').addEventListener('submit', sendMessage);
+  el('friendChatBack').addEventListener('click', closeConversation);
   el('friendsRefresh').addEventListener('click', () => { void load(); void loadMessages(); });
   el('friendsJoin').addEventListener('click', () => el('accountButton').click());
   el('friendsPage').addEventListener('click', event => {
