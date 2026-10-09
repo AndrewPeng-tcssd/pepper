@@ -14,8 +14,8 @@ function appFunction(name) {
 }
 const person = (accountId, role = 'player', banned = false) => ({ accountId, username: accountId, role, banned });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function harness(user, { storage = new Map(), network, withPicker = false } = {}) {
-  const elements = new Map(), calls = [], windowListeners = new Map();
+function harness(user, { storage = new Map(), network, versionNetwork, withPicker = false } = {}) {
+  const elements = new Map(), calls = [], versionCalls = [], changelogRefreshes = [], windowListeners = new Map();
   const picker = { config: null, resets: 0, closes: 0, refreshes: 0 };
   let context;
   const node = id => {
@@ -38,17 +38,22 @@ function harness(user, { storage = new Map(), network, withPicker = false } = {}
         picker.config = config;
         return { reset() { picker.resets++; }, close() { picker.closes++; }, refresh() { picker.refreshes++; } };
       } } } : {})
-    }, accountBanned: false,
+    }, accountBanned: false, changelogRevision: 0,
     state: { user, accountSubmitting: false, chatMessages: [], profile: null, leaderboard: null }, trading: { chatMessages: [] },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     accountRole: value => value?.role || 'player', profileHref: name => `/profile/${name}`, profileAvatar: () => node(), playerRoleBadges: () => node(),
     renderChangelogEditor() {}, renderAnnouncementEditor() {}, setChatOpen() {}, renderChat() {}, renderProfileDetails() {}, renderLeaderboard() {}, renderTradeChat() {}, loadPresence() {}, loadLeaderboard() {}, loadChat() {}, clearChatReply() {}, navigateTo() {},
+    loadChangelog: refresh => { changelogRefreshes.push(refresh); },
     message: (target, text) => { target.textContent = text; },
-    api: async (route, options = {}) => { const call = { route, method: options.method || 'GET', payload: options.body ? JSON.parse(options.body) : undefined }; calls.push(call); return network ? network(call) : route.startsWith('moderation/players?') ? { players: [] } : {}; },
+    api: async (route, options = {}) => {
+      const call = { route, method: options.method || 'GET', payload: options.body ? JSON.parse(options.body) : undefined };
+      if (route === 'version') { versionCalls.push(call); return versionNetwork ? versionNetwork(call) : { version: call.payload?.version || '0.6.1-2' }; }
+      calls.push(call); return network ? network(call) : route.startsWith('moderation/players?') ? { players: [] } : {};
+    },
     setUser: value => { context.state.user = value; context.window.PepperModeration.syncUser(); }
   });
   vm.runInContext(source.replace(/  syncUser\(\);\s*\}\)\(\);\s*$/, '  Object.assign(window.PepperModeration, { canBan, canDeleteChat, changePlayer, deleteChat, findPlayers, inspect: () => moderation });\n  syncUser();\n})();'), context);
-  return { api: context.window.PepperModeration, context, elements, calls, storage, picker, enable: () => elements.get('moderationViewToggle').click(), storageEvent: event => windowListeners.get('storage')?.(event) };
+  return { api: context.window.PepperModeration, context, elements, calls, versionCalls, changelogRefreshes, storage, picker, enable: () => elements.get('moderationViewToggle').click(), storageEvent: event => windowListeners.get('storage')?.(event) };
 }
 function showProfile(ui, player) {
   ui.context.state.profile = player;
@@ -434,4 +439,157 @@ test('late banned API responses cannot replace a newer account with the banned s
     await rejected;
     assert.equal(bannedScreens, switchedAccount ? 0 : 1);
   }
+});
+
+function editVersion(ui, value) {
+  ui.elements.get('adminVersion').value = value;
+  ui.elements.get('adminVersion').dispatch('input');
+}
+const submitVersion = ui => ui.elements.get('adminVersionForm').dispatch('submit');
+
+test('site version controls and reads require an enabled admin view', async () => {
+  for (const user of [null, person('ordinary'), person('mod', 'mod'), person('banned', 'admin', true)]) {
+    const ui = harness(user); ui.enable(); await flush();
+    assert.equal(ui.elements.get('adminVersionSettings').hidden, true);
+    assert.equal(ui.elements.get('adminVersionSave').disabled, true);
+    editVersion(ui, '0.6.1-3'); submitVersion(ui); await flush();
+    assert.equal(ui.versionCalls.length, 0);
+  }
+  const admin = person('admin', 'admin'), ui = harness(admin);
+  assert.equal(ui.elements.get('adminVersionSettings').hidden, true);
+  assert.equal(ui.versionCalls.length, 0);
+  ui.enable(); await flush();
+  assert.equal(ui.elements.get('adminVersionSettings').hidden, false);
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-2');
+  assert.deepEqual(ui.versionCalls, [{ route: 'version', method: 'GET', payload: undefined }]);
+  ui.context.setUser({ ...admin, balance: 75 }); ui.api.syncUser(); await flush();
+  assert.equal(ui.versionCalls.length, 1, 'Routine account refresh does not fetch the version again');
+  ui.enable(); ui.enable(); await flush();
+  assert.equal(ui.versionCalls.length, 2, 'Reopening fetches the current version once');
+});
+
+test('saving the site version sends only a version and refreshes the public version immediately', async () => {
+  const ui = harness(person('admin', 'admin')); ui.enable(); await flush();
+  editVersion(ui, ' V0.6.1-3 '); submitVersion(ui); await flush();
+  assert.deepEqual(ui.versionCalls.at(-1), { route: 'version', method: 'PATCH', payload: { version: '0.6.1-3' } });
+  assert.equal(ui.calls.filter(call => call.route.startsWith('changelog')).length, 0);
+  assert.equal(ui.elements.get('siteVersion').textContent, '0.6.1-3');
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-3');
+  assert.equal(ui.elements.get('adminVersionMessage').textContent, 'Version saved.');
+  assert.equal(ui.context.changelogRevision, 1);
+  assert.deepEqual(ui.changelogRefreshes, [true]);
+});
+
+test('invalid standalone versions cannot reach the server', async () => {
+  const ui = harness(person('admin', 'admin')); ui.enable(); await flush();
+  for (const value of ['', '0.6.1', '0.6.1--1', '0.6.01-2', '0.6.1-2 trailing', `${'9'.repeat(32)}.1.1-0`]) {
+    editVersion(ui, value); submitVersion(ui); await flush();
+    assert.match(ui.elements.get('adminVersionMessage').textContent, /0\.6\.1-2/);
+  }
+  assert.equal(ui.versionCalls.filter(call => call.method === 'PATCH').length, 0);
+  assert.equal(ui.context.changelogRevision, 0);
+});
+
+test('pending version saves disable repeated submissions and keep the submitted draft', async () => {
+  let resolve;
+  const pending = new Promise(done => { resolve = done; });
+  const ui = harness(person('admin', 'admin'), { versionNetwork: call => call.method === 'GET' ? { version: '0.6.1-2' } : pending });
+  ui.enable(); await flush(); editVersion(ui, '0.6.1-3'); submitVersion(ui);
+  assert.equal(ui.elements.get('adminVersion').disabled, true);
+  assert.equal(ui.elements.get('adminVersionSave').disabled, true);
+  assert.equal(ui.elements.get('adminVersionSave').textContent, 'Saving…');
+  ui.api.syncVersion('0.6.1-8'); submitVersion(ui);
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-3');
+  assert.equal(ui.versionCalls.filter(call => call.method === 'PATCH').length, 1);
+  resolve({ version: '0.6.1-3' }); await flush();
+  assert.equal(ui.elements.get('adminVersionSave').disabled, false);
+  assert.equal(ui.elements.get('adminVersionSave').textContent, 'Save version');
+  assert.equal(ui.elements.get('siteVersion').textContent, '0.6.1-3');
+});
+
+test('version drafts survive public refreshes and view toggles but clear on account or role changes', async () => {
+  const ui = harness(person('admin', 'admin')); ui.enable(); await flush();
+  ui.api.syncVersion('0.6.1-4');
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-4');
+  editVersion(ui, '0.6.1-9'); ui.api.syncVersion('0.6.1-5');
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-9');
+  ui.enable(); ui.enable(); await flush();
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-9');
+  ui.context.setUser(person('other-admin', 'admin'));
+  assert.equal(ui.elements.get('adminVersion').value, '');
+  ui.enable(); await flush();
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-2');
+  editVersion(ui, '0.6.1-8'); ui.context.setUser(person('other-admin', 'mod'));
+  assert.equal(ui.elements.get('adminVersion').value, '');
+  assert.equal(ui.elements.get('adminVersionSettings').hidden, true);
+});
+
+test('late version reads cannot cross admin account, role, or view changes', async () => {
+  for (const transition of ['account', 'role', 'view', 'storage', 'banned']) {
+    let resolve;
+    const pending = new Promise(done => { resolve = done; });
+    const ui = harness(person('admin', 'admin'), { versionNetwork: () => pending }); ui.enable(); await flush();
+    if (transition === 'account') ui.context.setUser(person('another', 'admin'));
+    if (transition === 'role') ui.context.setUser(person('admin', 'mod'));
+    if (transition === 'view') ui.enable();
+    if (transition === 'storage') ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'closed' });
+    if (transition === 'banned') { ui.context.accountBanned = true; ui.api.syncUser(); }
+    ui.api.syncVersion('0.6.1-8');
+    resolve({ version: '0.6.1-2' }); await flush();
+    assert.equal(ui.elements.get('adminVersion').value, '0.6.1-8', transition);
+    assert.equal(ui.elements.get('adminVersionSettings').hidden, true, transition);
+    assert.equal(ui.elements.get('adminVersionMessage').textContent.includes('unavailable'), false, transition);
+  }
+});
+
+test('a standalone save invalidates an older version read', async () => {
+  let resolve;
+  const pending = new Promise(done => { resolve = done; });
+  const ui = harness(person('admin', 'admin'), { versionNetwork: call => call.method === 'GET' ? pending : { version: call.payload.version } });
+  ui.enable(); editVersion(ui, '0.6.1-3'); submitVersion(ui); await flush();
+  resolve({ version: '0.6.1-2' }); await flush();
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-3');
+  assert.equal(ui.elements.get('siteVersion').textContent, '0.6.1-3');
+  assert.equal(ui.elements.get('adminVersionMessage').textContent, 'Version saved.');
+  assert.equal(ui.context.changelogRevision, 1);
+});
+
+test('late version saves cannot overwrite a newer account or closed management view', async () => {
+  for (const transition of ['account', 'role', 'view', 'storage', 'banned']) {
+    let resolve;
+    const pending = new Promise(done => { resolve = done; });
+    const ui = harness(person('admin', 'admin'), { versionNetwork: call => call.method === 'GET' ? { version: '0.6.1-2' } : pending });
+    ui.enable(); await flush(); ui.elements.get('siteVersion').textContent = '0.6.1-2';
+    editVersion(ui, '0.6.1-3'); submitVersion(ui);
+    if (transition === 'account') ui.context.setUser(person('another', 'admin'));
+    if (transition === 'role') ui.context.setUser(person('admin', 'mod'));
+    if (transition === 'view') ui.enable();
+    if (transition === 'storage') ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'closed' });
+    if (transition === 'banned') { ui.context.accountBanned = true; ui.api.syncUser(); }
+    resolve({ version: '0.6.1-3' }); await flush();
+    assert.equal(ui.elements.get('siteVersion').textContent, '0.6.1-2', transition);
+    assert.equal(ui.context.changelogRevision, 0, transition);
+    assert.equal(ui.changelogRefreshes.length, 0, transition);
+    assert.equal(ui.elements.get('adminVersionSettings').hidden, true, transition);
+    assert.equal(ui.elements.get('adminVersionMessage').textContent.includes('saved'), false, transition);
+  }
+});
+
+test('failed version saves preserve the draft and allow retry', async () => {
+  let fail = true;
+  const ui = harness(person('admin', 'admin'), { versionNetwork: call => {
+    if (call.method === 'GET') return { version: '0.6.1-2' };
+    if (fail) throw new Error('Could not save.');
+    return { version: call.payload.version };
+  } });
+  ui.enable(); await flush(); editVersion(ui, '0.6.1-3'); submitVersion(ui); await flush();
+  assert.equal(ui.elements.get('adminVersionMessage').textContent, 'Could not save.');
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-3');
+  assert.equal(ui.elements.get('adminVersionSave').disabled, false);
+  assert.equal(ui.context.changelogRevision, 0);
+  ui.api.syncVersion('0.6.1-7');
+  assert.equal(ui.elements.get('adminVersion').value, '0.6.1-3');
+  fail = false; submitVersion(ui); await flush();
+  assert.equal(ui.elements.get('siteVersion').textContent, '0.6.1-3');
+  assert.equal(ui.context.changelogRevision, 1);
 });

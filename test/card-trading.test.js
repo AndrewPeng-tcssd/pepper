@@ -10,8 +10,8 @@ let mongo;
 before(async () => { mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } }); });
 after(async () => { await mongo?.stop(); });
 
-function serve(t, store) {
-  const server = createApp(store, { mailer: null }).listen(0);
+function serve(t, store, options = {}) {
+  const server = createApp(store, { mailer: null, ...options }).listen(0);
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   return async (route, body, cookie, method) => {
@@ -27,14 +27,14 @@ function serve(t, store) {
   };
 }
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const store = await connectMongo({ uri: mongo.getUri(), dbName: `card_session_${crypto.randomBytes(5).toString('hex')}` });
   t.after(() => store.client.close());
   await store.cardDefinitions.insertMany([
     { _id: 'test-jalapeno', name: 'Test Jalapeño', rarity: 'Common', setName: 'Test Harvest', imageUrl: null },
     { _id: 'test-habanero', name: 'Test Habanero', rarity: 'Rare', setName: 'Test Harvest', imageUrl: '/test-habanero.webp' }
   ]);
-  return { store, api: serve(t, store) };
+  return { store, api: serve(t, store, options) };
 }
 
 async function player(api, store, username, balance = 0) {
@@ -88,6 +88,22 @@ async function settle(api, sender, recipient, original) {
   assert.equal(second.status, 200);
   return second.data.trade;
 }
+
+test('autosave contributions allow 300 updates per minute and resume after the retry window', async t => {
+  let clock = Date.now();
+  const { api, store } = await fixture(t, { now: () => clock });
+  const sender = await player(api, store, 'autosave_sender', 100), recipient = await player(api, store, 'autosave_recipient', 100);
+  let trade = await join(api, recipient, await offer(api, sender, terms(recipient)));
+  for (let count = 0; count < 300; count++) trade = await contribute(api, sender, trade, [], count % 2 ? 0 : 1);
+  const before = await store.trades.findOne({ _id: new ObjectId(trade.id) });
+  const limited = await api(`/api/trades/${trade.id}/contribution`, { tokens: 1, cardIds: [], version: trade.version }, sender.cookie);
+  assert.equal(limited.status, 429); assert.equal(limited.data.retryAfterMs, 60000);
+  assert.deepEqual(await store.trades.findOne({ _id: new ObjectId(trade.id) }), before);
+  clock += limited.data.retryAfterMs;
+  trade = await contribute(api, sender, trade, [], 1);
+  assert.equal(trade.offeredTokens, 1); assert.equal(trade.senderConfirmed, false); assert.equal(trade.recipientConfirmed, false);
+  assert.equal((await store.users.findOne({ _id: sender.id })).balance, 100);
+});
 
 async function ownerOf(store, id) {
   const card = await store.cardInstances.findOne({ _id: new ObjectId(id) });

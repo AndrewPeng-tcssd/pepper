@@ -98,11 +98,12 @@
     if (!game) return;
     el('gamesSessionTitle').textContent = names[game.game];
     el('gamesSessionStatus').textContent = status(game);
+    const xAccountId = game.xAccountId ?? (['playing', 'completed'].includes(game.status) ? game.sender.accountId : null);
     el('gamesPlayers').replaceChildren(...[self(game), other(game)].map((player, index) => {
       const side = document.createElement('div'); side.className = 'games-player';
       const label = document.createElement('span'); label.className = 'games-player-label';
       label.textContent = index === 0 ? 'You' : 'Opponent'; side.append(label, playerLink(player));
-      if (game.game === 'tic-tac-toe') { const symbol = document.createElement('strong'); symbol.className = 'games-player-symbol'; symbol.textContent = player.accountId === game.sender.accountId ? 'X' : 'O'; side.append(symbol); }
+      if (game.game === 'tic-tac-toe' && xAccountId) { const symbol = document.createElement('strong'); symbol.className = 'games-player-symbol'; symbol.textContent = player.accountId === xAccountId ? 'X' : 'O'; side.append(symbol); }
       return side;
     }));
     el('gamesStakeSummary').textContent = invalidRequest(game) ? 'Invalid bet' : `${count(game.stake)} tokens each`;

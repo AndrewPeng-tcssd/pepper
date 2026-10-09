@@ -75,6 +75,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   const navigated = [];
   const chatChanges = [];
   const playerPickers = [];
+  const timers = new Map(); let timerId = 0, clock = Date.now();
   let context;
   const element = (id, attributes = '') => {
     const classes = new Set();
@@ -87,7 +88,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
         toggle: (name, enabled) => { if (enabled) classes.add(name); else classes.delete(name); }
       },
       addEventListener: (type, listener) => { listeners.set(type, [...(listeners.get(type) || []), listener]); },
-      async dispatch(type) { await Promise.all((listeners.get(type) || []).map(listener => listener({ preventDefault() {}, target: this }))); },
+      async dispatch(type, target = this) { await Promise.all((listeners.get(type) || []).map(listener => listener({ preventDefault() {}, target }))); },
       focus() { document.activeElement = this; },
       reset() { if (id === 'tradingForm') elements.get('tradingRecipient').value = ''; },
       replaceChildren(...children) { this.children = children; },
@@ -102,7 +103,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   for (const match of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*\bid="([^"]+)"[^>]*)>/g)) elements.set(match[2], element(match[2], match[1]));
   const document = { getElementById: id => elements.get(id) || null, createElement: tag => element(tag), body: element('body'), activeElement: null, querySelectorAll: () => [], querySelector: () => null };
   const boundary = {
-    document, crypto, console, URLSearchParams, window: { PepperPlayerPicker: {
+    document, crypto, console, URLSearchParams, Date: class extends Date { static now() { return clock; } }, window: { setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, at: clock + delay }); return id; }, clearTimeout(id) { timers.delete(id); }, PepperPlayerPicker: {
       attach(settings) { const picker = { closed: 0, close() { this.closed++; }, reset() { this.closed++; } }; playerPickers.push({ settings, picker }); return picker; },
       closeAll() { playerPickers.forEach(({ picker }) => picker.reset()); }
     } },
@@ -146,15 +147,16 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     'newestTrade', 'rememberTrade', 'syncTradingUser', 'tradeStatusLabel', 'reconcileTradeAction',
     'renderTradeNotification', 'acceptTradeNotification', 'declineTradeNotification', 'renderTradingState', 'loadTrades',
     'invalidateTradeReview', 'findTradingRecipient', 'finishSendingTrade', 'sendTradingOffer', 'actOnTrade',
-    'prefillTradingRecipient', 'renderRoute', 'setupTradingPlayerPicker'
+    'prefillTradingRecipient', 'renderRoute', 'setupTradingPlayerPicker', 'cancelTradeAutosave', 'syncTradeAutosaveRoute', 'scheduleTradeAutosave'
   ];
-  if (sessionRendering) functions.push('renderTradeSession', 'renderTradeAssets', 'ownTradeSide', 'partnerTradeSide', 'acceptedTradeRequest', 'tradeButton', 'tradeCardSnapshot', 'newSessionDraft', 'updateTradeSession');
+  if (sessionRendering) functions.push('renderTradeSession', 'renderTradeAssets', 'ownTradeSide', 'partnerTradeSide', 'acceptedTradeRequest', 'tradeButton', 'tradeCardSnapshot', 'newSessionDraft', 'sameContribution', 'updateTradeSession', 'tradeDraftPayload', 'validateTradeDraft', 'changeTradeDraft', 'saveTradeContribution', 'unavailableTradeCards', 'openTradeSession');
   const prefix = source.slice(0, source.indexOf('\nfunction newTradeInventory'));
   vm.runInContext(prefix + '\n' + functions.map(productionFunction).join('\n') + '\n' + [
     productionListener('tradingRecipient', 'input'), productionListener('tradingForm', 'submit'),
     productionListener('tradeNotificationAccept', 'click'), productionListener('tradeNotificationDecline', 'click')
   ].join('\n'), context);
-  const shared = vm.runInContext('({ state, trading, tradeNotification })', context);
+  if (sessionRendering) vm.runInContext(productionListener('tradingSessionTokens', 'input') + productionListener('tradingConfirmFinal', 'click') + source.slice(source.indexOf("for (const containerId of ['tradingSessionCards'])"), source.indexOf('\nfunction renderTradeChat')), context);
+  const shared = vm.runInContext('({ state, trading, tradeNotification, tradeAutosave, tradeInventories })', context);
   shared.state.user = user;
   shared.trading.identity = user?.accountId || null;
   context.initialPage = page;
@@ -164,6 +166,14 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     ...shared, calls, opened, navigated, chatChanges, elements, playerPickers,
     call: (name, ...args) => context[name](...args),
     evaluate: code => vm.runInContext(code, context),
+    async advance(milliseconds) {
+      clock += milliseconds;
+      for (let count = 0; count < 100; count++) {
+        const due = [...timers].find(([, timer]) => timer.at <= clock); if (!due) return;
+        timers.delete(due[0]); due[1].callback(); await tick();
+      }
+      throw new Error('Too many queued timers');
+    },
     submit: () => elements.get('tradingForm').dispatch('submit')
   };
 }
@@ -771,7 +781,7 @@ test('an unsaved own offer previews new assets without inheriting a previous con
   ui.call('renderTradeSession');
   assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '17 tokens', count: '1 card', cardIds: ['new-copy'] });
   assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '38 tokens', count: '1 card', cardIds: ['partner-copy'] });
-  assert.equal(ui.elements.get('tradingOwnConfirmed').textContent, 'Unsaved changes');
+  assert.equal(ui.elements.get('tradingOwnConfirmed').textContent, 'Updating…');
   assert.equal(ui.elements.get('tradingOwnConfirmed').classList.contains('success'), false);
   assert.equal(ui.elements.get('tradingPartnerConfirmed').textContent, 'Confirmed');
   assert.equal(ui.elements.get('tradingPartnerConfirmed').classList.contains('success'), true);
@@ -824,4 +834,205 @@ test('invalid token drafts stay visibly invalid rather than appearing as an offe
     ui.call('renderTradeSession');
     assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '— tokens', count: '0 cards', cardIds: [] });
   }
+});
+
+function autosaveHarness({ recipient = false, intercept } = {}) {
+  const local = account('local_player', 100), partner = account('partner', 100);
+  const server = { saved: request(recipient ? partner : local, recipient ? local : partner, { status: 'negotiating', requestAccepted: true, version: 2 }) };
+  server.commit = payload => {
+    if (payload.version !== server.saved.version) throw Object.assign(new Error('Offers changed.'), { status: 409, user: local });
+    server.saved = { ...server.saved, [recipient ? 'requestedTokens' : 'offeredTokens']: payload.tokens,
+      [recipient ? 'requestedCards' : 'offeredCards']: payload.cardIds.map(id => ({ id, name: id })),
+      senderConfirmed: false, recipientConfirmed: false, version: server.saved.version + 1 };
+    return { trade: server.saved, user: local };
+  };
+  const ui = harness({ user: local, sessionRendering: true, network: async call => {
+    const result = intercept ? await intercept(call, server, local) : undefined;
+    if (result !== undefined) return result;
+    if (call.method === 'POST' && call.route.endsWith('/contribution')) return server.commit(call.body);
+    if (call.method === 'GET' && call.route === `trades/${server.saved.id}`) return { trade: server.saved, user: local };
+  } });
+  Object.assign(ui.trading, { sessionId: server.saved.id, session: server.saved, sessionDraft: ui.call('newSessionDraft', server.saved) });
+  ui.call('renderTradeSession');
+  const input = async tokens => { ui.elements.get('tradingSessionTokens').value = String(tokens); await ui.elements.get('tradingSessionTokens').dispatch('input'); };
+  const posts = () => ui.calls.filter(call => call.method === 'POST' && call.route.endsWith('/contribution'));
+  return { ...ui, local, partner, server, input, posts };
+}
+
+test('trade token edits debounce automatically, allow zero, and never send a confirmation', async () => {
+  for (const recipient of [false, true]) {
+    const ui = autosaveHarness({ recipient });
+    await ui.input(1); await ui.input(12); await ui.input(17);
+    assert.equal(ui.elements.get('tradingConfirmFinal').disabled, true);
+    await ui.advance(249); assert.equal(ui.posts().length, 0);
+    await ui.advance(1); assert.equal(ui.posts().length, 1);
+    assert.equal(ui.posts()[0].body.tokens, 17); assert.equal(ui.trading.sessionDraft.dirty, false);
+    assert.equal(ui.elements.get('tradingDraftMessage').textContent, 'Updated');
+    await ui.input(0); await ui.advance(250);
+    assert.equal(ui.posts().length, 2); assert.equal(ui.posts()[1].body.tokens, 0);
+    assert.ok(ui.calls.every(call => !call.route.endsWith('/confirm')));
+  }
+});
+
+test('card and token edits remain editable in flight and coalesce into the newest offer', async () => {
+  const pending = deferred(); let attempts = 0;
+  const ui = autosaveHarness({ intercept: (call, server) => {
+    if (call.method === 'POST' && ++attempts === 1) return pending.promise.then(() => server.commit(call.body));
+  } });
+  ui.tradeInventories.offered.cards = [{ id: 'card-a', name: 'Card A' }, { id: 'card-b', name: 'Card B' }];
+  await ui.input(1); await ui.advance(250);
+  assert.equal(ui.posts().length, 1); assert.equal(ui.elements.get('tradingSessionTokens').disabled, false);
+  await ui.input(7);
+  const checkbox = { disabled: false, checked: true, dataset: { cardId: 'card-b' }, closest() { return this; } };
+  await ui.elements.get('tradingSessionCards').dispatch('change', checkbox);
+  await ui.advance(250); assert.equal(ui.posts().length, 1);
+  pending.resolve(); await tick();
+  assert.equal(ui.trading.sessionDraft.tokens, '7'); assert.equal(ui.trading.sessionDraft.dirty, true);
+  assert.deepEqual(plain(ui.trading.sessionDraft.cards.map(card => card.id)), ['card-b']);
+  assert.equal(ui.elements.get('tradingConfirmFinal').disabled, true);
+  await ui.advance(250);
+  assert.equal(ui.posts().length, 2); assert.equal(ui.posts()[1].body.tokens, 7);
+  assert.deepEqual(ui.posts()[1].body.cardIds, ['card-b']); assert.equal(ui.posts()[1].body.version, 3);
+  assert.equal(ui.trading.sessionDraft.dirty, false); assert.equal(ui.server.saved.offeredTokens, 7);
+});
+
+test('partner edits automatically rebase a conflicting autosave without losing either offer', async () => {
+  const ui = autosaveHarness();
+  await ui.input(9);
+  ui.server.saved = { ...ui.server.saved, requestedTokens: 4, requestedCards: [{ id: 'partner-copy', name: 'Partner card' }], version: 3 };
+  await ui.advance(250);
+  assert.equal(ui.posts().length, 1); assert.equal(ui.trading.sessionDraft.tokens, '9');
+  assert.equal(ui.trading.sessionDraft.baseVersion, 3); assert.equal(ui.trading.sessionDraft.dirty, true);
+  assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '4 tokens', count: '1 card', cardIds: ['partner-copy'] });
+  await ui.advance(250);
+  assert.equal(ui.posts().length, 2); assert.equal(ui.posts()[1].body.version, 3);
+  assert.equal(ui.trading.sessionDraft.dirty, false); assert.equal(ui.server.saved.offeredTokens, 9);
+  assert.equal(ui.server.saved.requestedTokens, 4);
+});
+
+test('rate limited autosaves wait automatically and send the latest draft after Retry-After', async () => {
+  let attempts = 0;
+  const ui = autosaveHarness({ intercept: call => {
+    if (call.method === 'POST' && ++attempts === 1) throw Object.assign(new Error('Too fast.'), { status: 429, retryAfterMs: 900 });
+  } });
+  await ui.input(5); await ui.advance(250);
+  assert.equal(ui.elements.get('tradingDraftMessage').textContent, 'Waiting…');
+  assert.equal(ui.trading.sessionDraft.dirty, true); assert.equal(ui.trading.actionRetry, null);
+  await ui.input(8); await ui.advance(899); assert.equal(ui.posts().length, 1);
+  await ui.advance(1); assert.equal(ui.posts().length, 2); assert.equal(ui.posts()[1].body.tokens, 8);
+  assert.equal(ui.trading.sessionDraft.dirty, false);
+});
+
+test('an uncertain autosave recovers a committed result or retries automatically when uncommitted', async () => {
+  for (const committed of [false, true]) {
+    let attempts = 0;
+    const ui = autosaveHarness({ intercept: (call, server) => {
+      if (call.method === 'POST' && ++attempts === 1) { if (committed) server.commit(call.body); throw new Error('Connection lost'); }
+    } });
+    await ui.input(6); await ui.advance(250);
+    assert.equal(ui.trading.actionRetry, null);
+    if (committed) { assert.equal(ui.trading.sessionDraft.dirty, false); assert.equal(ui.posts().length, 1); }
+    else { assert.equal(ui.trading.sessionDraft.dirty, true); await ui.advance(1000); assert.equal(ui.posts().length, 2); assert.equal(ui.trading.sessionDraft.dirty, false); }
+    assert.equal(ui.server.saved.offeredTokens, 6);
+  }
+});
+
+test('invalid trade token drafts stay local and block confirmation until corrected', async () => {
+  const ui = autosaveHarness();
+  for (const tokens of ['', '-1', '1.5', 'NaN', '101', '9007199254740992']) {
+    await ui.input(tokens); await ui.advance(2000);
+    assert.equal(ui.posts().length, 0); assert.ok(ui.trading.sessionDraft.error);
+    assert.equal(ui.elements.get('tradingConfirmFinal').disabled, true);
+  }
+  await ui.input(2); await ui.advance(250); assert.equal(ui.posts().length, 1); assert.equal(ui.trading.sessionDraft.error, null);
+});
+
+test('navigation pauses pending autosaves and account changes discard old queued work', async () => {
+  const ui = autosaveHarness();
+  await ui.input(3); ui.evaluate("pageKind = 'games'; routeRevision++;"); ui.call('syncTradeAutosaveRoute');
+  await ui.advance(2000); assert.equal(ui.posts().length, 0);
+  ui.evaluate("pageKind = 'trading'; routeRevision++;"); ui.call('syncTradeAutosaveRoute');
+  await ui.advance(250); assert.equal(ui.posts().length, 1);
+  await ui.input(4); ui.call('setUser', account('next_account', 100));
+  await ui.advance(2000); assert.equal(ui.posts().length, 1); assert.equal(ui.trading.sessionDraft, null);
+});
+
+test('closed trades cancel queued changes and ignore stale autosave responses', async () => {
+  const pending = deferred();
+  const ui = autosaveHarness({ intercept: call => call.method === 'POST' ? pending.promise : undefined });
+  await ui.input(7); await ui.advance(250); await ui.input(8);
+  const closed = { ...ui.server.saved, status: 'accepted', offeredTokens: 7, version: 5 };
+  ui.call('updateTradeSession', closed);
+  pending.resolve({ trade: { ...ui.server.saved, offeredTokens: 7, version: 3 }, user: ui.local }); await tick();
+  await ui.advance(2000);
+  assert.equal(ui.posts().length, 1); assert.equal(ui.trading.session.status, 'accepted');
+  assert.equal(ui.trading.sessionDraft.dirty, false); assert.equal(ui.trading.sessionDraft.tokens, 7);
+  assert.equal(ui.elements.get('tradingContributionForm').hidden, true);
+});
+
+test('returning after an in-flight update refreshes before restoring a newer reverted offer', async () => {
+  const pending = deferred(); let attempts = 0;
+  const ui = autosaveHarness({ intercept: (call, server) => {
+    if (call.method === 'POST' && ++attempts === 1) return pending.promise.then(() => server.commit(call.body));
+  } });
+  await ui.input(7); await ui.advance(250); await ui.input(0);
+  ui.evaluate("pageKind = 'games'; routeRevision++;"); ui.call('syncTradeAutosaveRoute');
+  pending.resolve(); await tick();
+  assert.equal(ui.trading.sessionDraft.tokens, '0'); assert.equal(ui.trading.sessionDraft.dirty, true);
+  assert.equal(ui.trading.sessionDraft.refreshNeeded, true);
+  ui.evaluate("pageKind = 'trading'; routeRevision++;"); ui.call('syncTradeAutosaveRoute');
+  await ui.advance(250);
+  assert.equal(ui.posts().length, 2); assert.equal(ui.posts()[1].body.tokens, 0); assert.equal(ui.posts()[1].body.version, 3);
+  assert.equal(ui.trading.sessionDraft.dirty, false); assert.equal(ui.server.saved.offeredTokens, 0);
+});
+
+test('an old account autosave response cannot change the next account or reopen its trade', async () => {
+  const pending = deferred();
+  const ui = autosaveHarness({ intercept: call => call.method === 'POST' ? pending.promise : undefined });
+  await ui.input(7); await ui.advance(250);
+  const next = account('next_account', 200); ui.call('setUser', next);
+  pending.resolve({ trade: { ...ui.server.saved, offeredTokens: 7, version: 3 }, user: { ...ui.local, balance: 50 } }); await tick();
+  await ui.advance(2000);
+  assert.equal(ui.state.user.accountId, next.accountId); assert.equal(ui.state.user.balance, 200);
+  assert.equal(ui.trading.sessionId, null); assert.equal(ui.trading.sessionDraft, null); assert.equal(ui.posts().length, 1);
+});
+
+test('a never-resolving old autosave cannot block a different trade or account', async () => {
+  for (const changeAccount of [false, true]) {
+    const pending = deferred(); let oldId;
+    const ui = autosaveHarness({ intercept: call => call.method === 'POST' && call.route === `trades/${oldId}/contribution` ? pending.promise : undefined });
+    oldId = ui.server.saved.id;
+    await ui.input(7); await ui.advance(250);
+    assert.equal(ui.posts().length, 1); assert.ok(ui.tradeAutosave.inFlight);
+    const user = changeAccount ? account('next_account', 100) : ui.local;
+    if (changeAccount) ui.call('setUser', user);
+    const next = request(user, ui.partner, { status: 'negotiating', requestAccepted: true, version: 2 });
+    ui.server.saved = next; ui.call('openTradeSession', next.id, next);
+    await ui.input(9); await ui.advance(250);
+    assert.equal(ui.posts().length, 2); assert.equal(ui.posts()[1].route, `trades/${next.id}/contribution`);
+    assert.equal(ui.server.saved.offeredTokens, 9); assert.equal(ui.trading.sessionDraft.dirty, false);
+    assert.equal(ui.trading.sessionId, next.id); assert.equal(ui.tradeAutosave.inFlight, null);
+  }
+});
+
+test('an old session response cannot release or replace a newer session autosave', async () => {
+  const oldPending = deferred(), newPending = deferred(); let oldId, newId;
+  const ui = autosaveHarness({ intercept: (call, server) => {
+    if (call.method !== 'POST') return;
+    if (call.route === `trades/${oldId}/contribution`) return oldPending.promise;
+    if (call.route === `trades/${newId}/contribution`) return newPending.promise.then(() => server.commit(call.body));
+  } });
+  const oldTrade = ui.server.saved; oldId = oldTrade.id;
+  await ui.input(7); await ui.advance(250);
+  const next = request(ui.local, ui.partner, { status: 'negotiating', requestAccepted: true, version: 2 });
+  newId = next.id; ui.server.saved = next; ui.call('openTradeSession', next.id, next);
+  await ui.input(9); await ui.advance(250);
+  const currentOperation = ui.tradeAutosave.inFlight;
+  assert.equal(currentOperation.id, next.id);
+  oldPending.resolve({ trade: { ...oldTrade, offeredTokens: 7, version: 3 }, user: ui.local }); await tick();
+  assert.equal(ui.tradeAutosave.inFlight, currentOperation); assert.equal(ui.trading.sessionId, next.id);
+  assert.equal(ui.trading.sessionDraft.tokens, '9'); assert.equal(ui.trading.sessionDraft.dirty, true);
+  newPending.resolve(); await tick();
+  assert.equal(ui.tradeAutosave.inFlight, null); assert.equal(ui.trading.sessionDraft.dirty, false);
+  assert.equal(ui.server.saved.offeredTokens, 9);
 });

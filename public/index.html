@@ -7,11 +7,12 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=47">
+  <link rel="stylesheet" href="/styles.css?v=48">
   <script src="/player-picker.js?v=1" defer></script>
-  <script src="/app.js?v=47" defer></script>
-  <script src="/games.js?v=3" defer></script>
-  <script src="/moderation.js?v=4" defer></script>
+  <script src="/app.js?v=48" defer></script>
+  <script src="/games.js?v=4" defer></script>
+  <script src="/moderation.js?v=5" defer></script>
+  <script src="/friends.js?v=1" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -50,6 +51,7 @@
       <a href="/packs">Packs</a>
       <a href="/trading">Trading</a>
       <a href="/games">Games</a>
+      <a href="/friends">Friends</a>
       <a href="/changelog">Changelog</a>
       <a href="/announcements">Announcements</a>
       <a href="/leaderboard">Leaderboard</a>
@@ -65,6 +67,7 @@
           <a href="/profile">Profile</a>
           <a href="/trading">Trading</a>
           <a href="/games">Games</a>
+          <a href="/friends">Friends</a>
           <a href="/settings">Settings</a>
           <button id="headerLogoutButton" type="button">Sign out</button>
           <p class="form-message account-menu-message" id="headerAccountMessage" role="status" hidden></p>
@@ -248,8 +251,7 @@
               <form class="trading-form" id="tradingContributionForm" hidden>
                 <div><label for="tradingSessionTokens">Your tokens</label><input id="tradingSessionTokens" type="number" min="0" max="9007199254740991" step="1" value="0" inputmode="numeric" required></div>
                 <fieldset class="trading-inventory"><legend>Your cards</legend><p class="trading-card-count" id="tradingSessionCardCount"></p><p class="trading-help" id="tradingSessionInventoryMessage" role="status"></p><button class="button trading-inventory-refresh" id="tradingSessionInventoryRefresh" type="button">Refresh your cards</button><div class="trading-card-picker" id="tradingSessionCards" aria-busy="false"></div></fieldset>
-                <p class="form-message" id="tradingDraftMessage" role="status"></p><button class="button" id="tradingUseLatest" type="button" hidden>Use updated terms</button>
-                <button class="button" id="tradingContributionSave" type="submit">Save my offer</button>
+                <p class="form-message" id="tradingDraftMessage" role="status"></p>
               </form>
             </section>
             <section class="trading-card trading-session-controls" aria-label="Trade actions"><div class="trading-actions" id="tradingSessionActions"></div><div class="trading-confirm-review" id="tradingConfirmReview" hidden><h3>Confirm these exact terms</h3><div class="trading-actions"><button class="button trading-primary" id="tradingConfirmFinal" type="button">Confirm my offer</button><button class="button" id="tradingConfirmBack" type="button">Go back</button></div></div></section>
@@ -279,6 +281,37 @@
         </div>
       </div>
     </section>
+    <section class="section-wrap friends-overview" id="friendsPage" aria-labelledby="friendsTitle" hidden>
+      <div class="friends-page-heading"><h1 id="friendsTitle">Friends</h1><button class="button" id="friendsRefresh" type="button">Refresh</button></div>
+      <p id="friendsLoading" role="status">Loading friends…</p>
+      <div id="friendsGuest" hidden><button class="button" id="friendsJoin" type="button">Sign up or log in</button></div>
+      <p class="form-message" id="friendsMessage" role="status"></p>
+      <div id="friendsAccount" hidden>
+        <div class="friends-layout">
+          <div class="friends-sidebar">
+            <form class="friends-request" id="friendRequestForm">
+              <h2>Add a friend</h2>
+              <label for="friendUsername">Username</label><div class="player-picker"><input id="friendUsername" maxlength="24" autocomplete="off" spellcheck="false" required placeholder="Player username"></div>
+              <button class="button" id="friendRequestSend" type="submit">Send request</button>
+              <p class="form-message" id="friendRequestMessage" role="status"></p>
+            </form>
+            <section aria-labelledby="friendsListTitle"><h2 id="friendsListTitle">Your friends</h2><p id="friendsEmpty">No friends yet.</p><div class="friends-list" id="friendsList"></div></section>
+            <section aria-labelledby="friendRequestsTitle"><h2 id="friendRequestsTitle">Friend requests</h2><p id="friendRequestsEmpty">No friend requests.</p><div class="friends-list" id="friendIncoming"></div></section>
+            <section aria-labelledby="friendOutgoingTitle"><h2 id="friendOutgoingTitle">Sent requests</h2><p id="friendOutgoingEmpty">No sent requests.</p><div class="friends-list" id="friendOutgoing"></div></section>
+          </div>
+          <section class="friends-chat" id="friendChat" aria-labelledby="friendChatTitle">
+            <h2 id="friendChatTitle">Messages</h2><p id="friendChatEmpty">Choose a friend.</p>
+            <div id="friendChatContent" hidden>
+              <div id="friendChatPlayer"></div>
+              <div class="friend-chat-messages" id="friendChatMessages" role="log" aria-live="polite" aria-relevant="additions"></div>
+              <p class="form-message" id="friendChatMessage" role="status"></p>
+              <form class="friend-chat-form" id="friendChatForm"><label class="sr-only" for="friendChatInput">Message</label><input id="friendChatInput" maxlength="1000" autocomplete="off" required placeholder="Message your friend"><button class="button" id="friendChatSend" type="submit">Send</button></form>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
     <section class="section-wrap changelog-overview" id="changelogPage" aria-labelledby="changelogTitleHeading" hidden>
       <h1 id="changelogTitleHeading">Changelog</h1>
       <section class="changelog-editor" id="changelogEditor" aria-labelledby="changelogEditorTitle" hidden>
@@ -333,6 +366,14 @@
           <h2 id="moderationTitle">Moderation</h2><button class="button" id="moderationViewToggle" type="button" aria-pressed="false">Open mod view</button>
           <div id="moderationControls" hidden>
             <div class="trading-actions moderation-links"><a class="button" href="/announcements">Announcements</a><a class="button" id="moderationChangelog" href="/changelog">Changelog</a></div>
+            <section class="admin-version-settings" id="adminVersionSettings" aria-labelledby="adminVersionTitle" hidden>
+              <h3 id="adminVersionTitle">Site version</h3>
+              <form class="settings-form" id="adminVersionForm">
+                <div><label for="adminVersion">Version</label><input id="adminVersion" maxlength="33" pattern="[vV]?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(0|[1-9][0-9]*)" placeholder="0.6.1-2" autocomplete="off" required></div>
+                <button class="button" id="adminVersionSave" type="submit">Save version</button>
+                <p class="form-message" id="adminVersionMessage" role="status"></p>
+              </form>
+            </section>
             <form class="settings-form moderation-search" id="moderationSearch"><label for="moderationUsername">Username</label><div class="player-picker"><input id="moderationUsername" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Find a player"></div><button class="button" id="moderationFind" type="submit">Find player</button></form>
             <p class="form-message" id="moderationMessage" role="status"></p><div class="moderation-players" id="moderationPlayers"></div>
           </div>

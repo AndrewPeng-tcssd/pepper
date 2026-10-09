@@ -132,16 +132,23 @@ test('banning revokes sessions, closes trades, refunds active games, and preserv
 });
 
 test('banning after a turn deadline preserves the timeout winner and pays only once', async t => {
-  const { api, store, advance } = await fixture(t);
-  const { mod } = await staff(api, store);
-  const target = await player(api, store, 'deadline_ban_target'); const other = await player(api, store, 'deadline_ban_partner');
-  const game = await match(api, target, other);
-  advance(TURN_MS + 1);
-  assert.equal((await patch(api, mod, target, { banned: true })).status, 200);
-  assert.equal((await patch(api, mod, target, { banned: true })).status, 200);
-  const saved = (await api(`/api/games/${game.id}`, undefined, other.cookie)).data.game;
-  assert.equal(saved.status, 'completed'); assert.equal(saved.reason, 'timeout'); assert.equal(saved.winnerAccountId, other.accountId);
-  assert.deepEqual(await balances(store, target, other), [90, 110]);
+  let starter;
+  t.mock.method(crypto, 'randomInt', max => { assert.equal(max, 2); return starter; });
+  for (starter of [0, 1]) {
+    const { api, store, advance } = await fixture(t);
+    const { mod } = await staff(api, store);
+    const target = await player(api, store, `deadline_ban_target_${starter}`); const other = await player(api, store, `deadline_ban_partner_${starter}`);
+    const game = await match(api, target, other);
+    assert.equal(game.xAccountId, starter === 0 ? target.accountId : other.accountId);
+    assert.equal(game.turnAccountId, game.xAccountId);
+    const winner = game.turnAccountId === target.accountId ? other : target;
+    advance(TURN_MS + 1);
+    assert.equal((await patch(api, mod, target, { banned: true })).status, 200);
+    assert.equal((await patch(api, mod, target, { banned: true })).status, 200);
+    const saved = (await api(`/api/games/${game.id}`, undefined, other.cookie)).data.game;
+    assert.equal(saved.status, 'completed'); assert.equal(saved.reason, 'timeout'); assert.equal(saved.winnerAccountId, winner.accountId);
+    assert.deepEqual(await balances(store, target, other), winner.accountId === target.accountId ? [110, 90] : [90, 110]);
+  }
 });
 
 test('chat moderation follows role hierarchy and deleted receipts cannot resurrect messages', async t => {

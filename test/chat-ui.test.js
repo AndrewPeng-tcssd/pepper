@@ -164,7 +164,7 @@ function harness({ user = account(), network = () => undefined } = {}) {
   const functions = [
     'accountRole', 'playerRoleBadges',
     'newTradeInventory', 'message', 'isOwnProfile', 'profileHref', 'tradeProfileLink',
-    'setUser', 'syncTradingUser', 'prefillTradingRecipient', 'tradingIdentityIsCurrent', 'acceptedTradeRequest',
+    'setUser', 'syncTradingUser', 'prefillTradingRecipient', 'tradingIdentityIsCurrent', 'acceptedTradeRequest', 'cancelTradeAutosave',
     'chatRetryDelay', 'resetChatSending', 'scheduleChatSend', 'queueTradeChatRetry',
     'sendChatEntry', 'sendTradeChatEntry', 'createChatRow', 'renderTradeChat'
   ];

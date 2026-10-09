@@ -2,7 +2,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { MongoMemoryReplSet, MongoMemoryServer } = require('mongodb-memory-server');
-const { ObjectId } = require('mongodb');
+const { ObjectId, MongoServerError } = require('mongodb');
 const { createApp, connectMongo } = require('../server');
 const { REQUEST_MS, TURN_MS } = require('../games');
 
@@ -62,6 +62,7 @@ test('requests validate inputs, remain private, and save no stake before both pl
   assert.equal((await api('/api/games', terms(a), a.cookie)).status, 400);
   const game = await request(api, a, b);
   assert.equal(game.status, 'pending'); assert.equal(game.stake, 10);
+  assert.equal(game.xAccountId, null); assert.equal(game.turnAccountId, null);
   assert.deepEqual(await balances(store, a, b), [100, 100]);
   assert.equal((await api(`/api/games/${game.id}`, undefined, c.cookie)).status, 404);
   for (const action of ['accept', 'decline', 'cancel', 'resign', 'move']) {
@@ -144,6 +145,7 @@ test('already active legacy zero-token games can still settle and close safely',
 });
 
 test('request retries and concurrent acceptance debit each equal stake exactly once', async t => {
+  t.mock.method(crypto, 'randomInt', () => 1);
   const { api, store } = await fixture(t);
   const a = await player(api, store, 'request_replay_a');
   const b = await player(api, store, 'request_replay_b');
@@ -156,9 +158,37 @@ test('request retries and concurrent acceptance debit each equal stake exactly o
   const game = results[0].data.game;
   const accepted = await Promise.all([accept(api, b, game), accept(api, b, game)]);
   assert.equal(accepted[0].status, 'playing');
-  assert.equal(accepted[0].turnAccountId, a.accountId);
+  assert.equal(accepted[0].turnAccountId, b.accountId);
+  assert.equal(accepted[0].xAccountId, b.accountId);
+  assert.equal(accepted[1].xAccountId, accepted[0].xAccountId);
+  const rolls = crypto.randomInt.mock.callCount();
+  t.mock.method(crypto, 'randomInt', () => { throw new Error('An accepted game must not reroll'); });
+  assert.equal((await accept(api, b, game)).xAccountId, b.accountId);
+  assert.ok(rolls >= 1);
   assert.deepEqual(await balances(store, a, b), [90, 90]);
-  assert.equal((await store.games.findOne({ _id: new ObjectId(game.id) })).escrowed, true);
+  const saved = await store.games.findOne({ _id: new ObjectId(game.id) });
+  assert.equal(saved.escrowed, true); assert.ok(saved.xUserId.equals(b.id));
+});
+
+test('tic tac toe keeps its random starter when acceptance retries its transaction', async t => {
+  const random = t.mock.method(crypto, 'randomInt', max => { assert.equal(max, 2); return 1; });
+  const { api, store } = await fixture(t);
+  const a = await player(api, store, 'retry_starter_a'); const b = await player(api, store, 'retry_starter_b');
+  const invitation = await request(api, a, b);
+  const originalUpdate = store.games.updateOne.bind(store.games);
+  let attempts = 0;
+  t.mock.method(store.games, 'updateOne', async (...args) => {
+    if (args[1]?.$set?.status === 'playing' && ++attempts === 1) {
+      const error = new MongoServerError({ message: 'Retry acceptance', code: 112 });
+      error.addErrorLabel('TransientTransactionError');
+      throw error;
+    }
+    return originalUpdate(...args);
+  });
+  const game = await accept(api, b, invitation);
+  assert.equal(attempts, 2); assert.equal(random.mock.callCount(), 1);
+  assert.equal(game.xAccountId, b.accountId); assert.equal(game.turnAccountId, b.accountId);
+  assert.deepEqual(await balances(store, a, b), [90, 90]);
 });
 
 test('acceptance checks both current balances atomically and competing matches cannot overspend', async t => {
@@ -191,28 +221,55 @@ test('decline and cancel close invitations permanently without moving tokens', a
   assert.deepEqual(await balances(store, a, b), [100, 100]);
 });
 
-test('tic tac toe enforces turns and empty squares, pays winners once, and replays moves after completion', async t => {
+test('either random tic tac toe starter plays X, enforces turns, and receives the winning pot once', async t => {
   const { api, store } = await fixture(t);
-  const a = await player(api, store, 'ttt_a'); const b = await player(api, store, 'ttt_b');
+  let startingIndex;
+  t.mock.method(crypto, 'randomInt', max => { assert.equal(max, 2); return startingIndex; });
+  for (startingIndex of [0, 1]) {
+    const a = await player(api, store, `ttt_a_${startingIndex}`); const b = await player(api, store, `ttt_b_${startingIndex}`);
+    let game = await accept(api, b, await request(api, a, b));
+    const [firstPlayer, secondPlayer] = startingIndex === 0 ? [a, b] : [b, a];
+    assert.equal(game.xAccountId, firstPlayer.accountId); assert.equal(game.turnAccountId, firstPlayer.accountId);
+    assert.equal((await move(api, secondPlayer, game, 0)).status, 409);
+    assert.equal((await move(api, firstPlayer, game, 9)).status, 400);
+    const firstId = crypto.randomUUID();
+    const first = await move(api, firstPlayer, game, 0, firstId);
+    assert.equal(first.status, 200); assert.equal(first.data.game.turnAccountId, secondPlayer.accountId);
+    assert.deepEqual((await move(api, firstPlayer, game, 0, firstId)).data.game, first.data.game);
+    assert.equal((await move(api, firstPlayer, game, 1, firstId)).status, 409);
+    assert.equal((await move(api, secondPlayer, game, 0)).status, 409);
+    for (const [actor, position] of [[secondPlayer, 3], [firstPlayer, 1], [secondPlayer, 4]]) assert.equal((await move(api, actor, game, position)).status, 200);
+    const winningId = crypto.randomUUID();
+    const final = await Promise.all([move(api, firstPlayer, game, 2, winningId), move(api, firstPlayer, game, 2, winningId)]);
+    assert.deepEqual(final.map(result => result.status), [200, 200]);
+    game = final[0].data.game;
+    assert.equal(game.status, 'completed'); assert.equal(game.winnerAccountId, firstPlayer.accountId); assert.equal(game.result, 'win');
+    assert.equal(game.xAccountId, firstPlayer.accountId);
+    assert.deepEqual(game.board, ['X', 'X', 'X', 'O', 'O', null, null, null, null]);
+    assert.deepEqual(await balances(store, firstPlayer, secondPlayer), [110, 90]);
+    assert.equal((await move(api, secondPlayer, game, 8)).status, 409);
+    assert.equal((await move(api, firstPlayer, game, 0, firstId)).data.game.status, 'completed');
+    assert.deepEqual(await balances(store, firstPlayer, secondPlayer), [110, 90]);
+  }
+});
+
+test('active legacy tic tac toe games keep sender X and their existing turn without rerolling', async t => {
+  t.mock.method(crypto, 'randomInt', () => 0);
+  const { api, store } = await fixture(t);
+  const a = await player(api, store, 'legacy_x_a'); const b = await player(api, store, 'legacy_x_b');
   let game = await accept(api, b, await request(api, a, b));
-  assert.equal((await move(api, b, game, 0)).status, 409);
-  assert.equal((await move(api, a, game, 9)).status, 400);
-  const firstId = crypto.randomUUID();
-  const first = await move(api, a, game, 0, firstId);
-  assert.equal(first.status, 200);
-  assert.deepEqual((await move(api, a, game, 0, firstId)).data.game, first.data.game);
-  assert.equal((await move(api, a, game, 1, firstId)).status, 409);
-  assert.equal((await move(api, b, game, 0)).status, 409);
-  for (const [actor, position] of [[b, 3], [a, 1], [b, 4]]) assert.equal((await move(api, actor, game, position)).status, 200);
-  const winningId = crypto.randomUUID();
-  const final = await Promise.all([move(api, a, game, 2, winningId), move(api, a, game, 2, winningId)]);
-  assert.deepEqual(final.map(result => result.status), [200, 200]);
-  game = final[0].data.game;
-  assert.equal(game.status, 'completed'); assert.equal(game.winnerAccountId, a.accountId); assert.equal(game.result, 'win');
+  await move(api, a, game, 0);
+  await store.games.updateOne({ _id: new ObjectId(game.id) }, { $unset: { xUserId: '' } });
+  t.mock.method(crypto, 'randomInt', () => { throw new Error('An active legacy game must not reroll'); });
+  game = await accept(api, b, game);
+  assert.equal(game.xAccountId, a.accountId); assert.equal(game.turnAccountId, b.accountId);
+  for (const [actor, position] of [[b, 3], [a, 1], [b, 4], [a, 2]]) {
+    const response = await move(api, actor, game, position);
+    assert.equal(response.status, 200); game = response.data.game;
+  }
   assert.deepEqual(game.board, ['X', 'X', 'X', 'O', 'O', null, null, null, null]);
-  assert.deepEqual(await balances(store, a, b), [110, 90]);
-  assert.equal((await move(api, b, game, 8)).status, 409);
-  assert.equal((await move(api, a, game, 0, firstId)).data.game.status, 'completed');
+  assert.equal(game.winnerAccountId, a.accountId); assert.equal(game.xAccountId, a.accountId);
+  assert.equal((await store.games.findOne({ _id: new ObjectId(game.id) })).xUserId, undefined);
   assert.deepEqual(await balances(store, a, b), [110, 90]);
 });
 
@@ -221,9 +278,10 @@ test('tic tac toe draw refunds each stake, including one-token games', async t =
   const a = await player(api, store, 'draw_a'); const b = await player(api, store, 'draw_b');
   for (const stake of [10, 1]) {
     let game = await accept(api, b, await request(api, a, b, { stake }));
+    const [first, second] = game.xAccountId === a.accountId ? [a, b] : [b, a];
     const positions = [0, 1, 2, 4, 3, 5, 7, 6, 8];
     for (const [index, position] of positions.entries()) {
-      const response = await move(api, index % 2 ? b : a, game, position);
+      const response = await move(api, index % 2 ? second : first, game, position);
       assert.equal(response.status, 200); game = response.data.game;
     }
     assert.equal(game.result, 'draw'); assert.equal(game.winnerAccountId, null);
@@ -269,6 +327,7 @@ test('rock paper scissors equal choices refund stakes and all winning pairs foll
 });
 
 test('timeouts expire requests, forfeit delayed turns, and refund unanswered simultaneous games', async t => {
+  t.mock.method(crypto, 'randomInt', () => 0);
   const { api, store, advance, app } = await fixture(t);
   const a = await player(api, store, 'timeout_a'); const b = await player(api, store, 'timeout_b');
   const pending = await request(api, a, b);
@@ -330,6 +389,7 @@ test('deletion racing acceptance never leaves escrow or orphan active games', as
 });
 
 test('account deletion preserves an earned timeout result instead of refunding the losing stake', async t => {
+  t.mock.method(crypto, 'randomInt', () => 0);
   const { api, store, advance } = await fixture(t);
   const a = await player(api, store, 'expired_delete_a'); const b = await player(api, store, 'expired_delete_b');
   const game = await accept(api, b, await request(api, a, b));

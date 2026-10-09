@@ -6,6 +6,7 @@ const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory, resolveChangelogOwner
 const { createMailer } = require('./mailer');
 const { registerTrading } = require('./trading');
 const { registerGames } = require('./games');
+const { registerFriends } = require('./friends');
 const { avatarUrl, AccountError, withAccountActivity, registerAccountFeatures } = require('./accounts');
 const { createModeration, ModerationError } = require('./moderation');
 
@@ -67,7 +68,7 @@ const sendRateLimit = (res, message, remainingMs) => {
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
 
-function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, cardDefinitions, cardInstances, siteSettings }, options = {}) {
+function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, friendships, friendMessages, cardDefinitions, cardInstances, siteSettings }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
   const currentTime = options.now || Date.now;
@@ -348,7 +349,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json({ ok: true });
   });
 
-  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, games, tradeMessages, cardInstances }, {
+  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, games, tradeMessages, friendships, friendMessages, cardInstances }, {
     requireUser, rateLimit, signedInUser, passwordMatches, cookieName, now: currentTime
   });
   moderation.register(app, { requireUser, rateLimit });
@@ -431,6 +432,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
 
   registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
   app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields });
+  registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime });
 
   const publicChangelogEntry = (entry) => ({
     id: entry._id.toString(),
@@ -439,10 +441,34 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     version: displayBuildVersion(entry.version),
     createdAt: entry.createdAt.toISOString()
   });
+  async function currentBuildVersion() {
+    const saved = await siteSettings.findOne({ _id: 'version' });
+    if (saved) return displayBuildVersion(saved.version);
+    const latest = await changelog.findOne({}, { sort: { createdAt: -1, _id: -1 }, projection: { version: 1 } });
+    return displayBuildVersion(latest?.version);
+  }
+  async function saveBuildVersion(version, actor, session) {
+    await siteSettings.updateOne({ _id: 'version' }, { $set: {
+      version, updatedAt: new Date(currentTime()), updatedByAccountId: actor.accountId
+    } }, { upsert: true, session });
+  }
+  app.get('/api/version', async (req, res) => {
+    res.json({ version: await currentBuildVersion() });
+  });
+  app.patch('/api/version', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Admin access required.');
+    const version = typeof req.body?.version === 'string' ? req.body.version.trim().replace(/^v/i, '') : '';
+    if (version.length > 32 || !BUILD_VERSION_PATTERN.test(version)) return sendError(res, 400, 'Use a version like 0.6.1-2.');
+    await moderation.runAs(req.user._id, async ({ session, actor, role }) => {
+      if (role !== 'admin') throw new ModerationError(403, 'Admin access required.');
+      await saveBuildVersion(version, actor, session);
+    });
+    res.json({ version: await currentBuildVersion() });
+  });
   async function changelogSnapshot() {
     const entries = await changelog.find().sort({ createdAt: -1, _id: -1 }).toArray();
     const publicEntries = entries.map(publicChangelogEntry);
-    return { entries: publicEntries, latestVersion: publicEntries[0]?.version ?? DEFAULT_BUILD_VERSION };
+    return { entries: publicEntries, latestVersion: await currentBuildVersion() };
   }
   app.get('/api/changelog', async (req, res) => {
     res.json(await changelogSnapshot());
@@ -458,12 +484,12 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       return sendError(res, 400, 'Use a version like 0.6.1-2.');
     }
     const entry = { title, description, version, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
-    await moderation.runAs(req.user._id, async ({ session, role }) => {
+    await moderation.runAs(req.user._id, async ({ session, actor, role }) => {
       if (role !== 'admin') throw new ModerationError(403, 'Admin access required.');
       await changelog.insertOne(entry, { session });
+      await saveBuildVersion(version, actor, session);
     });
-    const latest = await changelog.findOne({}, { sort: { createdAt: -1, _id: -1 }, projection: { version: 1 } });
-    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: displayBuildVersion(latest?.version) });
+    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: await currentBuildVersion() });
   });
   app.delete('/api/changelog/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can delete updates.');
@@ -649,12 +675,13 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     await sendPublicChatMessage(res, message);
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/games', '/packs'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/games', '/friends', '/packs'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs/test', (req, res) => res.redirect(302, '/#cards'));
   app.use(express.static(path.join(__dirname, 'public')));
   app.use((error, req, res, next) => {
+    if (error.status === 429 && error.retryAfterMs) return sendRateLimit(res, error.message, error.retryAfterMs);
     if (error instanceof ModerationError || error?.banned) return res.status(error.status || 403).json({ error: error.message, ...(error.banned ? { banned: true } : {}) });
     if (error instanceof AccountError) return sendError(res, error.status, error.message);
     console.error(error);

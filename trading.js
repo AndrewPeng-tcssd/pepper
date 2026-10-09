@@ -251,7 +251,7 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
     await respond(res, joined, req.user._id);
   }));
 
-  app.post('/api/trades/:id/contribution', requireUser, rateLimit(120, 60 * 60 * 1000), route(async (req, res) => {
+  app.post('/api/trades/:id/contribution', requireUser, rateLimit(300, 60 * 1000), route(async (req, res) => {
     const { tokens, version } = req.body || {};
     validateTokens(tokens);
     validateVersion(version);

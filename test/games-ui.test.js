@@ -174,6 +174,51 @@ test('game invitation shows the equal stake and waits behind a trade notificatio
   assert.equal(ui.elements.get('gameNotification').hidden, false);
 });
 
+test('pending tic tac toe requests leave symbols unassigned until acceptance', async () => {
+  const sender = player('sender'), recipient = player('recipient');
+  const invitation = game(sender, recipient, { turnAccountId: null, xAccountId: null });
+  for (const viewer of [sender, recipient]) {
+    const ui = harness(viewer, [invitation]); await tick(); ui.api.act('open', invitation.id);
+    assert.ok(ui.elements.get('gamesPlayers').children.every(side => !side.children.some(child => child.className === 'games-player-symbol')));
+    assert.equal(ui.elements.get('gamesTurn').textContent, 'Awaiting acceptance');
+    assert.equal(ui.elements.get('gamesBoard').hidden, true);
+  }
+});
+
+test('recipient-first tic tac toe shows the chosen X and enables only the current player', async () => {
+  const sender = player('sender'), recipient = player('recipient');
+  const match = game(sender, recipient, { status: 'playing', version: 2, xAccountId: recipient.accountId, turnAccountId: recipient.accountId });
+  const symbols = ui => ui.elements.get('gamesPlayers').children.map(side => side.children.find(child => child.className === 'games-player-symbol').textContent);
+  const senderUi = harness(sender, [match]), recipientUi = harness(recipient, [match]);
+  await tick();
+  for (const ui of [senderUi, recipientUi]) ui.api.act('open', match.id);
+  assert.deepEqual(symbols(senderUi), ['O', 'X']); assert.deepEqual(symbols(recipientUi), ['X', 'O']);
+  assert.equal(senderUi.elements.get('gamesTurn').textContent, 'Opponent’s turn');
+  assert.ok(senderUi.elements.get('gamesBoard').children.every(square => square.disabled));
+  assert.equal(recipientUi.elements.get('gamesTurn').textContent, 'Your turn');
+  assert.ok(recipientUi.elements.get('gamesBoard').children.every(square => !square.disabled));
+  for (const ui of [senderUi, recipientUi]) {
+    ui.entries[0] = { ...match, version: 3, turnAccountId: sender.accountId, board: ['X', ...Array(8).fill(null)] };
+    await ui.api.load();
+  }
+  assert.deepEqual(symbols(senderUi), ['O', 'X']);
+  assert.equal(senderUi.elements.get('gamesBoard').children[0].textContent, 'X');
+  assert.equal(senderUi.elements.get('gamesBoard').children[0].disabled, true);
+  assert.ok(senderUi.elements.get('gamesBoard').children.slice(1).every(square => !square.disabled));
+  assert.ok(recipientUi.elements.get('gamesBoard').children.every(square => square.disabled));
+});
+
+test('legacy active tic tac toe responses retain sender X without an assigned symbol field', async () => {
+  const sender = player('sender'), recipient = player('recipient');
+  const match = game(sender, recipient, { status: 'playing', version: 3, turnAccountId: recipient.accountId, board: ['X', ...Array(8).fill(null)] });
+  const ui = harness(recipient, [match]); await tick(); ui.api.act('open', match.id);
+  const symbols = ui.elements.get('gamesPlayers').children.map(side => side.children.find(child => child.className === 'games-player-symbol').textContent);
+  assert.deepEqual(symbols, ['O', 'X']);
+  assert.equal(ui.elements.get('gamesTurn').textContent, 'Your turn');
+  assert.equal(ui.elements.get('gamesBoard').children[0].disabled, true);
+  assert.ok(ui.elements.get('gamesBoard').children.slice(1).every(square => !square.disabled));
+});
+
 test('an uncertain game move retries the same ID and blocks new moves until resolved', async () => {
   const local = player('local'), other = player('other'), match = game(local, other, { status: 'playing', version: 2 });
   let attempts = 0;

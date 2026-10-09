@@ -37,6 +37,7 @@ let leaderboardRefreshQueued = false;
 let leaderboardRevision = 0;
 let chatHighlightTimer;
 const trading = { identity: null, trades: null, signature: null, recipient: null, lookupRevision: 0, lookupLoading: false, review: null, submitting: false, sendUncertain: false, action: null, actionRetry: null, refreshQueued: false, sessionId: null, session: null, sessionRevision: 0, sessionDraft: null, confirmReviewVersion: null, chatMessages: [], chatSignature: null, chatOutbox: [], chatRevision: 0 };
+const tradeAutosave = { timer: null, inFlight: null, retryAt: 0, attempts: 0 };
 let tradeLoadPromise;
 let tradeRevision = 0;
 const tradeInventories = { offered: newTradeInventory() };
@@ -275,6 +276,7 @@ function setUser(user) {
   syncTradingUser();
   window.PepperGames?.syncUser();
   window.PepperModeration?.syncUser();
+  window.PepperFriends?.syncUser();
   if (state.chatFollowLatest) scrollChatToLatest();
   if (viewingPublicProfile && (isOwnProfile(state.profile?.username || '') || isOwnProfile(routeProfileUsername()))) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
@@ -476,7 +478,7 @@ function routeProfileUsername() {
 
 function isAppPath(pathname) {
   const path = pathname.replace(/\/+$/, '') || '/';
-  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/games'].includes(path) || /^\/profile\/[^/]+$/.test(path);
+  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/games', '/friends'].includes(path) || /^\/profile\/[^/]+$/.test(path);
 }
 
 function renderRoute() {
@@ -490,22 +492,22 @@ function renderRoute() {
   }
   profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
   viewingPublicProfile = !!profileRoute;
-  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : routePath === '/trading' ? 'trading' : routePath === '/games' ? 'games' : 'home';
+  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : routePath === '/trading' ? 'trading' : routePath === '/games' ? 'games' : routePath === '/friends' ? 'friends' : 'home';
   if (viewingPublicProfile && isOwnProfile(routeProfileUsername())) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
     return;
   }
-  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard', trading: '/trading', games: '/games' }[pageKind];
+  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard', trading: '/trading', games: '/games', friends: '/friends' }[pageKind];
   document.querySelectorAll('.main-nav a[aria-current], .account-dropdown a[aria-current]').forEach(link => link.removeAttribute('aria-current'));
   const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
   document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route', 'trading-route', 'games-route');
+  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route', 'trading-route', 'games-route', 'friends-route');
   if (pageKind !== 'home') document.body.classList.add(`${pageKind}-route`);
   document.body.classList.toggle('public-profile-route', viewingPublicProfile);
-  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage', 'tradingPage', 'gamesPage'].forEach(id => { $(id).hidden = true; });
-  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage', trading: 'tradingPage', games: 'gamesPage' }[pageKind];
+  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage', 'tradingPage', 'gamesPage', 'friendsPage'].forEach(id => { $(id).hidden = true; });
+  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage', trading: 'tradingPage', games: 'gamesPage', friends: 'friendsPage' }[pageKind];
   $(sectionId).hidden = false;
-  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG', games: 'Games — Pepper TCG' }[pageKind];
+  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG', games: 'Games — Pepper TCG', friends: 'Friends — Pepper TCG' }[pageKind];
   state.profile = null;
   window.PepperModeration?.renderProfileControls();
   $('profileRetry').hidden = true;
@@ -534,11 +536,13 @@ function renderRoute() {
     if (state.user) { void loadTrades(true); void loadTradeSession(true); void loadTradeChat(true); refreshTradeInventories(); }
   }
   window.PepperGames?.onRoute();
+  window.PepperFriends?.onRoute();
+  syncTradeAutosaveRoute();
 }
 
 function focusRouteHeading() {
   if ($('chat').classList.contains('open')) return;
-  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle', trading: 'tradingTitle', games: 'gamesTitle' }[pageKind];
+  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle', trading: 'tradingTitle', games: 'gamesTitle', friends: 'friendsTitle' }[pageKind];
   $(headingId).tabIndex = -1;
   $(headingId).focus({ preventScroll: true });
 }
@@ -604,6 +608,7 @@ $('authForm').addEventListener('submit', async (event) => {
     else if (pageKind === 'announcements') $('announcementsPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'trading') $('tradingPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'games') $('gamesPage').scrollIntoView({ behavior: 'smooth' });
+    else if (pageKind === 'friends') $('friendsPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind !== 'leaderboard') navigateTo('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -720,6 +725,7 @@ function changelogActionButton(label, action) {
 
 function renderChangelog(entries, latestVersion) {
   $('siteVersion').textContent = latestVersion || '0.4.0-0';
+  window.PepperModeration?.syncVersion(latestVersion || '0.4.0-0');
   const signature = JSON.stringify(entries);
   if (signature === state.changelogSignature) {
     renderChangelogEditor();
@@ -854,7 +860,7 @@ async function deleteChangelogEntry(entryId) {
     changelogRevision++;
     state.changelogEntries = data.entries;
     renderChangelog(data.entries, data.latestVersion);
-    message($('changelogMessage'), 'Entry deleted; build version updated.', true);
+    message($('changelogMessage'), 'Entry deleted.', true);
     deleted = true;
     void loadChangelog(true);
   } catch (error) {
@@ -1497,6 +1503,7 @@ function prefillTradingRecipient(fresh = false) {
   const username = new URLSearchParams(location.search).get('to')?.trim().slice(0, 32);
   if (!username) return;
   if (fresh) {
+    cancelTradeAutosave();
     trading.lookupRevision++; trading.lookupLoading = false; trading.sessionRevision++; trading.chatRevision++;
     trading.sessionId = null; trading.session = null; trading.sessionDraft = null; trading.confirmReviewVersion = null;
     trading.chatMessages = []; trading.chatSignature = null; $('tradingChatInput').value = ''; $('tradingChatMessages').replaceChildren();
@@ -1546,6 +1553,7 @@ function rememberTrade(trade) {
 function syncTradingUser() {
   const identity = state.user?.accountId || null, changed = trading.identity !== identity;
   if (changed) {
+    cancelTradeAutosave();
     tradeRevision++; trading.lookupRevision++; trading.sessionRevision++; trading.chatRevision++;
     Object.assign(trading, { identity, trades: null, signature: null, recipient: null, lookupLoading: false, review: null, submitting: false, sendUncertain: false, action: null, actionRetry: null, sessionId: null, session: null, sessionDraft: null, confirmReviewVersion: null, chatMessages: [], chatSignature: null, chatOutbox: [] });
     tradeNotification.id = null; tradeNotification.error = null; tradeNotification.signature = null;
@@ -1648,7 +1656,7 @@ function loadTradeInventory(side = 'offered', refresh = false) {
       if (data.owner.accountId !== identity) throw new Error('Collection changed. Please refresh.');
       inventory.cards = data.cards.filter(card => card.tradable === true).map(tradeCardSnapshot);
     } catch (error) { if (!current()) return; if (error.status === 401) { setUser(null); return; } inventory.error = error.message; }
-    finally { if (!current()) return; inventory.loading = false; inventory.loadPromise = null; renderTradingState(); if (inventory.refreshQueued) { inventory.refreshQueued = false; void loadTradeInventory(); } }
+    finally { if (!current()) return; inventory.loading = false; inventory.loadPromise = null; if (trading.session?.status === 'negotiating' && trading.sessionDraft?.dirty) { validateTradeDraft(); scheduleTradeAutosave(); } renderTradingState(); if (inventory.refreshQueued) { inventory.refreshQueued = false; void loadTradeInventory(); } }
   })();
   renderTradingState(); return inventory.loadPromise;
 }
@@ -1789,8 +1797,106 @@ async function sendTradingOffer() {
     message($('tradingFormMessage'), trading.sendUncertain ? 'Result unknown. Retry safely.' : error.message);
   } finally { if (tradingIdentityIsCurrent(request.identity, identityRevision)) { trading.submitting = false; renderTradingState(); void loadTrades(true); void loadTradeSession(true); refreshTradeInventories(); } }
 }
-function newSessionDraft(trade) { const own = ownTradeSide(trade); return { tokens: own.tokens, cards: own.cards.map(tradeCardSnapshot), baseVersion: trade.version, dirty: false }; }
+function newSessionDraft(trade) { const own = ownTradeSide(trade); return { tokens: own.tokens, cards: own.cards.map(tradeCardSnapshot), baseVersion: trade.version, dirty: false, error: null, status: 'Updated' }; }
 function sameContribution(side, payload) { return side.tokens === payload.tokens && JSON.stringify(side.cards.map(card => card.id).sort()) === JSON.stringify([...payload.cardIds].sort()); }
+function cancelTradeAutosave() {
+  window.clearTimeout(tradeAutosave.timer); tradeAutosave.timer = null; tradeAutosave.retryAt = 0; tradeAutosave.attempts = 0;
+  // A previous session's request must not block a new session or account.
+  tradeAutosave.inFlight = null;
+}
+function tradeDraftPayload(draft = trading.sessionDraft) {
+  return { tokens: Number(draft.tokens), cardIds: draft.cards.map(card => card.id).sort(), version: trading.session.version };
+}
+function validateTradeDraft() {
+  const draft = trading.sessionDraft;
+  if (!draft) return false;
+  const tokens = Number(draft.tokens);
+  draft.error = !String(draft.tokens).trim() || !Number.isSafeInteger(tokens) || tokens < 0 ? 'Enter whole tokens, zero minimum.'
+    : tokens > state.user.balance ? 'Not enough tokens.' : draft.cards.length > 50 ? 'Choose at most 50 cards.'
+    : unavailableTradeCards(draft.cards).length ? 'Remove unavailable cards.' : null;
+  return !draft.error;
+}
+function syncTradeAutosaveRoute() {
+  if (pageKind !== 'trading') { window.clearTimeout(tradeAutosave.timer); tradeAutosave.timer = null; return; }
+  if (trading.sessionDraft?.dirty && !trading.sessionDraft.error) scheduleTradeAutosave();
+}
+function scheduleTradeAutosave(delay = 250) {
+  window.clearTimeout(tradeAutosave.timer); tradeAutosave.timer = null;
+  if (pageKind !== 'trading' || !state.user || trading.session?.status !== 'negotiating' || !trading.sessionDraft?.dirty || trading.sessionDraft.error || tradeAutosave.inFlight) return;
+  const identity = state.user.accountId, identityRevision = userIdentityRevision, sessionRevision = trading.sessionRevision, navigation = routeRevision, id = trading.sessionId;
+  tradeAutosave.timer = window.setTimeout(() => {
+    tradeAutosave.timer = null;
+    if (tradingIdentityIsCurrent(identity, identityRevision) && sessionRevision === trading.sessionRevision && navigation === routeRevision && id === trading.sessionId && pageKind === 'trading') void saveTradeContribution();
+  }, Math.max(delay, tradeAutosave.retryAt - Date.now()));
+}
+function changeTradeDraft() {
+  if (trading.session?.status !== 'negotiating' || !trading.sessionDraft) return;
+  const draft = trading.sessionDraft; draft.dirty = true; draft.error = null; draft.status = 'Updating…'; trading.confirmReviewVersion = null;
+  if (validateTradeDraft()) scheduleTradeAutosave();
+  else { window.clearTimeout(tradeAutosave.timer); tradeAutosave.timer = null; }
+  renderTradeSession();
+}
+async function saveTradeContribution() {
+  const draft = trading.sessionDraft, trade = trading.session;
+  if (pageKind !== 'trading' || !state.user || trade?.status !== 'negotiating' || !draft?.dirty || tradeAutosave.inFlight) return;
+  if (tradingBusy() || trading.actionRetry) { scheduleTradeAutosave(); return; }
+  if (!validateTradeDraft()) { renderTradeSession(); return; }
+  const payload = tradeDraftPayload(draft);
+  if (!draft.refreshNeeded && sameContribution(ownTradeSide(trade), payload)) {
+    draft.dirty = false; draft.baseVersion = trade.version; draft.status = 'Updated'; renderTradeSession(); return;
+  }
+  const operation = { id: trade.id, identity: state.user.accountId, identityRevision: userIdentityRevision, sessionRevision: trading.sessionRevision, navigation: routeRevision, payload };
+  const current = () => tradingIdentityIsCurrent(operation.identity, operation.identityRevision) && operation.sessionRevision === trading.sessionRevision && operation.id === trading.sessionId && operation.navigation === routeRevision && pageKind === 'trading';
+  tradeAutosave.inFlight = operation; draft.status = 'Updating…'; trading.confirmReviewVersion = null; renderTradeSession();
+  try {
+    if (draft.refreshNeeded) {
+      const latest = await api(`trades/${encodeURIComponent(operation.id)}`);
+      if (!current()) return;
+      draft.refreshNeeded = false;
+      rememberTrade(latest.trade); updateTradeSession(latest.trade); mergeTradingUser(latest.user);
+      if (trading.session?.status !== 'negotiating' || !trading.sessionDraft?.dirty || !validateTradeDraft()) return;
+      operation.payload = tradeDraftPayload();
+      if (sameContribution(ownTradeSide(trading.session), operation.payload)) return;
+    }
+    const data = await api(`trades/${encodeURIComponent(operation.id)}/contribution`, { method: 'POST', body: JSON.stringify(operation.payload) });
+    if (!current()) return;
+    tradeAutosave.retryAt = 0; tradeAutosave.attempts = 0; tradeRevision++;
+    rememberTrade(data.trade); updateTradeSession(data.trade); mergeTradingUser(data.user);
+  } catch (error) {
+    if (!current()) return;
+    if (error.status === 401) { setUser(null); return; }
+    mergeTradingUser(error.user); trading.confirmReviewVersion = null;
+    if (error.status === 409 || !error.status || error.status >= 500) {
+      try {
+        const data = await api(`trades/${encodeURIComponent(operation.id)}`);
+        if (!current()) return;
+        rememberTrade(data.trade); updateTradeSession(data.trade); mergeTradingUser(data.user);
+      } catch (refreshError) { if (current() && refreshError.status === 401) { setUser(null); return; } }
+    }
+    if (!current() || trading.session?.status !== 'negotiating') return;
+    if ([400, 403, 404].includes(error.status)) {
+      if (error.status !== 400 || sameContribution({ tokens: Number(trading.sessionDraft.tokens), cards: trading.sessionDraft.cards }, operation.payload)) trading.sessionDraft.error = 'Check your offer.';
+    }
+    else {
+      tradeAutosave.attempts++;
+      const retry = Number(error.retryAfterMs);
+      tradeAutosave.retryAt = Date.now() + (error.status === 429 && Number.isFinite(retry) && retry > 0 ? retry : error.status === 409 ? 250 : Math.min(5000, 500 * 2 ** Math.min(tradeAutosave.attempts, 4)));
+      trading.sessionDraft.status = 'Waiting…';
+      validateTradeDraft();
+    }
+  } finally {
+    if (tradeAutosave.inFlight === operation) tradeAutosave.inFlight = null;
+    const sameSession = tradingIdentityIsCurrent(operation.identity, operation.identityRevision) && operation.sessionRevision === trading.sessionRevision && operation.id === trading.sessionId;
+    if (sameSession && !current() && trading.sessionDraft?.dirty) trading.sessionDraft.refreshNeeded = true;
+    if (sameSession && pageKind === 'trading') {
+      const latest = trading.sessionDraft;
+      if (trading.session?.status === 'negotiating' && latest?.dirty && !latest.error && !latest.refreshNeeded && sameContribution(ownTradeSide(trading.session), tradeDraftPayload(latest))) {
+        latest.dirty = false; latest.baseVersion = trading.session.version; latest.status = 'Updated'; tradeAutosave.retryAt = 0; tradeAutosave.attempts = 0;
+      }
+      renderTradeSession(); scheduleTradeAutosave();
+    } else syncTradeAutosaveRoute();
+  }
+}
 function reconcileTradeAction(trade) {
   const retry = trading.actionRetry;
   if (retry?.id === trade.id) {
@@ -1804,7 +1910,12 @@ function updateTradeSession(trade, saved = false) {
   const previous = trading.session;
   trade = newestTrade(trade, previous);
   trading.session = trade;
-  if (!trading.sessionDraft || !trading.sessionDraft.dirty || saved) trading.sessionDraft = newSessionDraft(trade);
+  if (!trading.sessionDraft || !trading.sessionDraft.dirty || !activeTrade(trade)) trading.sessionDraft = newSessionDraft(trade);
+  else {
+    trading.sessionDraft.baseVersion = trade.version;
+    if (!tradeAutosave.inFlight && !trading.sessionDraft.error && !trading.sessionDraft.refreshNeeded && sameContribution(ownTradeSide(trade), tradeDraftPayload())) trading.sessionDraft = newSessionDraft(trade);
+  }
+  if (!activeTrade(trade)) cancelTradeAutosave();
   if (trading.confirmReviewVersion !== trade.version) trading.confirmReviewVersion = null;
   if (previous && !trading.action) {
     if (previous.status !== 'accepted' && trade.status === 'accepted') message($('tradingActionMessage'), 'Trade completed. Assets transferred.', true);
@@ -1814,10 +1925,12 @@ function updateTradeSession(trade, saved = false) {
   if (trade.status === 'negotiating' && previous?.status !== 'negotiating') refreshTradeInventories();
   reconcileTradeAction(trade);
   renderTradeSession();
+  if (trading.sessionDraft?.dirty && !trading.sessionDraft.error) scheduleTradeAutosave();
 }
 function openTradeSession(id, trade = null) {
   if (!state.user || tradingBusy() && !trading.submitting) return;
   if (trading.sessionId !== id) {
+    cancelTradeAutosave();
     trading.sessionRevision++; trading.chatRevision++; trading.sessionId = id; trading.session = null; trading.sessionDraft = null; trading.confirmReviewVersion = null; trading.chatMessages = []; trading.chatSignature = null; $('tradingChatInput').value = '';
     $('tradingChatMessages').replaceChildren();
     message($('tradingSessionMessage'), 'Loading trade…'); message($('tradingChatMessage'), ''); $('tradingSessionRetry').hidden = true;
@@ -1826,6 +1939,7 @@ function openTradeSession(id, trade = null) {
   if (trade) updateTradeSession(trade); renderTradingState(); void loadTradeSession(true); void loadTradeChat(true); $('tradingSessionTitle').focus({ preventScroll: true });
 }
 $('tradingSessionBack').addEventListener('click', () => {
+  cancelTradeAutosave();
   trading.sessionRevision++; trading.chatRevision++; trading.sessionId = null; trading.session = null; trading.sessionDraft = null; trading.confirmReviewVersion = null;
   renderTradingState(); $('tradingCreateTitle').tabIndex = -1; $('tradingCreateTitle').focus({ preventScroll: true });
 });
@@ -1843,7 +1957,7 @@ function renderTradeSession() {
   $('tradingOwnOffer').hidden = !requestAccepted; $('tradingPartnerOffer').hidden = !requestAccepted;
   $('tradingSessionTitle').textContent = `Trade with ${partner.player.username}`; $('tradingSessionStatus').textContent = tradeStatusLabel(trade.status); $('tradingSessionStatus').className = `trading-status trading-status-${trade.status}`;
   const previewDraft = editable && draft;
-  $('tradingOwnConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : previewDraft?.dirty ? 'Unsaved changes' : own.confirmed ? 'Confirmed' : 'Not confirmed';
+  $('tradingOwnConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : previewDraft?.dirty ? 'Updating…' : own.confirmed ? 'Confirmed' : 'Not confirmed';
   $('tradingPartnerConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : partner.confirmed ? 'Confirmed' : 'Not confirmed';
   $('tradingOwnConfirmed').classList.toggle('success', !!own.confirmed && !previewDraft?.dirty); $('tradingPartnerConfirmed').classList.toggle('success', !!partner.confirmed);
   if (!requestAccepted) {
@@ -1858,19 +1972,16 @@ function renderTradeSession() {
   if (editable && draft) {
     if ($('tradingSessionTokens').value !== String(draft.tokens)) $('tradingSessionTokens').value = draft.tokens; $('tradingSessionTokens').disabled = busy;
     renderOwnCardPicker('tradingSessionCards', 'tradingSessionCardCount', 'tradingSessionInventoryMessage', draft.cards, busy);
-    const changed = draft.baseVersion !== trade.version;
-    message($('tradingDraftMessage'), draft.error || (changed ? 'Offers changed. Review updated terms.' : draft.dirty ? 'Unsaved changes.' : 'Offer saved.'), !draft.error && !changed && !draft.dirty);
-    $('tradingDraftMessage').classList.toggle('trading-draft-info', !draft.error && (changed || draft.dirty));
-    $('tradingUseLatest').hidden = !changed; $('tradingUseLatest').disabled = busy;
-    $('tradingContributionSave').disabled = busy || !draft.dirty || changed || unavailableTradeCards(draft.cards).length > 0; $('tradingContributionSave').textContent = trading.action?.action === 'contribution' ? 'Saving…' : 'Save my offer';
+    message($('tradingDraftMessage'), draft.error || (draft.dirty || tradeAutosave.inFlight ? draft.status || 'Updating…' : 'Updated'), !draft.error && !draft.dirty && !tradeAutosave.inFlight);
+    $('tradingDraftMessage').classList.toggle('trading-draft-info', !draft.error && (draft.dirty || !!tradeAutosave.inFlight));
   }
   const actions = $('tradingSessionActions'), focusedAction = document.activeElement?.closest('#tradingSessionActions button')?.dataset.tradeAction; actions.replaceChildren();
   if (pending && !sender) actions.append(tradeButton('Accept request', 'join', trade.id, busy), tradeButton('Decline', 'decline', trade.id, busy));
-  if (trade.status === 'negotiating') actions.append(tradeButton(own.confirmed ? 'You confirmed' : 'Review & confirm', 'review-confirm', trade.id, busy || own.confirmed || draft.dirty || draft.baseVersion !== trade.version));
+  if (trade.status === 'negotiating') actions.append(tradeButton(own.confirmed ? 'You confirmed' : 'Review & confirm', 'review-confirm', trade.id, busy || !!tradeAutosave.inFlight || own.confirmed || draft.dirty || !!draft.error || draft.baseVersion !== trade.version));
   if (activeTrade(trade)) actions.append(tradeButton('Cancel trade', 'cancel', trade.id, busy));
   if (focusedAction) Array.from(actions.children).find(button => button.dataset.tradeAction === focusedAction && !button.disabled)?.focus({ preventScroll: true });
-  $('tradingConfirmReview').hidden = trading.confirmReviewVersion !== trade.version || trade.status !== 'negotiating' || !!draft?.dirty || !!own.confirmed;
-  $('tradingConfirmFinal').disabled = busy || trading.confirmReviewVersion !== trade.version || !!draft?.dirty; $('tradingConfirmBack').disabled = busy;
+  $('tradingConfirmReview').hidden = trading.confirmReviewVersion !== trade.version || trade.status !== 'negotiating' || !!draft?.dirty || !!draft?.error || !!tradeAutosave.inFlight || !!own.confirmed;
+  $('tradingConfirmFinal').disabled = busy || trading.confirmReviewVersion !== trade.version || !!draft?.dirty || !!draft?.error || !!tradeAutosave.inFlight; $('tradingConfirmBack').disabled = busy;
   const chatVisible = requestAccepted; $('tradingPrivateChat').hidden = !chatVisible; $('tradingChatForm').hidden = trade.status !== 'negotiating'; $('tradingChatClosed').hidden = !chatVisible || trade.status === 'negotiating';
   $('tradingChatSend').disabled = trading.chatOutbox.some(entry => entry.tradeId === trade.id && ['sending', 'waiting'].includes(entry.status)); renderTradeChat();
 }
@@ -1884,7 +1995,7 @@ function loadTradeSession(refresh = false) {
     try {
       const data = await api(`trades/${encodeURIComponent(id)}`); if (!current()) return; if (revision !== tradeRevision) { tradeSessionRefreshQueued = true; return; }
       rememberTrade(data.trade); updateTradeSession(data.trade); if (accountRevision === authRevision) mergeTradingUser(data.user);
-      message($('tradingSessionMessage'), ''); $('tradingSessionRetry').hidden = true; void loadTradeChat();
+      message($('tradingSessionMessage'), ''); $('tradingSessionRetry').hidden = true;
     } catch (error) {
       if (!current()) return; if (error.status === 401) { setUser(null); return; } message($('tradingSessionMessage'), trading.session ? 'Refresh failed. Previous terms shown.' : error.message); $('tradingSessionRetry').hidden = false;
     }
@@ -1913,18 +2024,15 @@ function handleTradeAction(event) {
   const button = event.target.closest('button[data-trade-action]'); if (!button || button.disabled || !state.user) return;
   const id = button.dataset.tradeId, action = button.dataset.tradeAction;
   if (action === 'open') { openTradeSession(id, trading.trades?.find(trade => trade.id === id)); return; }
-  if (action === 'review-confirm') { trading.confirmReviewVersion = trading.session?.version; renderTradeSession(); $('tradingConfirmFinal').focus({ preventScroll: true }); return; }
+  if (action === 'review-confirm') { if (trading.sessionDraft?.dirty || trading.sessionDraft?.error || tradeAutosave.inFlight) return; trading.confirmReviewVersion = trading.session?.version; renderTradeSession(); $('tradingConfirmFinal').focus({ preventScroll: true }); return; }
   if (['join', 'decline', 'cancel'].includes(action)) void actOnTrade(id, action);
 }
 $('tradingLists').addEventListener('click', handleTradeAction); $('tradingSessionActions').addEventListener('click', handleTradeAction);
-$('tradingSessionTokens').addEventListener('input', () => { if (!trading.sessionDraft) return; trading.sessionDraft.tokens = $('tradingSessionTokens').value; trading.sessionDraft.dirty = true; trading.sessionDraft.error = null; trading.confirmReviewVersion = null; renderTradeSession(); });
-$('tradingUseLatest').addEventListener('click', () => { if (!trading.sessionDraft || !trading.session || tradingBusy()) return; trading.sessionDraft.baseVersion = trading.session.version; trading.sessionDraft.error = null; trading.confirmReviewVersion = null; renderTradeSession(); });
+$('tradingSessionTokens').addEventListener('input', () => { if (!trading.sessionDraft || trading.session?.status !== 'negotiating' || tradingBusy()) return; trading.sessionDraft.tokens = $('tradingSessionTokens').value; changeTradeDraft(); });
 $('tradingContributionForm').addEventListener('submit', event => {
-  event.preventDefault(); const draft = trading.sessionDraft, trade = trading.session; if (!draft || trade?.status !== 'negotiating' || tradingBusy() || !draft.dirty) return;
-  if (draft.baseVersion !== trade.version) { renderTradeSession(); return; } const tokens = Number(draft.tokens); if (!validTradeContribution(tokens, draft.cards, $('tradingDraftMessage'))) return;
-  void actOnTrade(trade.id, 'contribution', { tokens, cardIds: selectedTradeSnapshots(draft.cards).map(card => card.id), version: draft.baseVersion });
+  event.preventDefault(); if (trading.sessionDraft?.dirty && !trading.sessionDraft.error) scheduleTradeAutosave(0);
 });
-$('tradingConfirmFinal').addEventListener('click', () => { const trade = trading.session; if (trade?.status === 'negotiating' && trading.confirmReviewVersion === trade.version && !trading.sessionDraft?.dirty) void actOnTrade(trade.id, 'confirm', { version: trade.version }); });
+$('tradingConfirmFinal').addEventListener('click', () => { const trade = trading.session; if (trade?.status === 'negotiating' && trading.confirmReviewVersion === trade.version && !trading.sessionDraft?.dirty && !trading.sessionDraft?.error && !tradeAutosave.inFlight) void actOnTrade(trade.id, 'confirm', { version: trade.version }); });
 $('tradingConfirmBack').addEventListener('click', () => { trading.confirmReviewVersion = null; renderTradeSession(); });
 $('tradingActionRetry').addEventListener('click', () => { const retry = trading.actionRetry; if (retry?.identity === state.user?.accountId) void actOnTrade(retry.id, retry.action, retry.payload); });
 $('tradingSessionRetry').addEventListener('click', () => loadTradeSession(true));
@@ -1936,7 +2044,7 @@ for (const containerId of ['tradingSessionCards']) {
     const cards = trading.sessionDraft.cards;
     if (checked) { const card = tradeInventories.offered.cards?.find(card => card.id === id); if (!card || cards.length >= 50 || cards.some(card => card.id === id)) return; cards.push(tradeCardSnapshot(card)); }
     else { const index = cards.findIndex(card => card.id === id); if (index >= 0) cards.splice(index, 1); }
-    trading.sessionDraft.dirty = true; trading.sessionDraft.error = null; trading.confirmReviewVersion = null; renderTradeSession();
+    changeTradeDraft();
   };
   $(containerId).addEventListener('change', event => { const input = event.target.closest('input[data-card-id]'); if (input && !input.disabled) edit(input.dataset.cardId, input.checked); });
   $(containerId).addEventListener('click', event => { const button = event.target.closest('button[data-remove-card]'); if (button && !button.disabled) edit(button.dataset.cardId, false); });
@@ -2481,7 +2589,8 @@ loadAnnouncements();
 setInterval(() => { if (!document.hidden) { loadChangelog(); loadAnnouncements(); } }, 60000);
 setInterval(() => { if (!document.hidden && pageKind === 'leaderboard') void loadLeaderboard(); }, 15000);
 setInterval(() => { if (!document.hidden && state.user) { void loadTrades(); void window.PepperGames?.load(); if (pageKind === 'trading') refreshTradeInventories(); } }, 5000);
-setInterval(() => { if (!document.hidden && pageKind === 'trading' && trading.sessionId) { void loadTradeSession(); void loadTradeChat(); } }, 4000);
+setInterval(() => { if (!document.hidden && pageKind === 'trading' && trading.sessionId) void loadTradeSession(); }, 1000);
+setInterval(() => { if (!document.hidden && pageKind === 'trading' && trading.sessionId) void loadTradeChat(); }, 4000);
 loadPresence();
 setInterval(() => loadPresence(), 20000);
 document.addEventListener('visibilitychange', () => {

@@ -28,7 +28,7 @@ Profile pictures default to a pepper and appear beside usernames in public and p
 
 Settings also includes permanent account deletion, requiring the current password and typing `DELETE`. Deletion signs out every session, removes the account, its owned cards, verification links, and public messages, and cancels active trades. Shared trade history remains available to the other player under **Deleted player**; the deleted player's private messages and quoted public messages become **Message deleted**.
 
-Read release notes at `/changelog`. The original account named `675` can publish a title, description, and version from that page, and delete changelog entries. Publishing dates are set by the server and displayed in each reader's local timezone. The latest remaining entry sets the development build version in the site footer; deleting that entry restores the previous entry's version, and an empty changelog uses `0.4.0-0`. Versions use `major.minor.patch-build`, such as `0.6.1-2`, and may include a leading `v` when entered. Each number has no leading zeros, and the version without `v` can contain up to 32 characters. Older saved three-part versions display with `-0` without changing their stored values.
+Read release notes at `/changelog`. The original account named `675` can publish a title, description, and version from that page, and delete changelog entries. Publishing dates are set by the server and displayed in each reader's local timezone. In Settings, open **Admin view** and use **Site version** to change the footer version without creating a changelog entry. Publishing a changelog also updates the saved site version; deleting notes preserves it. Before the first version update or publication, existing sites use their latest saved changelog version, or `0.4.0-0` when empty. Versions use `major.minor.patch-build`, such as `0.6.1-2`, and may include a leading `v` when entered. Each number has no leading zeros, and the version without `v` can contain up to 32 characters. Older saved three-part versions display with `-0` without changing their stored values.
 
 Every account has a permanent random account ID, such as `PPR-8F0B6ED0-77F5-4E25-9B41-B75B1EE16791`. New accounts receive their IDs on registration, and existing accounts receive them automatically when the server starts. IDs are saved uniquely in MongoDB and stay the same through username or password changes and server restarts. They appear in account details and public profiles.
 
@@ -60,11 +60,11 @@ The public `/leaderboard` page ranks the top 100 players by their current token 
 
 ## Games
 
-Username fields in Games, Trading, and Admin/Mod settings show alphabetical suggestions as you type. Matches start with the entered prefix, ignoring case. Click a player or use the arrow keys and Enter to select them. Selecting a suggestion fills the username; sending requests and moderation actions use their own buttons. Trading and Games omit your own account and banned players; staff search includes banned accounts.
+Username fields in Games, Trading, Friends, and Admin/Mod settings show alphabetical suggestions as you type. Matches start with the entered prefix, ignoring case. Click a player or use the arrow keys and Enter to select them. Selecting a suggestion fills the username; sending requests and moderation actions use their own buttons. Trading, Games, and Friends omit your own account and banned players; staff search includes banned accounts.
 
 At `/games`, choose Tic-Tac-Toe or Rock Paper Scissors, enter a player's username, and choose the tokens each player stakes. Bets require at least one whole token per player. Sending the request agrees to that stake. The recipient sees the same amount before accepting; neither balance changes until acceptance. Accepting reserves both equal stakes together. A winner receives the whole pot, and a draw returns each stake.
 
-Tic-Tac-Toe starts with the sender as X. Rock Paper Scissors keeps the opponent's choice hidden until the game ends. Each player can submit only their own moves. Requests, moves, results, and token transfers are saved, and retries do not duplicate them. Pending requests can be declined or cancelled; an active game can be resigned. The Games page includes active games and history, while incoming requests appear across the site.
+Tic-Tac-Toe randomly chooses the first player when the request is accepted. That player plays X, and the other plays O. The choice stays fixed through retries and restarts; existing games keep their saved turns. Rock Paper Scissors keeps the opponent's choice hidden until the game ends. Each player can submit only their own moves. Requests, moves, results, and token transfers are saved, and retries do not duplicate them. Pending requests can be declined or cancelled; an active game can be resigned. The Games page includes active games and history, while incoming requests appear across the site.
 
 Requests expire after ten minutes. Tic-Tac-Toe allows two minutes per turn before forfeiting. Rock Paper Scissors allows two minutes: a sole submitted choice wins, or both stakes return if neither player chooses. Account deletion ends active games safely without leaving the other player's stake locked.
 
@@ -72,7 +72,7 @@ Requests expire after ten minutes. Tic-Tac-Toe allows two minutes per turn befor
 
 At `/trading`, enter a player's username and send a request with one click. Requests use their permanent account ID internally. Incoming requests appear in a bottom-right popup across the site; accepting opens the trade session. **Decline** permanently declines the request, so it does not reappear after refreshing or signing back in. The recipient can also accept or decline from Trading. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
 
-Your offered tokens and cards appear on the left, and the other player's appear on the right, including on narrow screens. Both card areas stay visible after joining and show **None** when empty. The other player's saved selections update during the trade. Your selections preview immediately and show **Unsaved changes** until saved. Starting a trade from someone's profile opens the request form for that player, even if you previously viewed another session.
+Your offered tokens and cards appear on the left, and the other player's appear on the right, including on narrow screens. Both card areas stay visible after joining and show **None** when empty. Card and token changes preview immediately and save automatically; the other player's offer updates during the trade. Confirmation stays unavailable until your changes are saved. Starting a trade from someone's profile opens the request form for that player, even if you previously viewed another session.
 
 Both players must confirm the same current contributions before anything moves. Changing either contribution clears both confirmations, so each player reviews the new terms. Trades can exchange cards, tokens, or both, including gifts, and each side may include up to 50 cards. Separate copies of the same card are separate inventory items. Both sides cannot be empty when confirming.
 
@@ -85,6 +85,10 @@ Card trading uses catalog definitions and uniquely owned card copies saved in Mo
 Existing pending offers become trade requests. Their sender's saved contribution stays hidden until the request is accepted, and the recipient then chooses their own contribution. Completed trade history stays intact.
 
 For server-side rewards, `cards.js` exports `upsertCardDefinition(store, { id, name, rarity, setName, imageUrl })` and `grantCards(store, { ownerAccountId, cardIds, grantId })`. `cardIds` are catalog IDs; repeated IDs issue distinct copies. Use a fresh UUID for each reward's `grantId` and reuse it when retrying that reward. A retry returns the original copy IDs, even after those cards have been traded. Reusing a grant ID for another owner or different contents is rejected. Future pack code can pass `{ session }` as a third argument inside its active MongoDB transaction to combine payment and issuance. There is no public card-issuing endpoint.
+
+## Friends
+
+At `/friends`, search for a player and send a friend request. The recipient chooses **Accept** or **Deny**. Accepted players appear in each other's friend lists; denied requests do not create a friendship. Open a friend to read and send private direct messages. Conversations are available only to the two accepted friends and show their latest 100 messages. Requests, friendships, and messages persist through restarts and follow current usernames and pictures. Message retries keep the same ID, and rate-limited messages retry automatically. Deleting an account removes its friendships and direct messages.
 
 ## Cloudflare verification
 
@@ -101,7 +105,8 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Persistent MongoDB account balances.
 - Private trading sessions with each player's own card and token selections, two confirmations, private chat, actual owned card inventories, cancellation, decline, saved history, and atomic transfers.
 - Player-versus-player Tic-Tac-Toe and Rock Paper Scissors, equal token stakes, invitation acceptance, private choices, saved results, refunds, and atomic payouts.
-- Public changelog entries saved in MongoDB, with publishing and deletion restricted to the original `675` account and an automatic footer version.
+- Friend requests, alphabetical friend lists, and private direct messages between accepted friends.
+- Public changelog entries saved in MongoDB, with admin publishing and deletion, plus independent site version updates without release notes.
 - Public announcements with administrator/moderator publishing and author-aware moderator deletion, plus administrator-only changelog management.
 - Persistent admin/mod views in Settings, moderator assignments, bans, chat deletion, role badges, and a dedicated banned-account screen.
 - A clickable live count and list of unique signed-in players, shared across server instances and updated automatically above chat.
@@ -118,4 +123,4 @@ The Packs page at `/packs` currently displays “Coming soon.” There is curren
 
 Run behind HTTPS, configure real Cloudflare Turnstile keys, and add password recovery before accepting public users. Review privacy and payment requirements before accepting real users or payments. Back up MongoDB regularly once people use the site.
 
-Run the automated account, claim, trading, games, chat, and moderation checks with `npm test`. Tests start isolated local MongoDB replica sets automatically and seed test accounts and cards only in their temporary databases.
+Run the automated account, claim, trading, games, friends, chat, and moderation checks with `npm test`. Tests start isolated local MongoDB replica sets automatically and seed test accounts and cards only in their temporary databases.

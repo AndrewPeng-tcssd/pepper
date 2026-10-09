@@ -1,4 +1,5 @@
 const { ObjectId } = require('mongodb');
+const crypto = require('node:crypto');
 const { avatarUrl } = require('./accounts');
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -122,9 +123,13 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
       };
       const mine = sameId(match.senderUserId, viewerId) ? 'sender' : 'recipient';
       const theirs = mine === 'sender' ? 'recipient' : 'sender';
+      const xUserId = match.game === 'tic-tac-toe'
+        ? match.xUserId ?? (['playing', 'completed'].includes(match.status) ? match.senderUserId : null)
+        : null;
       return {
         id: match._id.toString(), clientRequestId: match.clientRequestId, game: match.game, stake: match.stake,
         sender: person('sender'), recipient: person('recipient'), status: match.status, version: match.version,
+        xAccountId: xUserId ? sameId(xUserId, match.senderUserId) ? match.senderAccountId : match.recipientAccountId : null,
         board: match.board, turnAccountId: match.turnUserId ? sameId(match.turnUserId, match.senderUserId) ? match.senderAccountId : match.recipientAccountId : null,
         winnerAccountId: match.winnerUserId ? sameId(match.winnerUserId, match.senderUserId) ? match.senderAccountId : match.recipientAccountId : null,
         result: match.result ?? null, reason: match.reason ?? null,
@@ -239,6 +244,8 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
   }));
   app.post('/api/games/:id/accept', requireUser, rateLimit(60, 60 * 1000), route(async (req, res) => {
     const id = await prepare(req);
+    // Retain one choice if MongoDB retries this acceptance transaction.
+    let xUserId;
     const match = await atomic(client, async session => {
       const saved = await privateMatch(id, req.user._id, session);
       if (!sameId(saved.recipientUserId, req.user._id)) throw new GameError(403, 'Only the invited player accepts.');
@@ -262,8 +269,9 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         if (!debited.matchedCount) throw new GameError(409, 'Token balance changed.');
       }
       const at = currentDate();
+      if (saved.game === 'tic-tac-toe') xUserId ??= crypto.randomInt(2) === 0 ? saved.senderUserId : saved.recipientUserId;
       const update = { status: 'playing', escrowed: true, payoutReserved: true, acceptedAt: at, updatedAt: at, expiresAt: new Date(at.getTime() + TURN_MS),
-        turnUserId: saved.game === 'tic-tac-toe' ? saved.senderUserId : null, version: saved.version + 1 };
+        ...(saved.game === 'tic-tac-toe' ? { xUserId } : {}), turnUserId: xUserId ?? null, version: saved.version + 1 };
       await games.updateOne({ _id: id, version: saved.version }, { $set: update }, { session });
       return { ...saved, ...update };
     });
@@ -320,7 +328,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
       if (saved.game === 'tic-tac-toe') {
         if (!sameId(saved.turnUserId, req.user._id)) throw new GameError(409, 'Wait for your turn.');
         if (saved.board[position] !== null) throw new GameError(409, 'Choose an empty square.');
-        const symbol = sameId(saved.senderUserId, req.user._id) ? 'X' : 'O';
+        const symbol = sameId(saved.xUserId ?? saved.senderUserId, req.user._id) ? 'X' : 'O';
         update.board = [...saved.board]; update.board[position] = symbol;
         if (lines.some(line => line.every(index => update.board[index] === symbol))) { winner = req.user._id; complete = true; }
         else if (update.board.every(Boolean)) complete = true;

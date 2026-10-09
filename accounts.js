@@ -71,7 +71,7 @@ async function sanitizeAvatar(value) {
 }
 
 function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInUser, passwordMatches, cookieName, now = Date.now }) {
-  const { client, users, sessions, verificationTokens, messages, trades, tradeMessages, cardInstances } = store;
+  const { client, users, sessions, verificationTokens, messages, trades, tradeMessages, friendships, friendMessages, cardInstances } = store;
   const route = handler => async (req, res, next) => {
     try { await handler(req, res); }
     catch (error) {
@@ -119,6 +119,11 @@ function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInU
         const deleted = await users.deleteOne({ _id: req.user._id, passwordHash: req.user.passwordHash, banned: { $ne: true } }, { session });
         if (!deleted.deletedCount) throw new AccountError(409, 'Account changed. Try again.');
         const participant = { $or: [{ senderUserId: req.user._id }, { recipientUserId: req.user._id }] };
+        if (friendships && friendMessages) {
+          const friendIds = (await friendships.find(participant, { session, projection: { _id: 1 } }).toArray()).map(friend => friend._id);
+          await friendMessages.deleteMany({ friendshipId: { $in: friendIds } }, { session });
+          await friendships.deleteMany(participant, { session });
+        }
         await trades.updateMany({ ...participant, status: { $in: ['pending', 'negotiating'] } }, {
           $set: { status: 'cancelled', senderConfirmed: false, recipientConfirmed: false, updatedAt: new Date() }, $inc: { version: 1 }
         }, { session });

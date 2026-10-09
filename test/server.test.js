@@ -987,7 +987,7 @@ test('legacy changelog versions display a zero build without rewriting stored re
   assert.equal((await isolated.changelog.findOne({ _id: new ObjectId(published.data.entry.id) })).version, '0.6.1-2');
 
   const restored = await api(`/api/changelog/${published.data.entry.id}`, undefined, owner.cookie, 'DELETE');
-  assert.equal(restored.data.latestVersion, '0.6.1-0');
+  assert.equal(restored.data.latestVersion, '0.6.1-2');
   assert.deepEqual(restored.data.entries, legacy.data.entries);
   assert.equal((await isolated.changelog.findOne({ _id: latest._id })).version, '0.6.1');
 });
@@ -1021,11 +1021,11 @@ test('changelog deletion requires the permanent owner and rejects invalid or mis
   assert.deepEqual((await api('/api/changelog')).data, original);
   const deleted = await api(`/api/changelog/${published.data.entry.id.toUpperCase()}`, undefined, owner.cookie, 'DELETE');
   assert.equal(deleted.status, 200);
-  assert.deepEqual(deleted.data, { entries: [], latestVersion: '0.4.0-0' });
+  assert.deepEqual(deleted.data, { entries: [], latestVersion: '0.5.0-0' });
   assert.equal((await api(route, undefined, owner.cookie, 'DELETE')).status, 404);
 });
 
-test('deleting older, newest, and final changelog entries updates the public version and persists', async t => {
+test('deleting older, newest, and final changelog entries preserves the current version and persists', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);
   const owner = await api('/api/register', { username: '675', password: '12345678' });
@@ -1045,7 +1045,7 @@ test('deleting older, newest, and final changelog entries updates the public ver
 
   const newest = await deleteEntry(entries[2]);
   assert.equal(newest.status, 200);
-  assert.deepEqual(newest.data, { entries: [entries[1]], latestVersion: '0.6.0-0' });
+  assert.deepEqual(newest.data, { entries: [entries[1]], latestVersion: '0.7.0-0' });
   assert.deepEqual((await api('/api/changelog')).data, newest.data);
   const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
   t.after(() => reconnected.client.close());
@@ -1054,12 +1054,94 @@ test('deleting older, newest, and final changelog entries updates the public ver
 
   const final = await deleteEntry(entries[1], freshApi);
   assert.equal(final.status, 200);
-  assert.deepEqual(final.data, { entries: [], latestVersion: '0.4.0-0' });
+  assert.deepEqual(final.data, { entries: [], latestVersion: '0.7.0-0' });
   assert.deepEqual((await api('/api/changelog')).data, final.data);
   assert.equal(await isolated.changelog.countDocuments(), 0);
   const restarted = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
   t.after(() => restarted.client.close());
   assert.deepEqual((await accountApi(t, restarted)('/api/changelog')).data, final.data);
+});
+
+test('site version changes independently without creating changelog entries and persists after restart', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  assert.deepEqual((await api('/api/version')).data, { version: '0.4.0-0' });
+  const updated = await api('/api/version', { version: '  v0.6.1-2  ' }, owner.cookie, 'PATCH');
+  assert.equal(updated.status, 200);
+  assert.deepEqual(updated.data, { version: '0.6.1-2' });
+  assert.equal(await isolated.changelog.countDocuments(), 0);
+  assert.deepEqual((await api('/api/changelog')).data, { entries: [], latestVersion: '0.6.1-2' });
+  const saved = await isolated.siteSettings.findOne({ _id: 'version' });
+  assert.equal(saved.version, '0.6.1-2');
+  assert.equal(saved.updatedByAccountId, owner.data.user.accountId);
+  assert.ok(saved.updatedAt instanceof Date);
+  const restarted = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => restarted.client.close());
+  assert.deepEqual((await accountApi(t, restarted)('/api/version')).data, updated.data);
+});
+
+test('site version follows legacy releases until saved and publishing updates it without deletion rollbacks', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  const legacy = { title: 'Legacy', description: 'Unchanged', version: '0.6.1', createdAt: new Date('2020-01-01') };
+  await isolated.changelog.insertOne(legacy);
+  assert.deepEqual((await api('/api/version')).data, { version: '0.6.1-0' });
+  assert.equal(await isolated.siteSettings.findOne({ _id: 'version' }), null);
+  const originalEntries = await isolated.changelog.find().toArray();
+  assert.equal((await api('/api/version', { version: '0.6.1-3' }, owner.cookie, 'PATCH')).status, 200);
+  assert.deepEqual(await isolated.changelog.find().toArray(), originalEntries);
+  const published = await api('/api/changelog', { title: 'Release', description: 'Release notes', version: '0.7.0-1' }, owner.cookie);
+  assert.equal(published.status, 201);
+  assert.deepEqual((await api('/api/version')).data, { version: '0.7.0-1' });
+  await api(`/api/changelog/${published.data.entry.id}`, undefined, owner.cookie, 'DELETE');
+  assert.deepEqual((await api('/api/version')).data, { version: '0.7.0-1' });
+  await api(`/api/changelog/${legacy._id}`, undefined, owner.cookie, 'DELETE');
+  assert.deepEqual((await api('/api/changelog')).data, { entries: [], latestVersion: '0.7.0-1' });
+});
+
+test('site version access follows permanent owner across renames and rejects other roles and banned users', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  const member = await api('/api/register', { username: 'member_version', password: '12345678' });
+  const mod = await api('/api/register', { username: 'mod_version', password: '12345678' });
+  await isolated.users.updateOne({ accountId: mod.data.user.accountId }, { $set: { role: 'mod' } });
+  const input = { version: '0.8.0-1' };
+  assert.equal((await api('/api/version', input, undefined, 'PATCH')).status, 401);
+  assert.equal((await api('/api/version', input, member.cookie, 'PATCH')).status, 403);
+  assert.equal((await api('/api/version', input, mod.cookie, 'PATCH')).status, 403);
+  await api('/api/account/username', { username: 'renamed_version', currentPassword: '12345678' }, owner.cookie, 'PATCH');
+  const restarted = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
+  t.after(() => restarted.client.close());
+  const freshApi = accountApi(t, restarted);
+  assert.equal((await freshApi('/api/version', input, owner.cookie, 'PATCH')).status, 200);
+  await isolated.users.updateOne({ accountId: owner.data.user.accountId }, { $set: { banned: true } });
+  const banned = await freshApi('/api/version', { version: '0.9.0-0' }, owner.cookie, 'PATCH');
+  assert.equal(banned.status, 403);
+  assert.equal(banned.data.banned, true);
+  assert.deepEqual((await freshApi('/api/version')).data, input);
+});
+
+test('site version requires four valid parts and rate limits repeated changes', async t => {
+  const isolated = await changelogStore(t);
+  let now = 1000;
+  const api = accountApi(t, isolated, { now: () => now });
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  for (const version of [null, 12, '', '1.2.3', '1.2.3.4', '01.2.3-4', '1.02.3-4', '1.2.03-4', '1.2.3-04', '1.2.3-beta', '-1.2.3-4', `${'1'.repeat(27)}.0.0-0`]) {
+    assert.equal((await api('/api/version', { version }, owner.cookie, 'PATCH')).status, 400);
+  }
+  assert.equal(await isolated.siteSettings.findOne({ _id: 'version' }), null);
+  for (let attempt = 12; attempt < 30; attempt += 1) {
+    assert.equal((await api('/api/version', { version: '1.2.3-4' }, owner.cookie, 'PATCH')).status, 200);
+  }
+  const limited = await api('/api/version', { version: '1.2.3-5' }, owner.cookie, 'PATCH');
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.retryAfter) > 0);
+  assert.ok(limited.data.retryAfterMs > 0);
+  now += 60 * 60 * 1000;
+  assert.equal((await api('/api/version', { version: '1.2.3-5' }, owner.cookie, 'PATCH')).status, 200);
 });
 
 test('new account IDs are random, unique, public, immutable, and ignore supplied IDs', async t => {
