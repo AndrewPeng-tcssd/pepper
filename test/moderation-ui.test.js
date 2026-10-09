@@ -13,8 +13,9 @@ function appFunction(name) {
   return appSource.slice(match.index, appSource.indexOf('\n}', match.index) + 2);
 }
 const person = (accountId, role = 'player', banned = false) => ({ accountId, username: accountId, role, banned });
+const flush = () => new Promise(resolve => setImmediate(resolve));
 function harness(user, { storage = new Map(), network } = {}) {
-  const elements = new Map(), calls = [];
+  const elements = new Map(), calls = [], windowListeners = new Map();
   let context;
   const node = id => {
     const classes = new Set(), listeners = new Map();
@@ -22,33 +23,153 @@ function harness(user, { storage = new Map(), network } = {}) {
       id, children: [], dataset: {}, hidden: false, disabled: false, textContent: '', value: '',
       classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
       addEventListener(type, callback) { listeners.set(type, callback); },
-      dispatch(type) { return listeners.get(type)?.({ preventDefault() {}, target: this }); },
+      dispatch(type, target = this) { return listeners.get(type)?.({ preventDefault() {}, target }); },
       setAttribute(name, value) { this[name] = value; }, append(...children) { this.children.push(...children); }, replaceChildren(...children) { this.children = children; },
-      querySelectorAll() { return []; }, closest() { return null; }, reset() {}, focus() {}, click() { this.dispatch('click'); }
+      querySelectorAll() { return []; }, closest(selector) { return selector === '[data-moderation-action]' && this.dataset.moderationAction ? this : null; }, reset() {}, focus() {}, click() { this.dispatch('click'); }
     };
   };
   for (const id of html.matchAll(/\bid="([^"]+)"/g)) elements.set(id[1], node(id[1]));
   const document = { getElementById: id => elements.get(id), createElement: () => node(), activeElement: null, body: node('body'), querySelectorAll: () => [] };
   context = vm.createContext({
-    document, window: { addEventListener() {} }, accountBanned: false,
+    document, window: { addEventListener: (name, listener) => windowListeners.set(name, listener) }, accountBanned: false,
     state: { user, accountSubmitting: false, chatMessages: [], profile: null, leaderboard: null }, trading: { chatMessages: [] },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     accountRole: value => value?.role || 'player', profileHref: name => `/profile/${name}`, profileAvatar: () => node(), playerRoleBadges: () => node(),
     renderChangelogEditor() {}, renderAnnouncementEditor() {}, setChatOpen() {}, renderChat() {}, renderProfileDetails() {}, renderLeaderboard() {}, renderTradeChat() {}, loadPresence() {}, loadLeaderboard() {}, loadChat() {}, clearChatReply() {}, navigateTo() {},
     message: (target, text) => { target.textContent = text; },
-    api: async (route, options = {}) => { const call = { route, method: options.method || 'GET', payload: options.body ? JSON.parse(options.body) : undefined }; calls.push(call); return network ? network(call) : {}; },
+    api: async (route, options = {}) => { const call = { route, method: options.method || 'GET', payload: options.body ? JSON.parse(options.body) : undefined }; calls.push(call); return network ? network(call) : route.startsWith('moderation/players?') ? { players: [] } : {}; },
     setUser: value => { context.state.user = value; context.window.PepperModeration.syncUser(); }
   });
-  vm.runInContext(source.replace('window.PepperModeration = { enabled, syncUser, showBanned, chatDeleteButton };', 'window.PepperModeration = { enabled, syncUser, showBanned, chatDeleteButton, canBan, canDeleteChat, changePlayer, deleteChat, findPlayers, inspect: () => moderation };'), context);
-  return { api: context.window.PepperModeration, context, elements, calls, storage, enable: () => elements.get('moderationViewToggle').click() };
+  vm.runInContext(source.replace(/  syncUser\(\);\s*\}\)\(\);\s*$/, '  Object.assign(window.PepperModeration, { canBan, canDeleteChat, changePlayer, deleteChat, findPlayers, inspect: () => moderation });\n  syncUser();\n})();'), context);
+  return { api: context.window.PepperModeration, context, elements, calls, storage, enable: () => elements.get('moderationViewToggle').click(), storageEvent: event => windowListeners.get('storage')?.(event) };
+}
+function showProfile(ui, player) {
+  ui.context.state.profile = player;
+  ui.api.renderProfileControls();
+}
+const profileActions = ui => ui.elements.get('profileModerationActions').children;
+const profileLabels = ui => profileActions(ui).map(button => button.textContent).sort();
+function clickProfileAction(ui, action) {
+  const button = profileActions(ui).find(item => item.dataset.moderationAction === action);
+  assert.ok(button, `Profile action ${action} exists`);
+  ui.elements.get('profileModerationActions').dispatch('click', button);
+  return button;
 }
 
-test('management view is opt-in and remembered separately for each privileged account', () => {
+test('admin profile actions work without a matching settings search result', async () => {
+  let player = { ...person('permanent-id'), username: 'DifferentUsername', balance: 42 };
+  const ui = harness(person('admin', 'admin'), {
+    network: call => call.method === 'GET' ? { players: [] } : { player: (player = { ...player, ...call.payload }) }
+  });
+  ui.enable(); await flush();
+  const settingsMessage = ui.elements.get('moderationMessage').textContent;
+  showProfile(ui, player);
+  assert.equal(ui.elements.get('profileModeration').hidden, false);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make mod']);
+  assert.equal(ui.api.inspect().players.length, 0);
+
+  clickProfileAction(ui, 'make-mod'); await flush();
+  assert.deepEqual(ui.calls.find(call => call.method === 'PATCH'), { route: 'moderation/players/permanent-id', method: 'PATCH', payload: { role: 'mod' } });
+  assert.equal(ui.context.state.profile.role, 'mod');
+  assert.equal(ui.context.state.profile.balance, 42);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Remove mod']);
+  assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Moderator added.');
+  assert.equal(ui.elements.get('moderationMessage').textContent, settingsMessage);
+
+  clickProfileAction(ui, 'ban'); await flush();
+  assert.equal(ui.context.state.profile.banned, true);
+  assert.deepEqual(profileLabels(ui), ['Remove mod', 'Unban']);
+  assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Player banned.');
+  clickProfileAction(ui, 'unban'); await flush();
+  assert.equal(ui.context.state.profile.banned, false);
+  assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Player unbanned.');
+  clickProfileAction(ui, 'remove-mod'); await flush();
+  assert.equal(ui.context.state.profile.role, 'player');
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make mod']);
+});
+
+test('profile moderation follows role hierarchy and management view state', async () => {
+  for (const user of [person('admin', 'admin'), person('moderator', 'mod')]) {
+    const ui = harness(user); ui.enable(); await flush();
+    for (const player of [null, user, person('protected-admin', 'admin')]) {
+      showProfile(ui, player);
+      assert.equal(ui.elements.get('profileModeration').hidden, true);
+      assert.equal(profileActions(ui).length, 0);
+    }
+    showProfile(ui, person('ordinary'));
+    assert.equal(ui.elements.get('profileModeration').hidden, false);
+    assert.deepEqual(profileLabels(ui), user.role === 'admin' ? ['Ban', 'Make mod'] : ['Ban']);
+    showProfile(ui, person('banned', 'player', true));
+    assert.ok(profileLabels(ui).includes('Unban'));
+    showProfile(ui, person('other-mod', 'mod'));
+    assert.equal(ui.elements.get('profileModeration').hidden, user.role !== 'admin');
+    assert.deepEqual(profileLabels(ui), user.role === 'admin' ? ['Ban', 'Remove mod'] : []);
+    ui.enable();
+    showProfile(ui, person('ordinary'));
+    assert.equal(ui.elements.get('profileModeration').hidden, true);
+    assert.equal(profileActions(ui).length, 0);
+  }
+  for (const user of [null, person('ordinary'), person('banned-admin', 'admin', true)]) {
+    const ui = harness(user); ui.enable(); await flush(); showProfile(ui, person('target'));
+    assert.equal(ui.elements.get('profileModeration').hidden, true);
+    assert.equal(profileActions(ui).length, 0);
+  }
+});
+
+test('profile loading removes stale controls and ignores old target buttons', async () => {
+  const ui = harness(person('admin', 'admin')); ui.enable(); await flush();
+  const original = person('original'); showProfile(ui, original);
+  const stale = profileActions(ui).find(button => button.dataset.moderationAction === 'ban');
+  showProfile(ui, null);
+  assert.equal(ui.elements.get('profileModeration').hidden, true);
+  assert.equal(profileActions(ui).length, 0);
+  ui.elements.get('profileModerationActions').dispatch('click', stale);
+  assert.equal(ui.calls.filter(call => call.method === 'PATCH').length, 0);
+  showProfile(ui, person('new-target'));
+  ui.elements.get('profileModerationActions').dispatch('click', stale);
+  assert.equal(ui.calls.filter(call => call.method === 'PATCH').length, 0);
+});
+
+test('profile actions stay pending once and do not overwrite a newly opened profile', async () => {
+  let resolve;
+  const response = new Promise(done => { resolve = done; });
+  const ui = harness(person('admin', 'admin'), { network: call => call.method === 'GET' ? { players: [] } : response });
+  ui.enable(); await flush(); showProfile(ui, person('original'));
+  const button = clickProfileAction(ui, 'ban');
+  assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Saving…');
+  assert.ok(profileActions(ui).every(action => action.disabled));
+  ui.elements.get('profileModerationActions').dispatch('click', button);
+  assert.equal(ui.calls.filter(call => call.method === 'PATCH').length, 1);
+  showProfile(ui, person('new-target'));
+  resolve({ player: person('original', 'player', true) }); await flush();
+  assert.equal(ui.context.state.profile.accountId, 'new-target');
+  assert.equal(ui.context.state.profile.banned, false);
+  assert.equal(ui.elements.get('profileModerationMessage').textContent, '');
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make mod']);
+  assert.ok(profileActions(ui).every(action => !action.disabled));
+});
+
+test('profile moderation errors stay on the profile and allow retry', async () => {
+  const ui = harness(person('admin', 'admin'), { network: call => {
+    if (call.method === 'GET') return { players: [] };
+    throw new Error('Could not save.');
+  } });
+  ui.enable(); await flush(); showProfile(ui, person('target'));
+  const settingsMessage = ui.elements.get('moderationMessage').textContent;
+  clickProfileAction(ui, 'ban'); await flush();
+  assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Could not save.');
+  assert.equal(ui.elements.get('moderationMessage').textContent, settingsMessage);
+  assert.equal(ui.context.state.profile.banned, false);
+  assert.ok(profileActions(ui).every(action => !action.disabled));
+});
+
+test('management view is opt-in and remembered separately for each privileged account', async () => {
   const storage = new Map(), admin = person('admin', 'admin');
   const first = harness(admin, { storage });
   assert.equal(first.api.enabled(), false);
   assert.equal(first.elements.get('moderationViewToggle').textContent, 'Open admin view');
   first.enable(); assert.equal(first.api.enabled(), true);
+  await flush();
   assert.equal(first.elements.get('moderationViewToggle').textContent, 'Close admin view');
   assert.equal(harness(admin, { storage }).api.enabled(), true);
   assert.equal(harness(person('mod', 'mod'), { storage }).api.enabled(), false);
@@ -56,8 +177,73 @@ test('management view is opt-in and remembered separately for each privileged ac
   assert.equal(first.elements.get('moderationSettings').hidden, true);
 });
 
-test('moderator gates exclude other moderators and admins while allowing their own chat messages', () => {
+test('opening admin view loads players and exposes moderator controls immediately', async () => {
+  const players = [person('ordinary'), person('existing_mod', 'mod')];
+  const ui = harness(person('admin', 'admin'), { network: () => ({ players }) });
+  assert.equal(ui.calls.length, 0);
+  ui.enable();
+  assert.equal(ui.elements.get('moderationControls').hidden, false);
+  await flush();
+  assert.deepEqual(ui.calls, [{ route: 'moderation/players?username=', method: 'GET', payload: undefined }]);
+  const rows = ui.elements.get('moderationPlayers').children;
+  assert.equal(rows.length, 2);
+  assert.ok(rows[0].children[1].children.some(button => button.textContent === 'Make mod'));
+  assert.ok(rows[1].children[1].children.some(button => button.textContent === 'Remove mod'));
+});
+
+test('stored-open views load on startup and login without reloading on routine user refresh', async () => {
+  for (const loggedInInitially of [true, false]) {
+    const admin = person('admin', 'admin');
+    const storage = new Map([['pepper-moderation-view:admin', 'open']]);
+    const ui = harness(loggedInInitially ? admin : null, { storage });
+    if (!loggedInInitially) {
+      assert.equal(ui.calls.length, 0);
+      ui.context.setUser(admin);
+    }
+    await flush();
+    assert.equal(ui.api.enabled(), true);
+    assert.equal(ui.calls.length, 1);
+    ui.context.setUser({ ...admin, balance: 42 });
+    ui.api.syncUser();
+    await flush();
+    assert.equal(ui.calls.length, 1);
+  }
+});
+
+test('closed and unprivileged views never load player management data', async () => {
+  const cases = [
+    { user: person('admin', 'admin'), stored: 'closed' },
+    { user: person('ordinary'), stored: 'open' },
+    { user: person('banned_mod', 'mod', true), stored: 'open' },
+    { user: null, stored: 'open' }
+  ];
+  for (const { user, stored } of cases) {
+    const storage = new Map([[`pepper-moderation-view:${user?.accountId}`, stored]]);
+    const ui = harness(user, { storage });
+    ui.api.syncUser();
+    if (user?.role !== 'admin') ui.enable();
+    await flush();
+    assert.equal(ui.api.enabled(), false);
+    assert.equal(ui.calls.length, 0);
+  }
+});
+
+test('opening management view in another tab loads players in this tab', async () => {
+  const ui = harness(person('admin', 'admin'));
+  ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'open' });
+  await flush();
+  assert.equal(ui.api.enabled(), true);
+  assert.equal(ui.calls.length, 1);
+  assert.equal(ui.calls[0].route, 'moderation/players?username=');
+  ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'closed' });
+  await flush();
+  assert.equal(ui.api.enabled(), false);
+  assert.equal(ui.calls.length, 1);
+});
+
+test('moderator gates exclude other moderators and admins while allowing their own chat messages', async () => {
   const mod = person('mod', 'mod'), ui = harness(mod); ui.enable();
+  await flush();
   assert.equal(ui.api.canBan(person('ordinary')), true);
   assert.equal(ui.api.canBan(person('other_mod', 'mod')), false);
   assert.equal(ui.api.canBan(person('admin', 'admin')), false);
@@ -72,33 +258,35 @@ test('moderator gates exclude other moderators and admins while allowing their o
 
 test('role changes and bans use permanent IDs and prevent unauthorized client actions', async () => {
   const target = person('target');
-  const admin = harness(person('admin', 'admin'), { network: call => ({ player: { ...target, ...call.payload } }) }); admin.enable();
+  const admin = harness(person('admin', 'admin'), { network: call => call.method === 'GET' ? { players: [target] } : { player: { ...target, ...call.payload } } }); admin.enable();
+  await flush();
   await admin.api.changePlayer(target, 'make-mod');
-  assert.deepEqual(admin.calls[0], { route: 'moderation/players/target', method: 'PATCH', payload: { role: 'mod' } });
+  assert.deepEqual(admin.calls.find(call => call.method === 'PATCH'), { route: 'moderation/players/target', method: 'PATCH', payload: { role: 'mod' } });
   const mod = harness(person('mod', 'mod')); mod.enable();
+  await flush();
   await mod.api.changePlayer(person('other_mod', 'mod'), 'ban');
   await mod.api.changePlayer(target, 'make-mod');
-  assert.equal(mod.calls.length, 0);
+  assert.equal(mod.calls.filter(call => call.method !== 'GET').length, 0);
 });
 
 test('a moderation response after switching accounts cannot populate the new account', async () => {
   let resolve; const pending = new Promise(done => { resolve = done; });
   const ui = harness(person('admin', 'admin'), { network: () => pending }); ui.enable();
-  const finding = ui.api.findPlayers({ preventDefault() {} });
   ui.context.setUser(person('ordinary'));
-  resolve({ players: [person('private_target')] }); await finding;
+  resolve({ players: [person('private_target')] }); await flush();
   assert.equal(ui.api.inspect().players.length, 0);
   assert.equal(ui.elements.get('moderationSettings').hidden, true);
 });
 
 test('chat deletion confirms inline and preserves the saved message receipt', async () => {
   const ui = harness(person('admin', 'admin')); ui.enable();
+  await flush();
   const item = { ...person('writer'), id: 'saved_message', text: 'Saved once', clientMessageId: 'receipt' };
   ui.context.state.chatMessages = [item];
-  await ui.api.deleteChat(item); assert.equal(ui.calls.length, 0);
+  await ui.api.deleteChat(item); assert.equal(ui.calls.filter(call => call.method === 'DELETE').length, 0);
   assert.equal(ui.api.chatDeleteButton(item).textContent, 'Confirm delete');
   await ui.api.deleteChat(item);
-  assert.equal(ui.calls[0].route, 'chat/saved_message'); assert.equal(ui.calls[0].method, 'DELETE');
+  assert.equal(ui.calls.find(call => call.method === 'DELETE').route, 'chat/saved_message');
   assert.equal(ui.context.state.chatMessages[0].deleted, true);
   assert.equal(ui.context.state.chatMessages[0].text, 'Message deleted.');
   assert.equal(ui.context.state.chatMessages[0].clientMessageId, 'receipt');

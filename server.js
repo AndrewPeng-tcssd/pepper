@@ -21,7 +21,15 @@ const SIGNUP_VERIFY_MS = 24 * 60 * 60 * 1000;
 const LOGIN_VERIFY_MS = 10 * 60 * 1000;
 const EMAIL_ATTEMPT_INTERVAL_MS = 10 * 60 * 1000;
 const cookieName = 'pepper_session';
-const DEFAULT_BUILD_VERSION = '0.4.0';
+const DEFAULT_BUILD_VERSION = '0.4.0-0';
+const BUILD_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(0|[1-9]\d*)$/;
+const LEGACY_BUILD_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const displayBuildVersion = value => {
+  const version = typeof value === 'string' ? value.trim().replace(/^v/i, '') : '';
+  if (BUILD_VERSION_PATTERN.test(version)) return version;
+  if (LEGACY_BUILD_VERSION_PATTERN.test(version)) return `${version}-0`;
+  return DEFAULT_BUILD_VERSION;
+};
 
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const passwordHash = (password) => {
@@ -410,12 +418,13 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     id: entry._id.toString(),
     title: entry.title,
     description: entry.description,
-    version: entry.version,
+    version: displayBuildVersion(entry.version),
     createdAt: entry.createdAt.toISOString()
   });
   async function changelogSnapshot() {
     const entries = await changelog.find().sort({ createdAt: -1, _id: -1 }).toArray();
-    return { entries: entries.map(publicChangelogEntry), latestVersion: entries[0]?.version ?? DEFAULT_BUILD_VERSION };
+    const publicEntries = entries.map(publicChangelogEntry);
+    return { entries: publicEntries, latestVersion: publicEntries[0]?.version ?? DEFAULT_BUILD_VERSION };
   }
   app.get('/api/changelog', async (req, res) => {
     res.json(await changelogSnapshot());
@@ -427,8 +436,8 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     const version = typeof req.body?.version === 'string' ? req.body.version.trim().replace(/^v/i, '') : '';
     if (!title || title.length > 120) return sendError(res, 400, 'Title must be 1–120 characters.');
     if (!description || description.length > 5000) return sendError(res, 400, 'Description must be 1–5,000 characters.');
-    if (version.length > 32 || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
-      return sendError(res, 400, 'Version must use numbers in major.minor.patch format, such as 0.5.0.');
+    if (version.length > 32 || !BUILD_VERSION_PATTERN.test(version)) {
+      return sendError(res, 400, 'Use a version like 0.6.1-2.');
     }
     const entry = { title, description, version, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
     await moderation.runAs(req.user._id, async ({ session, role }) => {
@@ -436,7 +445,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       await changelog.insertOne(entry, { session });
     });
     const latest = await changelog.findOne({}, { sort: { createdAt: -1, _id: -1 }, projection: { version: 1 } });
-    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: latest?.version ?? DEFAULT_BUILD_VERSION });
+    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: displayBuildVersion(latest?.version) });
   });
   app.delete('/api/changelog/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can delete updates.');

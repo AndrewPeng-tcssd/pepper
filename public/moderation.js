@@ -1,13 +1,16 @@
 (() => {
   'use strict';
   const el = id => document.getElementById(id);
-  const moderation = { identity: null, role: 'player', open: false, players: [], busy: false, revision: 0, deleteId: null };
+  const moderation = { identity: null, role: 'player', open: false, players: [], busy: false, revision: 0, deleteId: null, profileAccountId: null };
   const privileged = () => ['admin', 'mod'].includes(accountRole(state.user)) && !state.user?.banned;
   const storageKey = id => `pepper-moderation-view:${id}`;
   function enabled() { return privileged() && moderation.identity === state.user?.accountId && moderation.open && !accountBanned; }
   function storedOpen(id) { try { return localStorage.getItem(storageKey(id)) === 'open'; } catch { return false; } }
   function canBan(player) {
-    return enabled() && player.accountId !== state.user.accountId && accountRole(player) !== 'admin' && (accountRole(state.user) === 'admin' || accountRole(player) === 'player');
+    return enabled() && !!player?.accountId && player.accountId !== state.user.accountId && accountRole(player) !== 'admin' && (accountRole(state.user) === 'admin' || accountRole(player) === 'player');
+  }
+  function canChangeRole(player) {
+    return enabled() && !!player?.accountId && accountRole(state.user) === 'admin' && accountRole(player) !== 'admin' && player.accountId !== state.user.accountId;
   }
   function canDeleteChat(item) {
     if (!enabled() || item.deleted || item.status || !item.id) return false;
@@ -37,6 +40,21 @@
     const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = label;
     button.dataset.moderationAction = action; button.dataset.accountId = player.accountId; button.disabled = moderation.busy || state.accountSubmitting; return button;
   }
+  function renderProfileControls() {
+    const player = state.profile;
+    const accountId = player?.accountId || null;
+    if (moderation.profileAccountId !== accountId) {
+      moderation.profileAccountId = accountId;
+      message(el('profileModerationMessage'), '');
+    }
+    const focused = document.activeElement;
+    const actions = [];
+    if (canChangeRole(player)) actions.push(actionButton(accountRole(player) === 'mod' ? 'Remove mod' : 'Make mod', accountRole(player) === 'mod' ? 'remove-mod' : 'make-mod', player));
+    if (canBan(player)) actions.push(actionButton(player.banned ? 'Unban' : 'Ban', player.banned ? 'unban' : 'ban', player));
+    el('profileModeration').hidden = !actions.length;
+    el('profileModerationActions').replaceChildren(...actions);
+    if (focused?.dataset.accountId === accountId) actions.find(button => button.dataset.moderationAction === focused.dataset.moderationAction && !button.disabled)?.focus({ preventScroll: true });
+  }
   function render() {
     el('moderationSettings').hidden = !privileged() || accountBanned;
     const admin = accountRole(state.user) === 'admin';
@@ -55,22 +73,25 @@
       const name = document.createElement('span'); name.textContent = player.username; link.append(profileAvatar(player), name, playerRoleBadges(player));
       const actions = document.createElement('div'); actions.className = 'trading-actions';
       if (canBan(player)) actions.append(actionButton(player.banned ? 'Unban' : 'Ban', player.banned ? 'unban' : 'ban', player));
-      if (enabled() && admin && accountRole(player) !== 'admin' && player.accountId !== state.user.accountId) actions.append(actionButton(accountRole(player) === 'mod' ? 'Remove mod' : 'Make mod', accountRole(player) === 'mod' ? 'remove-mod' : 'make-mod', player));
+      if (canChangeRole(player)) actions.append(actionButton(accountRole(player) === 'mod' ? 'Remove mod' : 'Make mod', accountRole(player) === 'mod' ? 'remove-mod' : 'make-mod', player));
       row.append(link, actions); return row;
     }));
     if (focusedId) Array.from(el('moderationPlayers').querySelectorAll('[data-moderation-action]')).find(button => button.dataset.accountId === focusedId && button.dataset.moderationAction === focusedAction && !button.disabled)?.focus({ preventScroll: true });
     refreshChatControls();
+    renderProfileControls();
   }
   function syncUser() {
     const identity = state.user?.accountId || null, role = accountRole(state.user);
-    if (moderation.identity !== identity || moderation.role !== role) {
+    const changed = moderation.identity !== identity || moderation.role !== role;
+    if (changed) {
       Object.assign(moderation, { identity, role, open: !!identity && storedOpen(identity), players: [], busy: false, deleteId: null, revision: moderation.revision + 1 });
-      el('moderationSearch').reset(); message(el('moderationMessage'), '');
+      el('moderationSearch').reset(); message(el('moderationMessage'), ''); message(el('profileModerationMessage'), '');
     }
     if (!privileged()) moderation.open = false;
     if (accountBanned) showBanned();
     else { document.body.classList.remove('banned-mode'); el('bannedScreen').hidden = true; }
     render(); refreshEditors();
+    if (changed && enabled()) void findPlayers();
   }
   function showBanned() {
     document.body.classList.add('banned-mode'); el('bannedScreen').hidden = false;
@@ -101,19 +122,22 @@
     trading.chatMessages = trading.chatMessages.map(item => ({ ...item, sender: update(item.sender) })); trading.chatSignature = null; renderTradeChat();
     void loadPresence(true); void window.PepperGames?.load();
   }
-  async function changePlayer(player, action) {
+  async function changePlayer(player, action, statusTarget = el('moderationMessage')) {
     if (!enabled() || moderation.busy || state.accountSubmitting) return;
+    if (!['make-mod', 'remove-mod', 'ban', 'unban'].includes(action)) return;
     const roleChange = ['make-mod', 'remove-mod'].includes(action);
-    if (roleChange ? accountRole(state.user) !== 'admin' || accountRole(player) === 'admin' || player.accountId === state.user.accountId : !canBan(player)) return;
+    if (roleChange ? !canChangeRole(player) : !canBan(player)) return;
     const identity = moderation.identity, revision = ++moderation.revision;
     const payload = roleChange ? { role: action === 'make-mod' ? 'mod' : 'player' } : { banned: action === 'ban' };
-    moderation.busy = true; message(el('moderationMessage'), 'Saving…'); render();
+    const profileAction = statusTarget === el('profileModerationMessage');
+    const notify = (text, success = false) => { if (!profileAction || state.profile?.accountId === player.accountId) message(statusTarget, text, success); };
+    moderation.busy = true; notify('Saving…'); render();
     try {
       const data = await api(`moderation/players/${encodeURIComponent(player.accountId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
       if (moderation.identity !== identity || moderation.revision !== revision || !enabled()) return;
       moderation.players = moderation.players.map(item => item.accountId === data.player.accountId ? data.player : item);
-      refreshPlayer(data.player); message(el('moderationMessage'), action === 'ban' ? 'Player banned.' : action === 'unban' ? 'Player unbanned.' : action === 'make-mod' ? 'Moderator added.' : 'Moderator removed.', true);
-    } catch (error) { if (moderation.identity === identity && moderation.revision === revision) message(el('moderationMessage'), error.message); }
+      refreshPlayer(data.player); notify(action === 'ban' ? 'Player banned.' : action === 'unban' ? 'Player unbanned.' : action === 'make-mod' ? 'Moderator added.' : 'Moderator removed.', true);
+    } catch (error) { if (moderation.identity === identity && moderation.revision === revision) notify(error.message); }
     finally { if (moderation.identity === identity && moderation.revision === revision) { moderation.busy = false; render(); } }
   }
   async function deleteChat(item) {
@@ -135,12 +159,18 @@
     moderation.open = !moderation.open; moderation.deleteId = null;
     try { localStorage.setItem(storageKey(moderation.identity), moderation.open ? 'open' : 'closed'); } catch {}
     render(); refreshEditors();
+    if (enabled()) void findPlayers();
   });
   el('moderationSearch').addEventListener('submit', event => void findPlayers(event));
   el('moderationPlayers').addEventListener('click', event => {
     const button = event.target.closest('[data-moderation-action]'); if (!button || button.disabled) return;
     const player = moderation.players.find(item => item.accountId === button.dataset.accountId);
     if (player) void changePlayer(player, button.dataset.moderationAction);
+  });
+  el('profileModerationActions').addEventListener('click', event => {
+    const button = event.target.closest('[data-moderation-action]');
+    if (!button || button.disabled || button.dataset.accountId !== state.profile?.accountId) return;
+    void changePlayer(state.profile, button.dataset.moderationAction, el('profileModerationMessage'));
   });
   el('chatMessages').addEventListener('click', event => {
     const button = event.target.closest('[data-delete-chat-id]'); if (!button || button.disabled) return;
@@ -154,8 +184,11 @@
     finally { el('bannedSignOut').disabled = false; }
   });
   window.addEventListener('storage', event => {
-    if (moderation.identity && event.key === storageKey(moderation.identity)) { moderation.open = event.newValue === 'open'; render(); refreshEditors(); }
+    if (moderation.identity && event.key === storageKey(moderation.identity)) {
+      moderation.open = event.newValue === 'open'; render(); refreshEditors();
+      if (enabled()) void findPlayers();
+    }
   });
-  window.PepperModeration = { enabled, syncUser, showBanned, chatDeleteButton };
+  window.PepperModeration = { enabled, syncUser, showBanned, chatDeleteButton, renderProfileControls };
   syncUser();
 })();

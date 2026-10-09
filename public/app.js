@@ -127,7 +127,7 @@ function setProfileAvatar(image, person) {
   image.onerror = () => { image.onerror = null; image.src = '/favicon.svg'; };
 }
 
-function profileAvatar(person, className = 'player-avatar') {
+function profileAvatar(person, className = 'player-avatar', showOnline = false) {
   const image = document.createElement('img');
   image.className = className;
   image.alt = '';
@@ -135,7 +135,29 @@ function profileAvatar(person, className = 'player-avatar') {
   image.height = 32;
   image.decoding = 'async';
   setProfileAvatar(image, person);
-  return image;
+  if (!showOnline) return image;
+  const avatar = document.createElement('span');
+  avatar.className = 'player-avatar-wrap';
+  avatar.dataset.accountId = person?.accountId || '';
+  avatar.dataset.banned = person?.banned ? 'true' : 'false';
+  const indicator = document.createElement('span');
+  indicator.className = 'online-indicator';
+  indicator.setAttribute('role', 'img');
+  indicator.setAttribute('aria-label', 'Online');
+  avatar.append(image, indicator);
+  updateAvatarPresence(avatar);
+  return avatar;
+}
+
+function updateAvatarPresence(avatar) {
+  const online = avatar.dataset.banned !== 'true' && !!avatar.dataset.accountId && (presencePlayers || []).some(player => player.accountId === avatar.dataset.accountId && !player.banned);
+  avatar.querySelector('.online-indicator').hidden = !online;
+}
+
+function refreshOnlineAvatars() {
+  for (const container of [$('chatMessages'), $('leaderboardRows')]) {
+    container.querySelectorAll('.player-avatar-wrap').forEach(updateAvatarPresence);
+  }
 }
 
 function renderProfileDetails(profile) {
@@ -148,6 +170,7 @@ function renderProfileDetails(profile) {
   $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
   $('profileBalance').textContent = profile.balance.toLocaleString();
   $('profileLastClaim').textContent = formatProfileDate(profile.lastClaimAt, true);
+  window.PepperModeration?.renderProfileControls();
 }
 
 function renderOverviewProfile(user) {
@@ -482,6 +505,7 @@ function renderRoute() {
   $(sectionId).hidden = false;
   document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG', games: 'Games — Pepper TCG' }[pageKind];
   state.profile = null;
+  window.PepperModeration?.renderProfileControls();
   $('profileRetry').hidden = true;
   $('profileTrade').hidden = true;
   $('profileTitle').textContent = 'Profile';
@@ -692,7 +716,7 @@ function changelogActionButton(label, action) {
 }
 
 function renderChangelog(entries, latestVersion) {
-  $('siteVersion').textContent = latestVersion;
+  $('siteVersion').textContent = latestVersion || '0.4.0-0';
   const signature = JSON.stringify(entries);
   if (signature === state.changelogSignature) {
     renderChangelogEditor();
@@ -1114,6 +1138,7 @@ function renderPresence(count, players = null) {
   const mobileText = available ? `${count.toLocaleString()} online` : 'count unavailable';
   if ($('mobilePlayerCount').textContent !== mobileText) $('mobilePlayerCount').textContent = mobileText;
   presencePlayers = available && Array.isArray(players) ? players : null;
+  refreshOnlineAvatars();
   if ($('onlinePlayersDialog').open) renderOnlinePlayers();
 }
 
@@ -1956,6 +1981,7 @@ async function loadProfile() {
   const loadRevision = ++profileLoadRevision;
   const usernamePath = profileRoute[1];
   state.profile = null;
+  window.PepperModeration?.renderProfileControls();
   $('profileRetry').hidden = true;
   $('profileDetails').hidden = true;
   $('profileDescription').textContent = 'Loading profile…';
@@ -2002,7 +2028,7 @@ function renderLeaderboard(data) {
     profile.className = 'leaderboard-profile';
     profile.href = profileHref(entry.username);
     const name = document.createElement('span'); name.textContent = entry.username;
-    profile.append(profileAvatar(entry), name, playerRoleBadges(entry));
+    profile.append(profileAvatar(entry, 'player-avatar', true), name, playerRoleBadges(entry));
     profile.setAttribute('aria-label', `View ${entry.username}'s profile`);
     player.append(profile);
     if (own) {
@@ -2145,7 +2171,7 @@ function createChatRow(item) {
   time.dateTime = item.createdAt;
   time.textContent = new Date(item.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
   const identity = document.createElement('span'); identity.className = 'chat-author-identity'; identity.append(author, playerRoleBadges(item));
-  head.append(profileAvatar(item, 'player-avatar chat-avatar'), identity, time);
+  head.append(profileAvatar(item, 'player-avatar chat-avatar', true), identity, time);
   row.append(head);
   if (item.replyTo) {
     const quote = document.createElement(item.replyTo.available ? 'button' : 'div');

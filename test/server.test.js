@@ -894,8 +894,8 @@ async function changelogStore(t) {
 test('changelog publishing is private, dates are automatic, and latest entries persist publicly', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);
-  assert.deepEqual((await api('/api/changelog')).data, { entries: [], latestVersion: '0.4.0' });
-  const payload = { title: 'First update', description: 'A new beginning.', version: 'v1.0.0', createdAt: '1970-01-01T00:00:00Z' };
+  assert.deepEqual((await api('/api/changelog')).data, { entries: [], latestVersion: '0.4.0-0' });
+  const payload = { title: 'First update', description: 'A new beginning.', version: 'v1.0.0-0', createdAt: '1970-01-01T00:00:00Z' };
   assert.equal((await api('/api/changelog', payload)).status, 401);
   const member = await api('/api/register', { username: 'ordinary_member', password: '12345678' });
   assert.equal(member.data.user.canManageChangelog, false);
@@ -907,8 +907,8 @@ test('changelog publishing is private, dates are automatic, and latest entries p
   const beforePublish = Date.now();
   const first = await api('/api/changelog', payload, owner.cookie);
   assert.equal(first.status, 201);
-  assert.equal(first.data.latestVersion, '1.0.0');
-  assert.equal(first.data.entry.version, '1.0.0');
+  assert.equal(first.data.latestVersion, '1.0.0-0');
+  assert.equal(first.data.entry.version, '1.0.0-0');
   assert.ok(Date.parse(first.data.entry.createdAt) >= beforePublish);
   assert.ok(Date.parse(first.data.entry.createdAt) <= Date.now());
   assert.match(first.data.entry.createdAt, /Z$/);
@@ -917,13 +917,13 @@ test('changelog publishing is private, dates are automatic, and latest entries p
   assert.ok(storedFirst.createdAt instanceof Date);
   assert.ok(storedFirst.authorId.equals((await isolated.users.findOne({ usernameKey: '675' }))._id));
 
-  const second = await api('/api/changelog', { title: '  Second update  ', description: '  Line one\nLine two  ', version: '  0.8.2  ' }, owner.cookie);
+  const second = await api('/api/changelog', { title: '  Second update  ', description: '  Line one\nLine two  ', version: '  0.8.2-3  ' }, owner.cookie);
   assert.equal(second.status, 201);
-  assert.equal(second.data.latestVersion, '0.8.2');
+  assert.equal(second.data.latestVersion, '0.8.2-3');
   assert.equal(second.data.entry.title, 'Second update');
   assert.equal(second.data.entry.description, 'Line one\nLine two');
   const list = await api('/api/changelog');
-  assert.equal(list.data.latestVersion, '0.8.2');
+  assert.equal(list.data.latestVersion, '0.8.2-3');
   assert.deepEqual(list.data.entries.map(entry => entry.id), [second.data.entry.id, first.data.entry.id]);
 
   const identicalTime = new Date();
@@ -932,7 +932,7 @@ test('changelog publishing is private, dates are automatic, and latest entries p
   t.after(() => reconnected.client.close());
   const freshApi = accountApi(t, reconnected);
   const persisted = await freshApi('/api/changelog');
-  assert.equal(persisted.data.latestVersion, '0.8.2');
+  assert.equal(persisted.data.latestVersion, '0.8.2-3');
   assert.deepEqual(persisted.data.entries.map(entry => entry.id), [second.data.entry.id, first.data.entry.id]);
 });
 
@@ -955,7 +955,7 @@ test('changelog owner permission follows the original account ID across renames 
   assert.equal(changedMember.status, 200);
   assert.equal(changedMember.data.user.canManageChangelog, false);
   assert.notEqual(changedMember.data.user.accountId, boundAccountId);
-  const payload = { title: 'Owner update', description: 'Permissions stay with the account.', version: '0.5.0' };
+  const payload = { title: 'Owner update', description: 'Permissions stay with the account.', version: '0.5.0-0' };
   assert.equal((await api('/api/changelog', payload, member.cookie)).status, 403);
   assert.equal((await api('/api/changelog', payload, owner.cookie)).status, 201);
   const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
@@ -967,13 +967,38 @@ test('changelog owner permission follows the original account ID across renames 
   assert.equal((await reconnected.siteSettings.findOne({ _id: 'changelog' })).ownerAccountId, boundAccountId);
 });
 
+test('legacy changelog versions display a zero build without rewriting stored releases', async t => {
+  const isolated = await changelogStore(t);
+  const api = accountApi(t, isolated);
+  const owner = await api('/api/register', { username: '675', password: '12345678' });
+  const older = { title: 'Older release', description: 'A saved release.', version: '0.4.0', createdAt: new Date('2000-01-01T00:00:00Z') };
+  const latest = { title: 'Latest legacy release', description: 'Another saved release.', version: '0.6.1', createdAt: new Date('2000-01-02T00:00:00Z') };
+  await isolated.changelog.insertMany([older, latest]);
+  const legacy = await api('/api/changelog');
+  assert.equal(legacy.data.latestVersion, '0.6.1-0');
+  assert.deepEqual(legacy.data.entries.map(entry => entry.version), ['0.6.1-0', '0.4.0-0']);
+  assert.equal((await isolated.changelog.findOne({ _id: latest._id })).version, '0.6.1');
+  assert.equal((await isolated.changelog.findOne({ _id: older._id })).version, '0.4.0');
+
+  const published = await api('/api/changelog', { title: 'New release', description: 'Four version numbers.', version: 'v0.6.1-2' }, owner.cookie);
+  assert.equal(published.status, 201);
+  assert.equal(published.data.entry.version, '0.6.1-2');
+  assert.equal(published.data.latestVersion, '0.6.1-2');
+  assert.equal((await isolated.changelog.findOne({ _id: new ObjectId(published.data.entry.id) })).version, '0.6.1-2');
+
+  const restored = await api(`/api/changelog/${published.data.entry.id}`, undefined, owner.cookie, 'DELETE');
+  assert.equal(restored.data.latestVersion, '0.6.1-0');
+  assert.deepEqual(restored.data.entries, legacy.data.entries);
+  assert.equal((await isolated.changelog.findOne({ _id: latest._id })).version, '0.6.1');
+});
+
 test('changelog deletion requires the permanent owner and rejects invalid or missing entries without changes', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);
   const password = '12345678';
   const owner = await api('/api/register', { username: '675', password });
   const member = await api('/api/register', { username: 'ordinary_deleter', password });
-  const published = await api('/api/changelog', { title: 'Keep this update', description: 'Only its owner can delete it.', version: '0.5.0' }, owner.cookie);
+  const published = await api('/api/changelog', { title: 'Keep this update', description: 'Only its owner can delete it.', version: '0.5.0-0' }, owner.cookie);
   const route = `/api/changelog/${published.data.entry.id}`;
   const original = (await api('/api/changelog')).data;
   assert.equal((await api(route, undefined, undefined, 'DELETE')).status, 401);
@@ -996,7 +1021,7 @@ test('changelog deletion requires the permanent owner and rejects invalid or mis
   assert.deepEqual((await api('/api/changelog')).data, original);
   const deleted = await api(`/api/changelog/${published.data.entry.id.toUpperCase()}`, undefined, owner.cookie, 'DELETE');
   assert.equal(deleted.status, 200);
-  assert.deepEqual(deleted.data, { entries: [], latestVersion: '0.4.0' });
+  assert.deepEqual(deleted.data, { entries: [], latestVersion: '0.4.0-0' });
   assert.equal((await api(route, undefined, owner.cookie, 'DELETE')).status, 404);
 });
 
@@ -1005,7 +1030,7 @@ test('deleting older, newest, and final changelog entries updates the public ver
   const api = accountApi(t, isolated);
   const owner = await api('/api/register', { username: '675', password: '12345678' });
   const entries = [];
-  for (const version of ['0.5.0', '0.6.0', '0.7.0']) {
+  for (const version of ['0.5.0-0', '0.6.0-0', '0.7.0-0']) {
     const published = await api('/api/changelog', { title: `Update ${version}`, description: 'A saved release note.', version }, owner.cookie);
     assert.equal(published.status, 201);
     entries.push(published.data.entry);
@@ -1013,14 +1038,14 @@ test('deleting older, newest, and final changelog entries updates the public ver
   const deleteEntry = (entry, requestApi = api) => requestApi(`/api/changelog/${entry.id}`, undefined, owner.cookie, 'DELETE');
   const older = await deleteEntry(entries[0]);
   assert.equal(older.status, 200);
-  assert.equal(older.data.latestVersion, '0.7.0');
+  assert.equal(older.data.latestVersion, '0.7.0-0');
   assert.deepEqual(older.data.entries, [entries[2], entries[1]]);
   assert.equal(await isolated.changelog.findOne({ _id: new ObjectId(entries[0].id) }), null);
   assert.equal(await isolated.changelog.countDocuments(), 2);
 
   const newest = await deleteEntry(entries[2]);
   assert.equal(newest.status, 200);
-  assert.deepEqual(newest.data, { entries: [entries[1]], latestVersion: '0.6.0' });
+  assert.deepEqual(newest.data, { entries: [entries[1]], latestVersion: '0.6.0-0' });
   assert.deepEqual((await api('/api/changelog')).data, newest.data);
   const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
   t.after(() => reconnected.client.close());
@@ -1029,7 +1054,7 @@ test('deleting older, newest, and final changelog entries updates the public ver
 
   const final = await deleteEntry(entries[1], freshApi);
   assert.equal(final.status, 200);
-  assert.deepEqual(final.data, { entries: [], latestVersion: '0.4.0' });
+  assert.deepEqual(final.data, { entries: [], latestVersion: '0.4.0-0' });
   assert.deepEqual((await api('/api/changelog')).data, final.data);
   assert.equal(await isolated.changelog.countDocuments(), 0);
   const restarted = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
@@ -1107,7 +1132,7 @@ test('legacy changelog ownership migrates through its stored account after a use
   const freshApi = accountApi(t, reconnected);
   assert.equal((await freshApi('/api/me', undefined, original.cookie)).data.user.canManageChangelog, true);
   assert.equal((await freshApi('/api/me', undefined, impostor.cookie)).data.user.canManageChangelog, false);
-  assert.equal((await freshApi('/api/changelog', { title: 'Preserved owner', description: 'The name has changed.', version: '0.6.0' }, original.cookie)).status, 201);
+  assert.equal((await freshApi('/api/changelog', { title: 'Preserved owner', description: 'The name has changed.', version: '0.6.0-0' }, original.cookie)).status, 201);
 });
 
 test('missing legacy changelog owners never transfer permission to the current 675 name', async t => {
@@ -1126,7 +1151,7 @@ test('missing legacy changelog owners never transfer permission to the current 6
   assert.ok(settings.ownerUserId.equals(missingOwnerId));
   const freshApi = accountApi(t, reconnected);
   assert.equal((await freshApi('/api/me', undefined, impostor.cookie)).data.user.canManageChangelog, false);
-  assert.equal((await freshApi('/api/changelog', { title: 'Forbidden', description: 'An old owner is missing.', version: '0.6.0' }, impostor.cookie)).status, 403);
+  assert.equal((await freshApi('/api/changelog', { title: 'Forbidden', description: 'An old owner is missing.', version: '0.6.0-0' }, impostor.cookie)).status, 403);
 });
 
 test('connecting binds the existing 675 account and changelog input is validated', async t => {
@@ -1141,19 +1166,26 @@ test('connecting binds the existing 675 account and changelog input is validated
   assert.ok((await reconnected.siteSettings.findOne({ _id: 'changelog' })).ownerUserId.equals(original._id));
   const freshApi = accountApi(t, reconnected);
   assert.equal((await freshApi('/api/me', undefined, register.cookie)).data.user.canManageChangelog, true);
-  const valid = { title: 'A title', description: 'A description', version: '0.5.0' };
+  const valid = { title: 'A title', description: 'A description', version: '0.5.0-0' };
   for (const change of [
     { title: '  ' }, { title: 'a'.repeat(121) }, { title: { value: 'A title' } },
     { description: '' }, { description: 'a'.repeat(5001) }, { description: 12 },
-    ...['1', '1.2', '1.2.3.4', '01.2.3', '1.2.3-beta', '-1.2.3', 'a.2.3', '1'.repeat(33)].map(version => ({ version }))
+    { version: 12 }, { version: null },
+    ...['1', '1.2', '1.2.3', '1.2.3.4', '01.2.3-4', '1.02.3-4', '1.2.03-4', '1.2.3-04',
+      '1.2.3-beta', '1.2.3--4', '-1.2.3-4', '1.2.3-', 'a.2.3-4', `${'1'.repeat(27)}.0.0-0`].map(version => ({ version }))
   ]) {
     assert.equal((await freshApi('/api/changelog', { ...valid, ...change }, register.cookie)).status, 400);
   }
   assert.equal(await isolated.changelog.countDocuments(), 0);
-  const largest = await freshApi('/api/changelog', { title: 'a'.repeat(120), description: '椒'.repeat(5000), version: 'V12.3.4' }, register.cookie);
+  const largest = await freshApi('/api/changelog', { title: 'a'.repeat(120), description: '椒'.repeat(5000), version: 'V12.3.4-5' }, register.cookie);
   assert.equal(largest.status, 201);
-  assert.equal(largest.data.entry.version, '12.3.4');
+  assert.equal(largest.data.entry.version, '12.3.4-5');
   assert.equal(largest.data.entry.description.length, 5000);
+  const longestVersion = `${'1'.repeat(26)}.0.0-0`;
+  assert.equal(longestVersion.length, 32);
+  const longest = await freshApi('/api/changelog', { ...valid, version: `v${longestVersion}` }, register.cookie);
+  assert.equal(longest.status, 201);
+  assert.equal(longest.data.entry.version, longestVersion);
 });
 
 test('changelog URLs serve the website directly', async () => {
@@ -1163,6 +1195,19 @@ test('changelog URLs serve the website directly', async () => {
     assert.match(response.headers.get('content-type'), /text\/html/);
     assert.match(await response.text(), /Pepper TCG/i);
   }
+});
+
+test('changelog input uses the four-number version format and the footer has a default build', async () => {
+  const response = await fetch(base + '/changelog');
+  const html = await response.text();
+  const input = html.match(/<input\b[^>]*id="changelogVersion"[^>]*>/)?.[0];
+  assert.ok(input);
+  assert.match(input, /maxlength="33"/);
+  assert.match(input, /placeholder="0\.6\.1-2"/);
+  const pattern = new RegExp(`^(?:${input.match(/pattern="([^"]+)"/)[1]})$`);
+  for (const version of ['0.6.1-2', 'v0.6.1-2', 'V12.3.4-5', '0.0.0-0']) assert.equal(pattern.test(version), true, version);
+  for (const version of ['0.6.1', '0.6.1.2', '01.6.1-2', '0.6.1-02', '0.6.1-beta']) assert.equal(pattern.test(version), false, version);
+  assert.match(html, /id="siteVersion">0\.4\.0-0<\/span>/);
 });
 
 test('announcements are public, only the owner can publish, and their dates and saved ordering are automatic', async t => {
@@ -1180,7 +1225,7 @@ test('announcements are public, only the owner can publish, and their dates and 
   assert.equal((await api('/api/announcements', {
     ...payload, username: '675', accountId: owner.data.user.accountId, canManageAnnouncements: true
   }, member.cookie)).status, 403);
-  const release = await api('/api/changelog', { title: 'A release', description: 'The current release.', version: '0.6.0' }, owner.cookie);
+  const release = await api('/api/changelog', { title: 'A release', description: 'The current release.', version: '0.6.0-0' }, owner.cookie);
   assert.equal(release.status, 201);
   const changelog = (await api('/api/changelog')).data;
 

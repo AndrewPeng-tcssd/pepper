@@ -28,7 +28,7 @@ Profile pictures default to a pepper and appear beside usernames in public and p
 
 Settings also includes permanent account deletion, requiring the current password and typing `DELETE`. Deletion signs out every session, removes the account, its owned cards, verification links, and public messages, and cancels active trades. Shared trade history remains available to the other player under **Deleted player**; the deleted player's private messages and quoted public messages become **Message deleted**.
 
-Read release notes at `/changelog`. The original account named `675` can publish a title, description, and version from that page, and delete changelog entries. Publishing dates are set by the server and displayed in each reader's local timezone. The latest remaining entry sets the development build version in the site footer; deleting that entry restores the previous entry's version, and an empty changelog uses `0.4.0`. Versions use `major.minor.patch`, such as `0.5.0`, and may include a leading `v` when entered.
+Read release notes at `/changelog`. The original account named `675` can publish a title, description, and version from that page, and delete changelog entries. Publishing dates are set by the server and displayed in each reader's local timezone. The latest remaining entry sets the development build version in the site footer; deleting that entry restores the previous entry's version, and an empty changelog uses `0.4.0-0`. Versions use `major.minor.patch-build`, such as `0.6.1-2`, and may include a leading `v` when entered. Each number has no leading zeros, and the version without `v` can contain up to 32 characters. Older saved three-part versions display with `-0` without changing their stored values.
 
 Every account has a permanent random account ID, such as `PPR-8F0B6ED0-77F5-4E25-9B41-B75B1EE16791`. New accounts receive their IDs on registration, and existing accounts receive them automatically when the server starts. IDs are saved uniquely in MongoDB and stay the same through username or password changes and server restarts. They appear in account details and public profiles.
 
@@ -40,9 +40,11 @@ Read site news at `/announcements`. Administrators and moderators can publish an
 
 ## Moderation
 
-The permanent site owner is the administrator. **Open admin view** in Settings enables player lookup, moderator assignment or removal, bans, chat deletion, and publishing controls. Moderators use **Open mod view** for announcements, ordinary-player bans, and chat moderation. A moderator cannot ban an administrator or another moderator, or delete their messages; their own messages can still be deleted. Changelog publishing remains administrator-only. Closing either view hides these controls.
+The permanent site owner is the administrator. **Open admin view** in Settings loads players automatically, with **Make mod** and **Remove mod** beside eligible accounts. Use the username search to find someone specific. Admin view also enables bans, chat deletion, and publishing controls. Moderators use **Open mod view** for announcements, ordinary-player bans, and chat moderation. A moderator cannot ban an administrator or another moderator, or delete their messages; their own messages can still be deleted. Changelog publishing remains administrator-only. Closing either view hides these controls.
 
 Settings links directly to the available announcement and changelog editors while the management view is open. Moderation, privileged publishing, and deletion require MongoDB transactions on a replica set.
+
+With admin view open, another player's profile also offers **Make mod**, **Remove mod**, **Ban**, and **Unban**, as appropriate. Mod view offers ordinary-player bans on profiles with the same staff protections as Settings.
 
 Admin, Mod, and Banned badges appear beside usernames in chat, profiles, and other player lists. Role and ban changes also update existing messages. Banned players are excluded from the leaderboard. A banned session or correct-password login displays **You are banned** instead of the site, with a sign-out option. Unbanning allows a fresh login. Chat deletion leaves a message tombstone and preserves the original send receipt so a retry cannot recreate deleted content.
 
@@ -54,7 +56,7 @@ Your own messages appear immediately while the server saves them. Other players 
 
 Moving between the site's pages keeps chat open, with the same messages, draft, reply selection, and scroll position. Navigation updates the main page without reloading the site; browser Back and Forward work too. Opening a new tab or manually refreshing still starts a new page.
 
-The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player appears with their picture and links to their profile. The account summary in the Account menu also opens your profile. Clicking your own profile picture opens its upload control in Settings.
+The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player appears with their picture and links to their profile. A green dot at the bottom-right of pictures in chat and the leaderboard shows players currently online. The account summary in the Account menu also opens your profile. Clicking your own profile picture opens its upload control in Settings.
 
 ## Games
 

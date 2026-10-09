@@ -7,10 +7,10 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=43">
-  <script src="/app.js?v=42" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=45">
+  <script src="/app.js?v=44" defer></script>
   <script src="/games.js?v=1" defer></script>
-  <script src="/moderation.js?v=1" defer></script>
+  <script src="/moderation.js?v=3" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -124,6 +124,10 @@
       <p id="profileDescription" role="status">Sign in required.</p>
       <button class="button profile-retry" id="profileRetry" type="button" hidden>Try again</button>
       <a class="button profile-trade" id="profileTrade" href="/trading" hidden>Start a trade</a>
+      <div class="profile-moderation" id="profileModeration" hidden>
+        <div class="trading-actions" id="profileModerationActions" aria-label="Player moderation"></div>
+        <p class="form-message" id="profileModerationMessage" role="status"></p>
+      </div>
       <div class="profile-details" id="profileDetails" hidden>
         <div class="profile-info-card">
           <div class="player-identity profile-account-heading"><button class="profile-picture-edit" id="profilePictureEdit" type="button" aria-label="Change profile picture" title="Change picture"><img class="player-avatar profile-avatar" id="profileAvatar" src="/favicon.svg" alt="" width="56" height="56"></button><h2 id="profileAccountTitle">Account</h2></div>
@@ -281,7 +285,7 @@
         <form class="changelog-form" id="changelogForm">
           <div><label for="changelogTitle">Title</label><input id="changelogTitle" name="title" maxlength="120" required></div>
           <div><label for="changelogDescription">Description</label><textarea id="changelogDescription" name="description" maxlength="5000" rows="5" required></textarea></div>
-          <div><label for="changelogVersion">Version (e.g. 0.4.1)</label><input id="changelogVersion" name="version" maxlength="32" pattern="[0-9]+\.[0-9]+\.[0-9]+" placeholder="0.4.1" required></div>
+          <div><label for="changelogVersion">Version</label><input id="changelogVersion" name="version" maxlength="33" pattern="[vV]?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(0|[1-9][0-9]*)" placeholder="0.6.1-2" required></div>
           <button class="button" id="changelogSubmit" type="submit">Add entry</button>
           <p class="form-message" id="changelogFormMessage" role="status"></p>
         </form>
@@ -400,7 +404,7 @@
 
   </main>
 
-  <footer><span>Pepper TCG · Build <a href="/changelog">v<span id="siteVersion"></span></a></span><span>© <span id="year"></span></span></footer>
+  <footer><span>Pepper TCG · Build <a href="/changelog">v<span id="siteVersion">0.4.0-0</span></a></span><span>© <span id="year"></span></span></footer>
 
   <section class="banned-screen" id="bannedScreen" hidden aria-labelledby="bannedTitle"><img src="/favicon.svg" alt="" width="80" height="80"><h1 id="bannedTitle">You are banned</h1><button class="button" id="bannedSignOut" type="button">Sign out</button><p class="form-message" id="bannedMessage" role="status"></p></section>
 
