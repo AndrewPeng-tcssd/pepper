@@ -11,7 +11,7 @@ const objectId = value => {
   return new ObjectId(value);
 };
 
-function registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now = Date.now }) {
+function registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now = Date.now, claimIntervalMs = 60 * 60 * 1000 }) {
   const peerId = (friendship, userId) => sameId(friendship.senderUserId, userId) ? friendship.recipientUserId : friendship.senderUserId;
   async function playersFor(friendship, session) {
     const options = session ? { session } : {};
@@ -42,6 +42,55 @@ function registerFriends(app, { users, friendships, friendMessages }, { requireU
     return { id: message._id.toString(), clientMessageId: message.clientMessageId,
       sender: await moderation.publicPlayer(sender), text: message.text, createdAt: message.createdAt.toISOString() };
   }
+  const readCursor = (friendship, userId) => friendship.readCursors?.[userId.toString()];
+  const afterCursor = cursor => cursor?.createdAt instanceof Date && cursor?.messageId instanceof ObjectId ? {
+    $or: [{ createdAt: { $gt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $gt: cursor.messageId } }]
+  } : {};
+  async function publicFriend(friendship, userId, peer) {
+    peer ||= await users.findOne({ _id: peerId(friendship, userId) });
+    if (!peer) fail(404, 'Player unavailable.');
+    const [last, unreadCount] = await Promise.all([
+      friendMessages.findOne({ friendshipId: friendship._id }, { sort: { createdAt: -1, _id: -1 } }),
+      friendMessages.countDocuments({ friendshipId: friendship._id, senderUserId: { $ne: userId }, ...afterCursor(readCursor(friendship, userId)) })
+    ]);
+    return { id: friendship._id.toString(), player: await moderation.publicPlayer(peer),
+      lastMessage: last ? await publicMessage(last) : null, unreadCount };
+  }
+  const claimDue = user => Number.isSafeInteger(user.lastClaimAt) && user.lastClaimAt > 0
+    && Number.isSafeInteger(user.lastClaimAt + claimIntervalMs) && user.lastClaimAt + claimIntervalMs <= now()
+    ? user.lastClaimAt + claimIntervalMs : null;
+  async function notificationFeed(user) {
+    const accepted = await friendships.find({ ...participants(user._id), status: 'accepted' }).toArray();
+    const peers = new Map();
+    for (const friendship of accepted) {
+      const peer = await users.findOne({ _id: peerId(friendship, user._id) });
+      if (peer) peers.set(friendship._id.toString(), await moderation.publicPlayer(peer));
+    }
+    const filter = { friendshipId: { $in: accepted.filter(friendship => peers.has(friendship._id.toString())).map(friendship => friendship._id) },
+      senderUserId: { $ne: user._id } };
+    const [uncheckedMessages, unchecked] = await Promise.all([
+      friendMessages.find({ ...filter, notificationCheckedAt: null }).sort({ createdAt: -1, _id: -1 }).limit(100).toArray(),
+      friendMessages.countDocuments({ ...filter, notificationCheckedAt: null })
+    ]);
+    const due = claimDue(user);
+    const claimUnread = due !== null && user.claimNotificationSeenAt !== due;
+    // Keep every unchecked notification reachable as earlier batches are checked.
+    const messages = uncheckedMessages.slice(0, claimUnread ? 99 : 100);
+    const remaining = 100 - messages.length - Number(claimUnread);
+    if (remaining > 0) messages.push(...await friendMessages.find({ ...filter, _id: { $nin: messages.map(message => message._id) }, notificationCheckedAt: { $ne: null } })
+      .sort({ createdAt: -1, _id: -1 }).limit(remaining).toArray());
+    const notifications = messages.map(message => ({ id: `message:${message._id}`, type: 'message',
+      friendId: message.friendshipId.toString(), player: peers.get(message.friendshipId.toString()),
+      text: message.text, createdAt: message.createdAt.toISOString(), read: message.notificationCheckedAt != null }));
+    let unreadCount = unchecked;
+    if (due !== null) {
+      const read = user.claimNotificationSeenAt === due;
+      notifications.push({ id: `claim:${due}`, type: 'claim', text: 'Tokens ready', createdAt: new Date(due).toISOString(), read });
+      if (!read) unreadCount++;
+    }
+    notifications.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
+    return { notifications: notifications.slice(0, 100), unreadCount };
+  }
 
   app.get('/api/friends', requireUser, async (req, res) => {
     const entries = await friendships.find({ ...participants(req.user._id), status: { $in: ['pending', 'accepted'] } }).toArray();
@@ -49,13 +98,15 @@ function registerFriends(app, { users, friendships, friendMessages }, { requireU
     for (const entry of entries) {
       const peer = await users.findOne({ _id: peerId(entry, req.user._id) });
       if (!peer) continue;
-      if (entry.status === 'accepted') friends.push({ id: entry._id.toString(), player: await moderation.publicPlayer(peer) });
+      if (entry.status === 'accepted') friends.push(await publicFriend(entry, req.user._id, peer));
       else {
         const request = await publicRequest(entry);
         (sameId(entry.recipientUserId, req.user._id) ? incoming : outgoing).push(request);
       }
     }
-    friends.sort((a, b) => a.player.username.toLowerCase().localeCompare(b.player.username.toLowerCase()) || a.id.localeCompare(b.id));
+    friends.sort((a, b) => Number(b.unreadCount > 0) - Number(a.unreadCount > 0)
+      || (b.lastMessage ? Date.parse(b.lastMessage.createdAt) : 0) - (a.lastMessage ? Date.parse(a.lastMessage.createdAt) : 0)
+      || a.player.username.toLowerCase().localeCompare(b.player.username.toLowerCase()) || a.id.localeCompare(b.id));
     const requestSort = (a, b) => {
       const aPeer = a.sender.accountId === req.user.accountId ? a.recipient : a.sender;
       const bPeer = b.sender.accountId === req.user.accountId ? b.recipient : b.sender;
@@ -63,6 +114,31 @@ function registerFriends(app, { users, friendships, friendMessages }, { requireU
     };
     incoming.sort(requestSort); outgoing.sort(requestSort);
     res.json({ friends, incoming, outgoing });
+  });
+
+  app.get('/api/notifications', requireUser, async (req, res) => {
+    res.json(await notificationFeed(req.user));
+  });
+  app.post('/api/notifications/read', requireUser, rateLimit(240, 60 * 1000), async (req, res) => {
+    const requestedIds = req.body?.ids;
+    if (!Array.isArray(requestedIds) || requestedIds.length > 100 || requestedIds.some(id => typeof id !== 'string'
+      || !/^(message:[a-f0-9]{24}|claim:[1-9]\d{0,15})$/i.test(id))) fail(400, 'Invalid notifications.');
+    const ids = requestedIds.map(id => id.toLowerCase());
+    const messageIds = [...new Set(ids.filter(id => id.startsWith('message:')).map(id => id.slice(8).toLowerCase()))].map(id => new ObjectId(id));
+    await moderation.runAs(req.user._id, async ({ session, actor }) => {
+      if (messageIds.length) {
+        const accepted = await friendships.find({ ...participants(actor._id), status: 'accepted' }, { session, projection: { _id: 1 } }).toArray();
+        await friendMessages.updateMany({ _id: { $in: messageIds }, friendshipId: { $in: accepted.map(friendship => friendship._id) },
+          senderUserId: { $ne: actor._id }, notificationCheckedAt: null }, { $set: { notificationCheckedAt: new Date(now()) } }, { session });
+      }
+      const due = claimDue(actor);
+      if (due !== null && ids.includes(`claim:${due}`)) {
+        await users.updateOne({ _id: actor._id, lastClaimAt: actor.lastClaimAt }, { $max: { claimNotificationSeenAt: due } }, { session });
+      }
+    });
+    const user = await users.findOne({ _id: req.user._id });
+    if (!user) fail(401, 'Sign in required.');
+    res.json(await notificationFeed(user));
   });
 
   app.post('/api/friends/requests', requireUser, rateLimit(60, 60 * 60 * 1000), async (req, res) => {
@@ -129,9 +205,25 @@ function registerFriends(app, { users, friendships, friendMessages }, { requireU
     const { friendship, players } = await acceptedFriendship(objectId(req.params.id), req.user._id);
     const messages = await friendMessages.find({ friendshipId: friendship._id }).sort({ createdAt: -1, _id: -1 }).limit(100).toArray();
     const peer = sameId(players.sender._id, req.user._id) ? players.recipient : players.sender;
-    res.json({ messages: await Promise.all(messages.reverse().map(publicMessage)), friend: {
-      id: friendship._id.toString(), player: await moderation.publicPlayer(peer)
-    } });
+    res.json({ messages: await Promise.all(messages.reverse().map(publicMessage)), friend: await publicFriend(friendship, req.user._id, peer) });
+  });
+
+  app.post('/api/friends/:id/read', requireUser, rateLimit(240, 60 * 1000), async (req, res) => {
+    const id = objectId(req.params.id), messageId = objectId(req.body?.messageId);
+    await moderation.runAs(req.user._id, async ({ session, actor }) => {
+      const { friendship } = await acceptedFriendship(id, actor._id, session);
+      const message = await friendMessages.findOne({ _id: messageId, friendshipId: id }, { session });
+      if (!message) fail(404, 'Message not found.');
+      const cursor = readCursor(friendship, actor._id);
+      if (cursor?.createdAt instanceof Date && cursor?.messageId instanceof ObjectId
+        && (cursor.createdAt > message.createdAt || (cursor.createdAt.getTime() === message.createdAt.getTime()
+          && cursor.messageId.toString() >= message._id.toString()))) return;
+      await friendships.updateOne({ _id: id, status: 'accepted' }, {
+        $set: { [`readCursors.${actor._id}`]: { createdAt: message.createdAt, messageId: message._id } }
+      }, { session });
+    });
+    const { friendship } = await acceptedFriendship(id, req.user._id);
+    res.json({ friend: await publicFriend(friendship, req.user._id) });
   });
 
   app.post('/api/friends/:id/messages', requireUser, rateLimit(180, 60 * 1000), async (req, res) => {

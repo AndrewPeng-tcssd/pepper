@@ -400,7 +400,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
 
   app.post('/api/claim', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!turnstileConfigured) return sendError(res, 503, 'Cloudflare verification is not configured yet.');
-    if (req.user.lastClaimAt && Date.now() < req.user.lastClaimAt + CLAIM_INTERVAL_MS) {
+    if (req.user.lastClaimAt && currentTime() < req.user.lastClaimAt + CLAIM_INTERVAL_MS) {
       return sendError(res, 429, 'Your next claim is not ready yet.');
     }
     const token = String(req.body?.turnstileToken || '');
@@ -412,7 +412,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       return sendError(res, 503, 'Verification is unavailable right now. Try again.');
     }
     if (!verified) return sendError(res, 400, 'Cloudflare verification failed or expired. Try again.');
-    const now = Date.now();
+    const now = currentTime();
     const awarded = randomInt(HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX + 1);
     const user = await users.findOneAndUpdate(
       { _id: req.user._id, banned: { $ne: true }, $or: [{ lastClaimAt: null }, { lastClaimAt: { $lte: now - CLAIM_INTERVAL_MS } }],
@@ -433,7 +433,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
 
   registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
   app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields });
-  registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime });
+  registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime, claimIntervalMs: CLAIM_INTERVAL_MS });
   const news = registerNews(app, { users, changelog, announcements, newsComments, announcementSeen }, {
     requireUser, rateLimit, moderation, now: currentTime, publicAnnouncement: entry => publicAnnouncementEntry(entry)
   });

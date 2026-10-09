@@ -7,12 +7,13 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=51">
+  <link rel="stylesheet" href="/styles.css?v=52">
   <script src="/player-picker.js?v=1" defer></script>
-  <script src="/app.js?v=51" defer></script>
+  <script src="/app.js?v=52" defer></script>
   <script src="/games.js?v=4" defer></script>
   <script src="/moderation.js?v=7" defer></script>
-  <script src="/friends.js?v=1" defer></script>
+  <script src="/friends.js?v=2" defer></script>
+  <script src="/notifications.js?v=1" defer></script>
   <script src="/news-comments.js?v=1" defer></script>
   <script src="/announcement-popup.js?v=1" defer></script>
 </head>
@@ -62,6 +63,15 @@
     </nav>
     <div class="header-actions">
       <button class="button" id="accountButton" type="button">Sign up</button>
+      <details class="notifications-menu" id="notificationMenu" hidden>
+        <summary class="button notification-bell" id="notificationBell" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z"/><path d="M10 21h4"/></svg><span class="notification-badge" id="notificationBadge" hidden></span></summary>
+        <div class="notification-panel" id="notificationPanel" role="region" aria-labelledby="notificationTitle">
+          <h2 id="notificationTitle">Notifications</h2>
+          <p class="form-message" id="notificationMessage" role="status" hidden></p>
+          <p id="notificationEmpty">No notifications.</p>
+          <div class="notification-list" id="notificationList"></div>
+        </div>
+      </details>
       <details class="account-menu" id="accountMenu" hidden>
         <summary class="button"><span>Account</span><svg class="account-menu-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" /></svg></summary>
         <div class="account-dropdown">
@@ -290,6 +300,7 @@
       <div id="friendsAccount" hidden>
         <div class="friends-layout">
           <div class="friends-sidebar">
+            <section aria-labelledby="friendConversationsTitle"><h2 id="friendConversationsTitle">Messages</h2><p id="friendConversationsEmpty">No messages yet.</p><div class="friends-list" id="friendConversations"></div></section>
             <form class="friends-request" id="friendRequestForm">
               <h2>Add a friend</h2>
               <label for="friendUsername">Username</label><div class="player-picker"><input id="friendUsername" maxlength="24" autocomplete="off" spellcheck="false" required placeholder="Player username"></div>

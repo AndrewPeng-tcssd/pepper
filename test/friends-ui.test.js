@@ -15,30 +15,32 @@ const message = (sender, text, extra = {}) => ({ id: crypto.randomBytes(12).toSt
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 
 // Run the complete production module with DOM, time, and API boundaries replaced.
-function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, network) {
+function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, network, options = {}) {
   const elements = new Map(), calls = [], timers = new Map(), intervals = [], listeners = new Map(), pickers = [];
   const clock = { now: Date.now() };
   let context, timerId = 0;
-  const node = (id = '', attrs = '') => {
+  const node = (id = '', attrs = '', tagName = '') => {
     const classes = new Set(), events = new Map();
     return {
-      id, children: [], dataset: {}, value: '', textContent: '', hidden: /\bhidden\b/.test(attrs), disabled: false,
+      id, tagName: tagName.toUpperCase(), children: [], dataset: {}, value: '', textContent: '', hidden: /\bhidden\b/.test(attrs), disabled: false,
       scrollTop: 0, scrollHeight: 100, clientHeight: 100,
       classList: { contains: name => classes.has(name), add: name => classes.add(name), remove: name => classes.delete(name) },
-      append(...children) { this.children.push(...children); }, replaceChildren(...children) { this.children = children; },
+      append(...children) { for (const child of children) child.parentElement = this; this.children.push(...children); },
+      replaceChildren(...children) { for (const child of children) child.parentElement = this; this.children = children; },
       setAttribute(name, value) { this[name] = value; },
       addEventListener(name, callback) { events.set(name, callback); },
       dispatch(name, target = this) { return events.get(name)?.({ preventDefault() {}, target }); },
-      closest(selector) { return selector === '[data-friend-action]' && this.dataset.friendAction ? this : null; },
+      closest(selector) { for (let target = this; target; target = target.parentElement) if (selector === '[data-friend-action]' && target.dataset.friendAction) return target; return null; },
       focus() { document.activeElement = this; }, click() { this.dispatch('click'); }
     };
   };
   for (const match of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*\bid="([^"]+)"[^>]*)>/g)) elements.set(match[2], node(match[2], match[1]));
-  const document = { getElementById: id => elements.get(id), createElement: () => node(), body: node(), activeElement: null, hidden: false, addEventListener: (name, callback) => listeners.set(name, callback) };
+  const document = { getElementById: id => elements.get(id), createElement: tagName => node('', '', tagName), body: node(), activeElement: null, hidden: !!options.hidden, addEventListener: (name, callback) => listeners.set(name, callback) };
   const boundary = {
-    document, crypto, console,
+    document, crypto, console, URLSearchParams,
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [clock.now])); } static now() { return clock.now; } },
     window: {
+      location: { search: options.search || '' },
       setTimeout(callback, delay = 0) { const id = ++timerId; timers.set(id, { callback, at: clock.now + delay, delay }); return id; },
       clearTimeout: id => timers.delete(id),
       PepperPlayerPicker: { attach(config) {
@@ -61,15 +63,17 @@ function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, n
       if (route === 'friends' && call.method === 'GET') return snapshot;
       const chat = /^friends\/([^/]+)\/messages$/.exec(route);
       if (chat && call.method === 'GET') return { friend: snapshot.friends.find(friend => friend.id === chat[1]), messages: [] };
+      const read = /^friends\/([^/]+)\/read$/.exec(route);
+      if (read && call.method === 'POST') return { friend: { ...snapshot.friends.find(friend => friend.id === read[1]), unreadCount: 0 } };
       throw new Error(`Unexpected ${call.method} ${route}`);
     }
   };
   context = vm.createContext(boundary);
-  vm.runInContext(source.replace('window.PepperFriends = { syncUser, onRoute, load };', 'window.PepperFriends = { syncUser, onRoute, load, inspect: () => friends, openConversation, loadMessages, requestFriend, perform, sendMessage, act, render };'), context);
+  vm.runInContext(source.replace('window.PepperFriends = { syncUser, onRoute, load, openConversation };', 'window.PepperFriends = { syncUser, onRoute, load, inspect: () => friends, openConversation, loadMessages, requestFriend, perform, sendMessage, act, render, markRead };'), context);
   boundary.setUser(user);
   return {
     api: context.window.PepperFriends, elements, calls, timers, intervals, listeners, pickers, context, snapshot, setUser: boundary.setUser,
-    navigate(page) { context.pageKind = page; context.routeRevision++; context.window.PepperFriends.onRoute(); },
+    navigate(page, search = '') { context.pageKind = page; context.window.location.search = search; context.routeRevision++; context.window.PepperFriends.onRoute(); },
     async runNextTimer() {
       const item = [...timers].sort((a, b) => a[1].at - b[1].at)[0]; assert.ok(item, 'A retry is scheduled');
       timers.delete(item[0]); clock.now = Math.max(clock.now, item[1].at); item[1].callback(); await tick(); return item[1].delay;
@@ -78,7 +82,9 @@ function harness(user, snapshot = { friends: [], incoming: [], outgoing: [] }, n
 }
 const allText = element => [element.textContent, ...element.children.map(allText)].filter(Boolean).join(' ');
 const controls = element => [...(element.dataset.friendAction ? [element] : []), ...element.children.flatMap(controls)];
-const posts = ui => ui.calls.filter(call => call.method === 'POST');
+const descendants = element => [element, ...element.children.flatMap(descendants)];
+const posts = ui => ui.calls.filter(call => call.method === 'POST' && !call.route.endsWith('/read'));
+const reads = ui => ui.calls.filter(call => call.method === 'POST' && call.route.endsWith('/read'));
 function send(ui, text) { ui.elements.get('friendChatInput').value = text; ui.elements.get('friendChatForm').dispatch('submit'); }
 
 test('friends are private to a signed-in account and disabled outside the Friends page', async () => {
@@ -200,7 +206,7 @@ test('uncertain friend requests retry with the original idempotency key', async 
 test('only a selected accepted friend can receive a private message', async () => {
   const local = player('local'), friend = friendship('other');
   const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
-    if (call.method === 'POST') return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
+    if (call.method === 'POST' && call.route.endsWith('/messages')) return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
   });
   await tick(); send(ui, 'Before selection'); ui.api.openConversation('unrelated'); await tick();
   assert.equal(posts(ui).length, 0);
@@ -248,7 +254,7 @@ test('changing accounts clears private messages, drafts, and stale message respo
 test('rate-limited private messages stay pending and send automatically with the same receipt', async () => {
   const local = player('local'), friend = friendship('other'); let attempts = 0;
   const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
-    if (call.method === 'POST') {
+    if (call.method === 'POST' && call.route.endsWith('/messages')) {
       if (++attempts === 1) throw Object.assign(new Error('Too fast.'), { status: 429, retryAfterMs: 200 });
       return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
     }
@@ -269,7 +275,7 @@ test('rate-limited private messages stay pending and send automatically with the
 test('rate-limit retries cannot send after signing into a different account', async () => {
   const friend = friendship('other'), snapshot = { friends: [friend], incoming: [], outgoing: [] };
   const ui = harness(player('local'), snapshot, call => {
-    if (call.method === 'POST') throw Object.assign(new Error('Too fast.'), { status: 429, retryAfterMs: 200 });
+    if (call.method === 'POST' && call.route.endsWith('/messages')) throw Object.assign(new Error('Too fast.'), { status: 429, retryAfterMs: 200 });
   });
   await tick(); ui.api.openConversation(friend.id); await tick(); send(ui, 'Old account message'); await tick();
   await ui.runNextTimer();
@@ -283,7 +289,7 @@ test('rate-limit retries cannot send after signing into a different account', as
 test('uncertain private messages offer a safe retry without losing their text', async () => {
   const local = player('local'), friend = friendship('other'); let fail = true;
   const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
-    if (call.method === 'POST') {
+    if (call.method === 'POST' && call.route.endsWith('/messages')) {
       if (fail) throw new Error('Connection lost.');
       return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
     }
@@ -300,7 +306,7 @@ test('uncertain private messages offer a safe retry without losing their text', 
 test('saved message receipts reconcile pending sends without duplicating a message', async () => {
   const local = player('local'), friend = friendship('other'), pending = deferred(); let saved;
   const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
-    if (call.method === 'POST') { saved = message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }); return pending.promise; }
+    if (call.method === 'POST' && call.route.endsWith('/messages')) { saved = message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }); return pending.promise; }
     if (call.route.endsWith('/messages') && saved) return { friend, messages: [saved] };
   });
   await tick(); ui.api.openConversation(friend.id); await tick(); send(ui, 'Saved once'); await tick();
@@ -315,7 +321,7 @@ test('an older message read cannot remove a newly sent message', async () => {
   const local = player('local'), friend = friendship('other'), oldRead = deferred(); let reads = 0;
   const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
     if (call.route.endsWith('/messages') && call.method === 'GET' && ++reads === 2) return oldRead.promise;
-    if (call.method === 'POST') return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
+    if (call.method === 'POST' && call.route.endsWith('/messages')) return { message: message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId }) };
   });
   await tick(); ui.api.openConversation(friend.id); await tick();
   const stale = ui.api.loadMessages(); send(ui, 'New message'); await tick();
@@ -337,4 +343,158 @@ test('banned friends cannot receive messages and show an unavailable status', as
   friend.player.banned = false; await ui.api.load();
   assert.equal(ui.elements.get('friendChatInput').disabled, false);
   assert.equal(ui.elements.get('friendChatMessage').textContent, '');
+});
+
+test('the entire friend row is a keyboard-accessible button without nested profile links', async () => {
+  const friend = friendship('other');
+  const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }); await tick();
+  const row = ui.elements.get('friendsList').children[0];
+  assert.equal(row.tagName, 'BUTTON'); assert.equal(row.type, 'button');
+  assert.equal(row['aria-label'], 'Message other'); assert.equal(row.dataset.friendAction, 'open');
+  assert.equal(descendants(row).some(item => item.tagName === 'A'), false);
+  const username = descendants(row).find(item => item.textContent === 'other');
+  ui.elements.get('friendsPage').dispatch('click', username); await tick();
+  assert.equal(ui.api.inspect().selectedId, friend.id);
+  assert.equal(ui.elements.get('friendChatContent').hidden, false);
+  assert.equal(ui.context.document.activeElement, ui.elements.get('friendChatInput'));
+});
+
+test('message lists show previews, dates, and unread counts and sort unread conversations first', async () => {
+  const local = player('local'), noHistory = friendship('new-friend');
+  const history = (name, unread, timestamp, sender = player(name)) => ({ ...friendship(name), unreadCount: unread, lastMessage: message(sender, `Latest from ${name}`, { createdAt: timestamp }) });
+  const olderUnread = history('older', 2, '2026-10-07T12:00:00Z');
+  const newerUnread = history('newer', 1, '2026-10-08T12:00:00Z');
+  const newestRead = history('read', 0, '2026-10-08T13:00:00Z', local);
+  const ui = harness(local, { friends: [newestRead, olderUnread, noHistory, newerUnread], incoming: [], outgoing: [] }); await tick();
+  const rows = ui.elements.get('friendConversations').children;
+  assert.deepEqual(rows.map(row => row.dataset.friendId), [newerUnread.id, olderUnread.id, newestRead.id]);
+  assert.equal(ui.elements.get('friendConversationsEmpty').hidden, true);
+  assert.equal(ui.elements.get('friendsList').children.length, 4);
+  assert.match(allText(rows[0]), /Latest from newer/); assert.match(allText(rows[2]), /You: Latest from read/);
+  const date = descendants(rows[0]).find(item => item.tagName === 'TIME');
+  assert.equal(date.dateTime, newerUnread.lastMessage.createdAt); assert.ok(date.textContent.length > 0);
+  assert.ok(rows[0]['aria-label'].includes('Latest from newer')); assert.ok(rows[0]['aria-label'].includes(date.textContent));
+  assert.ok(rows[1]['aria-label'].includes('2 unread messages'));
+  const unread = descendants(rows[1]).find(item => item.className === 'friend-unread');
+  assert.equal(unread.textContent, '2'); assert.equal(unread['aria-label'], '2 unread messages');
+  assert.deepEqual(ui.elements.get('friendsList').children.map(row => row.dataset.friendId), [newerUnread.id, olderUnread.id, newestRead.id, noHistory.id]);
+});
+
+test('message history updates while Friends is open without clearing a composed draft or focused friend button', async () => {
+  const friend = friendship('other'), snapshot = { friends: [friend], incoming: [], outgoing: [] };
+  const ui = harness(player('local'), snapshot); await tick(); ui.api.openConversation(friend.id); await tick();
+  ui.elements.get('friendChatInput').value = 'My unfinished reply';
+  snapshot.friends = [{ ...friend, unreadCount: 1, lastMessage: message(friend.player, 'New while open') }];
+  ui.elements.get('friendsList').children[0].focus(); await ui.api.load();
+  assert.equal(ui.elements.get('friendChatInput').value, 'My unfinished reply');
+  assert.match(allText(ui.elements.get('friendConversations')), /New while open/);
+  assert.equal(ui.context.document.activeElement, ui.elements.get('friendsList').children[0]);
+});
+
+test('notification links select an accepted conversation after its friends have loaded', async () => {
+  const friend = friendship('other'), loaded = deferred();
+  const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }, call => call.route === 'friends' ? loaded.promise : undefined, { search: `?conversation=${friend.id}` });
+  assert.equal(ui.api.inspect().selectedId, null);
+  loaded.resolve({ friends: [friend], incoming: [], outgoing: [] }); await tick();
+  assert.equal(ui.api.inspect().selectedId, friend.id);
+  assert.equal(ui.calls.some(call => call.route === `friends/${friend.id}/messages`), true);
+  ui.navigate('friends', '?conversation=not-a-friend'); await tick();
+  assert.equal(ui.api.inspect().selectedId, friend.id, 'Unknown IDs cannot create a conversation');
+  assert.equal(ui.calls.some(call => call.route === 'friends/not-a-friend/messages'), false);
+});
+
+test('opening a visible conversation reads only its displayed message snapshot and leaves bell checks separate', async () => {
+  const friend = friendship('other'), incoming = message(friend.player, 'Unread message');
+  friend.lastMessage = incoming; friend.unreadCount = 2;
+  let notified = 0;
+  const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }, call => {
+    if (call.route.endsWith('/messages')) return { friend, messages: [incoming] };
+    if (call.route.endsWith('/read')) return { friend: { ...friend, unreadCount: 0 } };
+  });
+  ui.context.window.PepperNotifications = { load: () => { notified++; } };
+  await tick(); assert.equal(reads(ui).length, 0);
+  ui.api.openConversation(friend.id); await tick();
+  assert.equal(reads(ui).length, 1); assert.deepEqual(reads(ui)[0].payload, { messageId: incoming.id });
+  assert.equal(ui.api.inspect().entries[0].unreadCount, 0); assert.equal(notified, 1);
+  assert.equal(ui.calls.some(call => call.route.includes('notifications/') && call.method === 'POST'), false);
+  await ui.api.loadMessages(); await tick(); assert.equal(reads(ui).length, 1, 'A read snapshot is acknowledged once');
+});
+
+test('hidden conversations and stale conversation responses never mark messages as seen', async () => {
+  const friend = friendship('other'), incoming = message(friend.player, 'Unread message');
+  const ui = harness(player('local'), { friends: [friend], incoming: [], outgoing: [] }, call => call.route.endsWith('/messages') ? { friend, messages: [incoming] } : undefined, { hidden: true });
+  await tick(); ui.api.openConversation(friend.id); await tick(); assert.equal(reads(ui).length, 0);
+  ui.context.document.hidden = false; ui.listeners.get('visibilitychange')(); await tick();
+  assert.equal(reads(ui).length, 1);
+  for (const change of ['route', 'account', 'conversation']) {
+    const response = deferred(), second = friendship('second');
+    const stale = harness(player('local'), { friends: [friend, second], incoming: [], outgoing: [] }, call => call.route === `friends/${friend.id}/messages` ? response.promise : undefined);
+    await tick(); stale.api.openConversation(friend.id);
+    if (change === 'route') stale.navigate('games');
+    else if (change === 'account') stale.setUser(player('someone-else'));
+    else stale.api.openConversation(second.id);
+    response.resolve({ friend, messages: [incoming] }); await tick();
+    assert.equal(reads(stale).length, 0, change);
+  }
+});
+
+test('stale read acknowledgements cannot replace a current conversation or a different account', async () => {
+  for (const change of ['route', 'account', 'conversation']) {
+    const friend = friendship('other'), second = friendship('second'), acknowledgement = deferred();
+    const incoming = message(friend.player, 'Message before switch'); friend.lastMessage = incoming; friend.unreadCount = 1;
+    const ui = harness(player('local'), { friends: [friend, second], incoming: [], outgoing: [] }, call => {
+      if (call.route === `friends/${friend.id}/messages`) return { friend, messages: [incoming] };
+      if (call.route.endsWith('/read')) return acknowledgement.promise;
+    });
+    await tick(); ui.api.openConversation(friend.id); await tick(); assert.equal(reads(ui).length, 1);
+    if (change === 'route') ui.navigate('games');
+    else if (change === 'account') ui.setUser(player('someone-else'));
+    else ui.api.openConversation(second.id);
+    acknowledgement.resolve({ friend: { ...friend, unreadCount: 0 } }); await tick();
+    assert.equal(ui.api.inspect().entries.find(item => item.id === friend.id).unreadCount, 1, change);
+  }
+});
+
+test('pending private replies stay below confirmed messages even when the server clock is ahead', async () => {
+  const local = player('local'), friend = friendship('other');
+  const confirmed = message(friend.player, 'Previous confirmed', { createdAt: '2099-01-01T00:00:00Z' });
+  const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
+    if (call.route.endsWith('/messages') && call.method === 'GET') return { friend, messages: [confirmed] };
+    if (call.route.endsWith('/messages') && call.method === 'POST') throw Object.assign(new Error('Too fast'), { status: 429, retryAfterMs: 200 });
+  });
+  await tick(); ui.api.openConversation(friend.id); await tick(); send(ui, 'New pending'); await tick();
+  const rows = ui.elements.get('friendChatMessages').children;
+  assert.match(allText(rows[0]), /Previous confirmed/); assert.match(allText(rows[1]), /New pending.*Sending…/);
+});
+
+test('conversation drafts survive friend switches but never survive account switches', async () => {
+  const first = friendship('first'), second = friendship('second');
+  const ui = harness(player('local'), { friends: [first, second], incoming: [], outgoing: [] }); await tick();
+  ui.api.openConversation(first.id); ui.elements.get('friendChatInput').value = 'First private draft';
+  ui.api.openConversation(second.id); assert.equal(ui.elements.get('friendChatInput').value, '');
+  ui.elements.get('friendChatInput').value = 'Second private draft'; ui.api.openConversation(first.id);
+  assert.equal(ui.elements.get('friendChatInput').value, 'First private draft');
+  ui.setUser(player('someone-else')); await tick(); ui.api.openConversation(first.id);
+  assert.equal(ui.elements.get('friendChatInput').value, '');
+});
+
+test('a delayed send receipt keeps the latest displayed message as the read snapshot', async () => {
+  const local = player('local'), friend = friendship('other'), pending = deferred();
+  const newer = message(friend.player, 'Newer incoming', { createdAt: '2026-10-08T12:01:00Z' });
+  let loaded = 0, saved;
+  const ui = harness(local, { friends: [friend], incoming: [], outgoing: [] }, call => {
+    if (call.route.endsWith('/messages') && call.method === 'GET') return { friend, messages: ++loaded === 1 ? [] : [newer] };
+    if (call.route.endsWith('/messages') && call.method === 'POST') {
+      saved = message(local, call.payload.text, { clientMessageId: call.payload.clientMessageId, createdAt: '2026-10-08T12:00:00Z' });
+      return pending.promise;
+    }
+    if (call.route.endsWith('/read')) return { friend: { ...friend, lastMessage: newer, unreadCount: 0 } };
+  });
+  await tick(); ui.api.openConversation(friend.id); await tick(); send(ui, 'Older send'); await tick();
+  await ui.api.loadMessages(); await tick(); pending.resolve({ message: saved }); await tick();
+  assert.deepEqual(Array.from(ui.api.inspect().messages, item => item.id), [saved.id, newer.id]);
+  assert.equal(ui.api.inspect().entries[0].lastMessage.id, newer.id, 'A delayed receipt cannot replace a newer inbox preview');
+  assert.equal(reads(ui).at(-1).payload.messageId, newer.id);
+  const rows = ui.elements.get('friendChatMessages').children;
+  assert.match(allText(rows[0]), /Older send/); assert.match(allText(rows[1]), /Newer incoming/);
 });

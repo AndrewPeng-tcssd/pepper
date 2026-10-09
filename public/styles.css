@@ -126,6 +126,14 @@ input:focus { border-color: var(--accent); }
 .friends-list { display: grid; gap: 10px; }
 .friends-list-row, .friend-request-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 14px; text-align: left; }
 .friends-list-row:hover, .friends-list-row[aria-pressed="true"], .friends-list-row[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.friend-row-identity { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.friend-row-details { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.friend-row-name { overflow-wrap: anywhere; font-weight: 600; }
+.friend-last-message { display: block; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.friend-row-meta { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 7px; }
+.friend-last-message-date { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.friend-unread { min-width: 20px; padding: 3px 6px; border-radius: 99px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; text-align: center; }
+#friendConversations { max-height: 380px; overflow-y: auto; }
 .friend-request-row { flex-wrap: wrap; }
 .friend-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .friend-row-actions .button { min-height: 36px; padding: 7px 10px; font-size: 12px; }
@@ -148,7 +156,7 @@ input:focus { border-color: var(--accent); }
 .main-nav a { display: inline-flex; align-items: center; min-height: 76px; border-bottom: 2px solid transparent; color: var(--muted); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .main-nav a:hover { color: var(--ink); }
 .main-nav a[aria-current="page"] { border-color: var(--accent); color: var(--ink); }
-.header-actions { display: flex; justify-content: flex-end; justify-self: end; min-width: 112px; }
+.header-actions { position: relative; display: flex; align-items: center; justify-content: flex-end; justify-self: end; gap: 10px; min-width: 112px; }
 .header-actions > .button, .account-menu > summary { width: 112px; }
 .account-menu { position: relative; }
 .account-menu > summary { gap: 8px; list-style: none; cursor: pointer; user-select: none; }
@@ -170,6 +178,20 @@ input:focus { border-color: var(--accent); }
 .account-dropdown > a.account-menu-info { display: flex; flex-direction: column; gap: 5px; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .account-menu-info strong { overflow-wrap: anywhere; }
 .account-menu-info > span:last-child { color: var(--muted); }
+.notification-bell { position: relative; width: 42px; padding: 9px; list-style: none; cursor: pointer; }
+.notification-bell::-webkit-details-marker { display: none; }
+.notification-bell svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.notification-badge { position: absolute; top: 2px; right: 2px; min-width: 19px; height: 19px; padding: 2px 5px; border: 2px solid var(--surface); border-radius: 99px; background: var(--accent); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 1.1; }
+.notification-panel { position: absolute; z-index: 60; top: calc(100% + 8px); right: 0; width: min(360px, calc(100vw - 40px)); padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 28px var(--menu-shadow); }
+.notification-panel h2 { margin-bottom: 12px; font-size: 18px; }
+.notification-panel > p { color: var(--muted); font-size: 13px; }
+.notification-list { display: grid; gap: 8px; max-height: min(440px, calc(100svh - 160px)); overflow-y: auto; overscroll-behavior: contain; }
+.notification-item { display: block; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); text-align: left; text-decoration: none; }
+.notification-item:hover { border-color: var(--accent); background: var(--button-hover); }
+.notification-unread { background: var(--accent-soft); border-color: var(--accent); }
+.notification-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; font-weight: 600; }
+.notification-text { display: block; margin: 8px 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.4; }
+.notification-time { display: block; color: var(--muted); font-size: 11px; }
 .profile-picture-edit { display: block; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
 .profile-picture-edit:not(:disabled):hover .profile-avatar { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .profile-picture-edit:disabled { opacity: 1; cursor: default; }

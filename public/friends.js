@@ -5,7 +5,7 @@
     identity: null, revision: 0, navigation: -1, entries: [], incoming: [], outgoing: [], loaded: false,
     listRevision: 0, loadRequest: null, action: null, requestDraft: null, selectedId: null,
     chatRevision: 0, chatLoadRequest: null, messages: [], outbox: [], sending: null,
-    listSignature: null, chatSignature: null
+    listSignature: null, chatSignature: null, readRequest: null, readSnapshots: {}, drafts: {}, requestedId: null
   };
   let retryTimer;
   const signedIn = () => !!state.user && friends.identity === state.user.accountId && !accountBanned && !state.user.banned;
@@ -33,19 +33,55 @@
     const control = document.createElement('button'); control.type = 'button'; control.className = 'button'; control.textContent = label;
     control.dataset.friendAction = action; control.dataset.friendId = id; control.disabled = disabled; return control;
   }
+  function sortFriends(entries) {
+    return entries.slice().sort((a, b) => (Number(b.unreadCount > 0) - Number(a.unreadCount > 0)) ||
+      ((Date.parse(b.lastMessage?.createdAt) || 0) - (Date.parse(a.lastMessage?.createdAt) || 0)) ||
+      a.player.username.localeCompare(b.player.username, undefined, { sensitivity: 'base' }));
+  }
+  const messageOrder = (a, b) => new Date(a.createdAt) - new Date(b.createdAt) || a.id.localeCompare(b.id);
+  function friendRow(friend, conversation = false) {
+    const row = button('', 'open', friend.id, state.accountSubmitting);
+    row.className = `friends-list-row${conversation ? ' friend-conversation-row' : ''}`;
+    row.setAttribute('aria-pressed', String(friend.id === friends.selectedId));
+    row.setAttribute('aria-current', String(friend.id === friends.selectedId));
+    const label = [`Message ${friend.player.username}`];
+    const identity = document.createElement('span'); identity.className = 'friend-row-identity';
+    const details = document.createElement('span'); details.className = 'friend-row-details';
+    const name = document.createElement('span'); name.className = 'friend-row-name';
+    const username = document.createElement('span'); username.textContent = friend.player.username;
+    name.append(username, playerRoleBadges(friend.player)); details.append(name);
+    if (conversation && friend.lastMessage) {
+      const preview = document.createElement('span'); preview.className = 'friend-last-message';
+      preview.textContent = `${friend.lastMessage.sender?.accountId === friends.identity ? 'You: ' : ''}${friend.lastMessage.text}`;
+      details.append(preview); label.push(preview.textContent);
+    }
+    identity.append(profileAvatar(friend.player, 'player-avatar', true), details); row.append(identity);
+    const meta = document.createElement('span'); meta.className = 'friend-row-meta';
+    if (conversation && friend.lastMessage) {
+      const date = document.createElement('time'); date.className = 'friend-last-message-date';
+      date.dateTime = friend.lastMessage.createdAt;
+      const timestamp = new Date(friend.lastMessage.createdAt);
+      date.textContent = timestamp.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      date.title = timestamp.toLocaleString(); meta.append(date); label.push(date.textContent);
+    }
+    if (friend.unreadCount > 0) {
+      const count = document.createElement('span'); count.className = 'friend-unread'; count.textContent = String(friend.unreadCount);
+      count.setAttribute('aria-label', `${friend.unreadCount} unread messages`); meta.append(count); label.push(`${friend.unreadCount} unread messages`);
+    }
+    row.setAttribute('aria-label', label.join(', '));
+    row.append(meta); return row;
+  }
   function renderLists() {
     const signature = JSON.stringify([friends.entries, friends.incoming, friends.outgoing, friends.selectedId, busy()]);
     if (signature === friends.listSignature) return;
     friends.listSignature = signature;
+    const focused = document.activeElement?.closest('[data-friend-action]'), renderedControls = [];
     el('friendsEmpty').hidden = friends.entries.length > 0;
-    el('friendsList').replaceChildren(...friends.entries.map(friend => {
-      const row = document.createElement('article'); row.className = 'friends-list-row';
-      row.setAttribute('aria-current', String(friend.id === friends.selectedId));
-      const actions = document.createElement('div'); actions.className = 'friend-row-actions';
-      const open = button('Message', 'open', friend.id, state.accountSubmitting);
-      open.setAttribute('aria-pressed', String(friend.id === friends.selectedId)); actions.append(open);
-      row.append(playerLink(friend.player), actions); return row;
-    }));
+    const entries = sortFriends(friends.entries), conversations = entries.filter(friend => friend.lastMessage);
+    el('friendConversationsEmpty').hidden = conversations.length > 0;
+    for (const [id, list, conversation] of [['friendConversations', conversations, true], ['friendsList', entries, false]]) {
+      const rows = list.map(friend => friendRow(friend, conversation)); renderedControls.push(...rows); el(id).replaceChildren(...rows);
+    }
     for (const [id, emptyId, entries, incoming] of [
       ['friendIncoming', 'friendRequestsEmpty', friends.incoming, true],
       ['friendOutgoing', 'friendOutgoingEmpty', friends.outgoing, false]
@@ -54,10 +90,15 @@
       el(id).replaceChildren(...entries.map(request => {
         const row = document.createElement('article'); row.className = 'friend-request-row';
         const actions = document.createElement('div'); actions.className = 'friend-row-actions';
-        if (incoming) actions.append(button('Accept', 'accept', request.id), button('Deny', 'deny', request.id));
-        else actions.append(button('Cancel', 'cancel', request.id));
+        const controls = incoming ? [button('Accept', 'accept', request.id), button('Deny', 'deny', request.id)] : [button('Cancel', 'cancel', request.id)];
+        renderedControls.push(...controls); actions.append(...controls);
         row.append(playerLink(incoming ? request.sender : request.recipient), actions); return row;
       }));
+    }
+    if (focused) {
+      const next = renderedControls.find(control => control.dataset.friendAction === focused.dataset.friendAction && control.dataset.friendId === focused.dataset.friendId &&
+        (control.className.includes('friend-conversation-row') === focused.className.includes('friend-conversation-row')));
+      if (next && !next.disabled) next.focus({ preventScroll: true });
     }
   }
   function renderChat() {
@@ -69,7 +110,7 @@
     if (friend.player.banned) message(el('friendChatMessage'), 'Player unavailable.');
     else if (el('friendChatMessage').textContent === 'Player unavailable.') message(el('friendChatMessage'), '');
     const ownPending = friends.outbox.filter(entry => entry.friendId === friend.id);
-    const entries = [...friends.messages, ...ownPending].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    const entries = [...friends.messages, ...ownPending];
     const signature = JSON.stringify([friend, entries, !entries.length && !!friends.chatLoadRequest, state.accountSubmitting]);
     if (signature === friends.chatSignature) return;
     const container = el('friendChatMessages');
@@ -109,8 +150,9 @@
     renderLists(); renderChat();
   }
   function clearConversation() {
+    if (friends.selectedId) friends.drafts[friends.selectedId] = el('friendChatInput').value;
     friends.selectedId = null; friends.messages = []; friends.chatRevision++;
-    friends.chatLoadRequest = null; friends.chatSignature = null;
+    friends.chatLoadRequest = null; friends.chatSignature = null; friends.readRequest = null;
     el('friendChatInput').value = ''; message(el('friendChatMessage'), '');
   }
   function syncUser() {
@@ -121,7 +163,8 @@
         identity, revision: friends.revision + 1, entries: [], incoming: [], outgoing: [], loaded: false,
         listRevision: friends.listRevision + 1, loadRequest: null, action: null, requestDraft: null,
         chatRevision: friends.chatRevision + 1, chatLoadRequest: null, messages: [], outbox: [], sending: null,
-        selectedId: null, listSignature: null, chatSignature: null
+        selectedId: null, listSignature: null, chatSignature: null, readRequest: null, readSnapshots: {}, drafts: {},
+        requestedId: requestedConversation()
       });
       el('friendUsername').value = ''; el('friendChatInput').value = '';
       for (const id of ['friendsMessage', 'friendRequestMessage', 'friendChatMessage']) message(el(id), '');
@@ -138,9 +181,12 @@
     try {
       const data = await api('friends');
       if (!live()) return;
-      friends.entries = data.friends; friends.incoming = data.incoming; friends.outgoing = data.outgoing; friends.loaded = true;
+      friends.entries = sortFriends(data.friends); friends.incoming = data.incoming; friends.outgoing = data.outgoing; friends.loaded = true;
       if (friends.selectedId && !selectedFriend()) clearConversation();
       message(el('friendsMessage'), '');
+      if (friends.requestedId) {
+        const id = friends.requestedId; friends.requestedId = null; openConversation(id);
+      }
     } catch (error) {
       if (!live()) return;
       if (error.status === 401) { setUser(null); return; }
@@ -203,14 +249,38 @@
   }
   function openConversation(id) {
     if (!active() || state.accountSubmitting || !friends.entries.some(friend => friend.id === id)) return;
-    if (friends.selectedId !== id) { clearConversation(); friends.selectedId = id; }
+    if (friends.selectedId !== id) { clearConversation(); friends.selectedId = id; el('friendChatInput').value = friends.drafts[id] || ''; }
     render(); void loadMessages();
     el('friendChatInput').focus({ preventScroll: true });
   }
   function reconcileMessages(messages) {
-    friends.messages = messages.slice(-100);
+    friends.messages = messages.slice().sort(messageOrder).slice(-100);
     const receipts = new Set(messages.filter(item => item.sender.accountId === friends.identity).map(item => item.clientMessageId).filter(Boolean));
     friends.outbox = friends.outbox.filter(entry => entry.friendId !== friends.selectedId || !receipts.has(entry.clientMessageId));
+  }
+  async function markRead() {
+    if (!active() || document.hidden || !selectedFriend() || friends.readRequest) return;
+    const last = friends.messages.at(-1), id = friends.selectedId;
+    if (!last || friends.readSnapshots[id] === last.id) return;
+    const identity = friends.identity, revision = friends.revision, identityRevision = userIdentityRevision;
+    const navigation = routeRevision, chatRevision = friends.chatRevision, request = {};
+    friends.readRequest = request;
+    const live = () => current(identity, revision, identityRevision) && navigation === routeRevision && active() &&
+      id === friends.selectedId && chatRevision === friends.chatRevision && friends.readRequest === request;
+    let acknowledged = false;
+    try {
+      const data = await api(`friends/${encodeURIComponent(id)}/read`, { method: 'POST', body: JSON.stringify({ messageId: last.id }) });
+      if (!live() || data.friend?.id !== id) return;
+      friends.readSnapshots[id] = last.id; acknowledged = true;
+      friends.listRevision++; friends.loadRequest = null;
+      friends.entries = sortFriends(friends.entries.map(friend => friend.id === id ? data.friend : friend));
+      renderLists(); window.PepperNotifications?.load();
+    } catch (error) {
+      if (live() && error.status === 401) setUser(null);
+    } finally {
+      const retry = acknowledged && live() && friends.messages.at(-1)?.id !== last.id;
+      if (friends.readRequest === request) { friends.readRequest = null; if (retry) void markRead(); }
+    }
   }
   async function loadMessages() {
     if (!active() || !selectedFriend() || selectedFriend().player.banned || friends.chatLoadRequest) return;
@@ -221,7 +291,7 @@
     try {
       const data = await api(`friends/${encodeURIComponent(id)}/messages`);
       if (!live() || data.friend?.id !== id) return;
-      reconcileMessages(data.messages); message(el('friendChatMessage'), '');
+      reconcileMessages(data.messages); message(el('friendChatMessage'), ''); renderChat(); void markRead();
     } catch (error) {
       if (!live()) return;
       if (error.status === 401) { setUser(null); return; }
@@ -249,6 +319,11 @@
       const data = await api(`friends/${encodeURIComponent(entry.friendId)}/messages`, { method: 'POST', body: JSON.stringify({ text: entry.text, clientMessageId: entry.clientMessageId }) });
       if (!current(identity, revision, identityRevision)) return;
       friends.outbox = friends.outbox.filter(item => item !== entry);
+      friends.listRevision++; friends.loadRequest = null;
+      friends.entries = sortFriends(friends.entries.map(friend => friend.id === entry.friendId ? {
+        ...friend, lastMessage: !friend.lastMessage || messageOrder(friend.lastMessage, data.message) <= 0 ? data.message : friend.lastMessage
+      } : friend));
+      renderLists();
       if (friends.selectedId === entry.friendId) {
         friends.chatRevision++; friends.chatLoadRequest = null;
         reconcileMessages([...friends.messages.filter(item => item.id !== data.message.id && !(item.sender.accountId === identity && item.clientMessageId === data.message.clientMessageId)), data.message]);
@@ -262,7 +337,7 @@
         entry.retryAt = Date.now() + Math.max(100, Number.isFinite(delay) && delay > 0 ? delay : 3000) + 100;
       } else { entry.status = 'failed'; entry.error = error.message || 'Not sent.'; }
     } finally {
-      if (current(identity, revision, identityRevision) && friends.sending === entry) { friends.sending = null; renderChat(); queueNext(); }
+      if (current(identity, revision, identityRevision) && friends.sending === entry) { friends.sending = null; renderChat(); void markRead(); queueNext(); }
     }
   }
   function sendMessage(event) {
@@ -272,7 +347,7 @@
     if (!text || text.length > 1000) { message(el('friendChatMessage'), 'Use 1–1,000 characters.'); return; }
     const clientMessageId = crypto.randomUUID();
     friends.outbox.push({ id: `pending:${clientMessageId}`, clientMessageId, friendId: friends.selectedId, sender: { ...state.user }, text, createdAt: new Date().toISOString(), status: 'pending', retryAt: 0 });
-    el('friendChatInput').value = ''; message(el('friendChatMessage'), ''); renderChat(); void sendNext();
+    el('friendChatInput').value = ''; friends.drafts[friends.selectedId] = ''; message(el('friendChatMessage'), ''); renderChat(); void sendNext();
   }
   function act(action, id) {
     if (!active() || state.accountSubmitting) return;
@@ -289,10 +364,14 @@
     if (friends.navigation !== routeRevision) {
       friends.navigation = routeRevision; picker?.reset();
       friends.loadRequest = null; friends.chatLoadRequest = null; friends.chatRevision++;
+      friends.readRequest = null; friends.requestedId = requestedConversation();
       window.clearTimeout(retryTimer); retryTimer = undefined;
     }
     render();
     if (active()) { void load(); void loadMessages(); void sendNext(); }
+  }
+  function requestedConversation() {
+    return pageKind === 'friends' ? new URLSearchParams(window.location.search).get('conversation') : null;
   }
   el('friendRequestForm').addEventListener('submit', event => void requestFriend(event));
   el('friendUsername').addEventListener('input', () => { friends.requestDraft = null; message(el('friendRequestMessage'), ''); });
@@ -302,9 +381,9 @@
   el('friendsPage').addEventListener('click', event => {
     const control = event.target.closest('[data-friend-action]'); if (control && !control.disabled) act(control.dataset.friendAction, control.dataset.friendId);
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && active()) { void load(); void loadMessages(); void sendNext(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && active()) { void load(); void loadMessages(); void markRead(); void sendNext(); } });
   setInterval(() => { if (!document.hidden && active()) void load(); }, 5000);
   setInterval(() => { if (!document.hidden && active()) void loadMessages(); }, 3000);
-  window.PepperFriends = { syncUser, onRoute, load };
+  window.PepperFriends = { syncUser, onRoute, load, openConversation };
   syncUser(); onRoute();
 })();

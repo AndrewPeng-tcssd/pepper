@@ -94,6 +94,10 @@ For server-side rewards, `cards.js` exports `upsertCardDefinition(store, { id, n
 
 At `/friends`, search for a player and send a friend request. The recipient chooses **Accept** or **Deny**. Accepted players appear in each other's friend lists; denied requests do not create a friendship. Open a friend to read and send private direct messages. Conversations are available only to the two accepted friends and show their latest 100 messages. Requests, friendships, and messages persist through restarts and follow current usernames and pictures. Message retries keep the same ID, and rate-limited messages retry automatically. Deleting an account removes its friendships and direct messages.
 
+Click anywhere on a friend row to open the conversation. **Messages** lists friends with conversation history, including the last message, date, and unread count. Unread conversations come first, followed by the newest messages. Opening a visible conversation marks only the displayed message snapshot read.
+
+The notification bell beside **Account** shows incoming direct messages and a reminder when the next hourly claim is ready. Its badge counts unchecked notifications, independently of conversation unread counts. Opening the bell checks the notifications already displayed; new arrivals stay unchecked, including while viewing Messages. Checked state persists across refreshes, and each hourly claim cycle creates one reminder. Clicking a notification opens that conversation or the Overview claim.
+
 ## Cloudflare verification
 
 The hourly token claim uses Cloudflare Turnstile. On `localhost` in a non-production run, the site uses [Cloudflare's test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) so you can test the claim flow without creating a Cloudflare account. For any deployed site, create a Turnstile widget for that hostname and set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. Keep the secret key private. The server verifies each token with Cloudflare before adding tokens. Test keys must not be used for a deployed site.
@@ -109,7 +113,8 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Persistent MongoDB account balances.
 - Private trading sessions with each player's own card and token selections, two confirmations, private chat, actual owned card inventories, cancellation, decline, saved history, and atomic transfers.
 - Player-versus-player Tic-Tac-Toe and Rock Paper Scissors, equal token stakes, invitation acceptance, private choices, saved results, refunds, and atomic payouts.
-- Friend requests, alphabetical friend lists, and private direct messages between accepted friends.
+- Friend requests, unread-first friend lists, message previews, and private direct messages between accepted friends.
+- A notification bell for incoming messages and hourly claim reminders, with persistent checked state.
 - Public changelog entries saved in MongoDB, with admin publishing and deletion, plus independent site version updates without release notes.
 - Public announcements with administrator/moderator publishing and author-aware moderator deletion, plus administrator-only changelog management.
 - Persistent admin/mod views in Settings, moderator assignments, bans, chat deletion, role badges, and a dedicated banned-account screen.

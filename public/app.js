@@ -277,6 +277,7 @@ function setUser(user) {
   window.PepperGames?.syncUser();
   window.PepperModeration?.syncUser();
   window.PepperFriends?.syncUser();
+  window.PepperNotifications?.syncUser();
   window.PepperNewsComments?.syncUser();
   window.PepperAnnouncementPopup?.syncUser();
   if (state.chatFollowLatest) scrollChatToLatest();
@@ -460,11 +461,16 @@ setChatOpen(false);
 ['accountButton', 'claimJoin', 'chatJoin', 'settingsJoin', 'tradingJoin'].forEach(id => $(id).addEventListener('click', openAccount));
 document.addEventListener('click', (event) => {
   if (!$('accountMenu').contains(event.target)) $('accountMenu').open = false;
+  if (!$('notificationMenu').contains(event.target)) $('notificationMenu').open = false;
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && $('accountMenu').open) {
     $('accountMenu').open = false;
     $('accountMenu').querySelector('summary').focus();
+  }
+  if (event.key === 'Escape' && $('notificationMenu').open) {
+    $('notificationMenu').open = false;
+    $('notificationBell').focus();
   }
 });
 $('closeDialog').addEventListener('click', () => $('authDialog').close());
@@ -552,6 +558,7 @@ function renderRoute() {
   }
   window.PepperGames?.onRoute();
   window.PepperFriends?.onRoute();
+  window.PepperNotifications?.onRoute();
   window.PepperNewsComments?.onRoute();
   window.PepperAnnouncementPopup?.onRoute();
   syncTradeAutosaveRoute();
@@ -576,6 +583,7 @@ function navigateTo(href, { replace = false, focus = true, scroll = true } = {})
     renderRoute();
   }
   $('accountMenu').open = false;
+  $('notificationMenu').open = false;
   if (scroll) {
     if (url.hash === '#cards' && pageKind === 'home') $('cards').scrollIntoView({ behavior: 'instant' });
     else window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
