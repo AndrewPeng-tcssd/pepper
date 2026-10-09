@@ -1,7 +1,8 @@
 (() => {
   'use strict';
   const el = id => document.getElementById(id);
-  const moderation = { identity: null, role: 'player', open: false, players: [], busy: false, revision: 0, deleteId: null, profileAccountId: null };
+  const moderation = { identity: null, role: 'player', open: false, players: [], busy: false, revision: 0, searchRevision: 0, searching: false, deleteId: null, profileAccountId: null };
+  let playerPicker;
   const privileged = () => ['admin', 'mod'].includes(accountRole(state.user)) && !state.user?.banned;
   const storageKey = id => `pepper-moderation-view:${id}`;
   function enabled() { return privileged() && moderation.identity === state.user?.accountId && moderation.open && !accountBanned; }
@@ -36,6 +37,20 @@
     }
   }
   function refreshEditors() { renderChangelogEditor(); renderAnnouncementEditor(); refreshChatControls(); }
+  function closePlayerPicker() {
+    playerPicker?.reset();
+    moderation.searchRevision++;
+    if (moderation.searching) { moderation.searching = false; moderation.busy = false; }
+  }
+  function clearPlayerSelection() {
+    closePlayerPicker(); moderation.players = [];
+    message(el('moderationMessage'), ''); render();
+  }
+  function selectPlayer(player) {
+    if (!enabled() || moderation.busy || state.accountSubmitting || !player?.accountId || !player.username) return;
+    closePlayerPicker(); el('moderationUsername').value = player.username;
+    moderation.players = [player]; message(el('moderationMessage'), ''); render();
+  }
   function actionButton(label, action, player) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = label;
     button.dataset.moderationAction = action; button.dataset.accountId = player.accountId; button.disabled = moderation.busy || state.accountSubmitting; return button;
@@ -84,10 +99,12 @@
     const identity = state.user?.accountId || null, role = accountRole(state.user);
     const changed = moderation.identity !== identity || moderation.role !== role;
     if (changed) {
+      closePlayerPicker();
       Object.assign(moderation, { identity, role, open: !!identity && storedOpen(identity), players: [], busy: false, deleteId: null, revision: moderation.revision + 1 });
       el('moderationSearch').reset(); message(el('moderationMessage'), ''); message(el('profileModerationMessage'), '');
     }
     if (!privileged()) moderation.open = false;
+    if (!enabled()) { closePlayerPicker(); moderation.players = []; }
     if (accountBanned) showBanned();
     else { document.body.classList.remove('banned-mode'); el('bannedScreen').hidden = true; }
     render(); refreshEditors();
@@ -100,15 +117,16 @@
   }
   async function findPlayers(event) {
     event?.preventDefault(); if (!enabled() || moderation.busy) return;
-    const identity = moderation.identity, revision = ++moderation.revision;
-    moderation.busy = true; message(el('moderationMessage'), 'Finding players…'); render();
+    playerPicker?.reset();
+    const identity = moderation.identity, revision = moderation.revision, searchRevision = ++moderation.searchRevision;
+    moderation.busy = true; moderation.searching = true; message(el('moderationMessage'), 'Finding players…'); render();
     try {
       const data = await api(`moderation/players?username=${encodeURIComponent(el('moderationUsername').value.trim())}`);
-      if (moderation.identity !== identity || moderation.revision !== revision || !enabled()) return;
+      if (moderation.identity !== identity || moderation.revision !== revision || moderation.searchRevision !== searchRevision || !enabled()) return;
       moderation.players = data.players; message(el('moderationMessage'), data.players.length ? '' : 'No players found.');
     } catch (error) {
-      if (moderation.identity === identity && moderation.revision === revision) message(el('moderationMessage'), error.message);
-    } finally { if (moderation.identity === identity && moderation.revision === revision) { moderation.busy = false; render(); } }
+      if (moderation.identity === identity && moderation.revision === revision && moderation.searchRevision === searchRevision && enabled()) message(el('moderationMessage'), error.message);
+    } finally { if (moderation.identity === identity && moderation.revision === revision && moderation.searchRevision === searchRevision) { moderation.busy = false; moderation.searching = false; render(); } }
   }
   function refreshPlayer(player) {
     const update = person => person?.accountId === player.accountId ? { ...person, role: player.role, banned: player.banned } : person;
@@ -157,11 +175,25 @@
   el('moderationViewToggle').addEventListener('click', () => {
     if (!privileged() || moderation.busy || state.accountSubmitting) return;
     moderation.open = !moderation.open; moderation.deleteId = null;
+    closePlayerPicker(); if (!enabled()) moderation.players = [];
     try { localStorage.setItem(storageKey(moderation.identity), moderation.open ? 'open' : 'closed'); } catch {}
     render(); refreshEditors();
     if (enabled()) void findPlayers();
   });
   el('moderationSearch').addEventListener('submit', event => void findPlayers(event));
+  el('moderationUsername').addEventListener('input', clearPlayerSelection);
+  playerPicker = window.PepperPlayerPicker?.attach({
+    input: el('moderationUsername'),
+    isEnabled: () => enabled() && !moderation.busy && !state.accountSubmitting,
+    renderAvatar: player => profileAvatar(player),
+    search: async prefix => {
+      if (!enabled() || moderation.busy || state.accountSubmitting) return [];
+      const identity = moderation.identity, role = moderation.role, revision = moderation.searchRevision;
+      const data = await api(`moderation/players?username=${encodeURIComponent(prefix)}`);
+      return enabled() && moderation.identity === identity && moderation.role === role && moderation.searchRevision === revision ? data.players : [];
+    },
+    onSelect: selectPlayer
+  });
   el('moderationPlayers').addEventListener('click', event => {
     const button = event.target.closest('[data-moderation-action]'); if (!button || button.disabled) return;
     const player = moderation.players.find(item => item.accountId === button.dataset.accountId);
@@ -185,10 +217,11 @@
   });
   window.addEventListener('storage', event => {
     if (moderation.identity && event.key === storageKey(moderation.identity)) {
-      moderation.open = event.newValue === 'open'; render(); refreshEditors();
+      moderation.open = event.newValue === 'open'; closePlayerPicker(); if (!enabled()) moderation.players = [];
+      render(); refreshEditors();
       if (enabled()) void findPlayers();
     }
   });
-  window.PepperModeration = { enabled, syncUser, showBanned, chatDeleteButton, renderProfileControls };
+  window.PepperModeration = { enabled, syncUser, showBanned, chatDeleteButton, renderProfileControls, closePlayerPicker };
   syncUser();
 })();

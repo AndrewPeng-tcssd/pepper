@@ -9,6 +9,7 @@ const ACTIVE = ['pending', 'playing'];
 const REQUEST_MS = 10 * 60 * 1000;
 const TURN_MS = 2 * 60 * 1000;
 const MAX_STAKE = Math.floor(Number.MAX_SAFE_INTEGER / 4);
+const validStake = stake => Number.isSafeInteger(stake) && stake >= 1 && stake <= MAX_STAKE;
 const sameId = (a, b) => a?.toString() === b?.toString();
 const participants = userId => ({ $or: [{ senderUserId: userId }, { recipientUserId: userId }] });
 const lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
@@ -189,7 +190,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
   app.post('/api/games', requireUser, rateLimit(60, 60 * 60 * 1000), route(async (req, res) => {
     const { game, stake, recipientAccountId, clientRequestId } = req.body || {};
     if (!GAME_TYPES.includes(game)) throw new GameError(400, 'Choose a game.');
-    if (!Number.isSafeInteger(stake) || stake < 0 || stake > MAX_STAKE) throw new GameError(400, 'Enter a valid token bet.');
+    if (!validStake(stake)) throw new GameError(400, 'Bet at least 1 token.');
     if (typeof clientRequestId !== 'string' || !UUID.test(clientRequestId)) throw new GameError(400, 'Invalid request ID.');
     if (typeof recipientAccountId !== 'string' || !ACCOUNT_ID.test(recipientAccountId)) throw new GameError(400, 'Choose a player.');
     const requestId = clientRequestId.toLowerCase();
@@ -239,12 +240,16 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
   app.post('/api/games/:id/accept', requireUser, rateLimit(60, 60 * 1000), route(async (req, res) => {
     const id = await prepare(req);
     const match = await atomic(client, async session => {
-      await lockActor(req.user._id, session);
       const saved = await privateMatch(id, req.user._id, session);
       if (!sameId(saved.recipientUserId, req.user._id)) throw new GameError(403, 'Only the invited player accepts.');
-      if (saved.status === 'playing' || saved.status === 'completed') return saved;
+      if (saved.status === 'playing' || saved.status === 'completed') {
+        await lockActor(req.user._id, session);
+        return saved;
+      }
       if (saved.status !== 'pending') throw new GameError(409, 'Request closed.');
+      if (!validStake(saved.stake)) throw new GameError(409, 'Bet at least 1 token.');
       stillOpen(saved);
+      await lockActor(req.user._id, session);
       for (const userId of [saved.senderUserId, saved.recipientUserId].sort((a, b) => a.toString().localeCompare(b.toString()))) {
         const user = await users.findOne({ _id: userId }, { session });
         if (user?.banned) throw new GameError(409, 'Player unavailable.');

@@ -102,6 +102,13 @@ input { width: 100%; min-height: 43px; padding: 10px 12px; border: 1px solid var
 input::placeholder { color: var(--placeholder); }
 input:focus { border-color: var(--accent); }
 
+.player-picker { position: relative; min-width: 0; }
+.player-picker-list { position: absolute; z-index: 40; top: calc(100% + 5px); right: 0; left: 0; max-height: 280px; margin: 0; padding: 5px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--button-line); border-radius: 9px; background: var(--surface); box-shadow: 0 8px 24px var(--menu-shadow); list-style: none; }
+.player-picker-option { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 7px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--ink); font-size: 14px; text-align: left; }
+.player-picker-option:hover, .player-picker-option[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
+.player-picker-name { min-width: 0; overflow-wrap: anywhere; }
+.player-picker-status { padding: 12px 9px; color: var(--muted); font-size: 13px; }
+
 .site-header { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 22px; min-height: 76px; padding: 0 36px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .brand { display: inline-flex; align-items: center; width: fit-content; color: var(--ink); font-size: 21px; font-weight: 750; letter-spacing: -.045em; text-decoration: none; white-space: nowrap; }
 .main-nav { display: flex; align-items: center; gap: 28px; }
@@ -268,6 +275,7 @@ input:focus { border-color: var(--accent); }
 .trading-assets-count { margin-top: 8px; font-size: 12px; }
 .trading-asset-cards { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
 .trading-asset-cards li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
+.trading-asset-cards .trading-asset-empty { align-items: center; justify-content: center; min-height: 100px; border-style: dashed; color: var(--muted); font-size: 14px; }
 .trading-assets-tokens { overflow-wrap: anywhere; }
 .trading-session { margin-top: 28px; }
 .trading-session-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 24px 0 14px; }

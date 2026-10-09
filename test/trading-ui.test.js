@@ -74,6 +74,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   const opened = [];
   const navigated = [];
   const chatChanges = [];
+  const playerPickers = [];
   let context;
   const element = (id, attributes = '') => {
     const classes = new Set();
@@ -101,7 +102,10 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   for (const match of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*\bid="([^"]+)"[^>]*)>/g)) elements.set(match[2], element(match[2], match[1]));
   const document = { getElementById: id => elements.get(id) || null, createElement: tag => element(tag), body: element('body'), activeElement: null, querySelectorAll: () => [], querySelector: () => null };
   const boundary = {
-    document, crypto, console, URLSearchParams, window: {},
+    document, crypto, console, URLSearchParams, window: { PepperPlayerPicker: {
+      attach(settings) { const picker = { closed: 0, close() { this.closed++; }, reset() { this.closed++; } }; playerPickers.push({ settings, picker }); return picker; },
+      closeAll() { playerPickers.forEach(({ picker }) => picker.reset()); }
+    } },
     location: { pathname: page === 'trading' ? '/trading' : '/', search: '' },
     api: async (route, options = {}) => {
       const call = { route, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : undefined };
@@ -142,9 +146,9 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     'newestTrade', 'rememberTrade', 'syncTradingUser', 'tradeStatusLabel', 'reconcileTradeAction',
     'renderTradeNotification', 'acceptTradeNotification', 'declineTradeNotification', 'renderTradingState', 'loadTrades',
     'invalidateTradeReview', 'findTradingRecipient', 'finishSendingTrade', 'sendTradingOffer', 'actOnTrade',
-    'prefillTradingRecipient', 'renderRoute'
+    'prefillTradingRecipient', 'renderRoute', 'setupTradingPlayerPicker'
   ];
-  if (sessionRendering) functions.push('renderTradeSession', 'renderTradeAssets', 'ownTradeSide', 'partnerTradeSide', 'acceptedTradeRequest', 'tradeButton');
+  if (sessionRendering) functions.push('renderTradeSession', 'renderTradeAssets', 'ownTradeSide', 'partnerTradeSide', 'acceptedTradeRequest', 'tradeButton', 'tradeCardSnapshot', 'newSessionDraft', 'updateTradeSession');
   const prefix = source.slice(0, source.indexOf('\nfunction newTradeInventory'));
   vm.runInContext(prefix + '\n' + functions.map(productionFunction).join('\n') + '\n' + [
     productionListener('tradingRecipient', 'input'), productionListener('tradingForm', 'submit'),
@@ -155,13 +159,46 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   shared.trading.identity = user?.accountId || null;
   context.initialPage = page;
   vm.runInContext('pageKind = initialPage;', context);
+  context.setupTradingPlayerPicker();
   return {
-    ...shared, calls, opened, navigated, chatChanges, elements,
+    ...shared, calls, opened, navigated, chatChanges, elements, playerPickers,
     call: (name, ...args) => context[name](...args),
     evaluate: code => vm.runInContext(code, context),
     submit: () => elements.get('tradingForm').dispatch('submit')
   };
 }
+
+test('trading suggestions select a username without sending a request or retaining old recipient terms', async () => {
+  const partner = account('example');
+  const ui = harness({ network: call => call.route.startsWith('players?') ? { players: [partner] } : undefined });
+  const { settings } = ui.playerPickers[0];
+  assert.equal(settings.input, ui.elements.get('tradingRecipient'));
+  assert.equal(settings.isEnabled(), true);
+  assert.deepEqual(plain(await settings.search('ex')), [partner]);
+  assert.equal(ui.calls.at(-1).route, 'players?username=ex');
+  ui.trading.review = { recipient: account('previous') }; ui.trading.recipient = account('previous');
+  settings.input.value = partner.username; settings.onSelect(partner);
+  assert.equal(settings.input.value, 'example');
+  assert.equal(ui.trading.review, null); assert.equal(ui.trading.recipient, null);
+  assert.equal(ui.calls.filter(call => call.method !== 'GET').length, 0);
+});
+
+test('trading ignores suggestion replies after navigation or account changes and closes disabled pickers', async () => {
+  const response = deferred();
+  const ui = harness({ network: call => call.route.startsWith('players?') ? response.promise : undefined });
+  const { settings, picker } = ui.playerPickers[0];
+  const pending = settings.search('ex');
+  ui.evaluate("pageKind = 'games'; routeRevision++;");
+  response.resolve({ players: [account('example')] });
+  assert.deepEqual(plain(await pending), []);
+  assert.equal(settings.isEnabled(), false);
+  ui.evaluate("pageKind = 'trading';");
+  ui.trading.submitting = true; ui.call('renderTradingState');
+  assert.equal(settings.isEnabled(), false); assert.ok(picker.closed > 0);
+  ui.trading.submitting = false;
+  ui.call('setUser', null);
+  assert.equal(settings.isEnabled(), false);
+});
 
 test('one form submit resolves a username and sends only one empty invitation', async () => {
   const local = account('local_player');
@@ -654,6 +691,74 @@ test('each participant sees their own assets first and the other participant’s
   }
 });
 
+function assertEmptyCardArea(ui, id) {
+  const panel = ui.elements.get(id);
+  const list = panel.children[2];
+  assert.equal(list?.className, 'trading-asset-cards', `${id} retains a cards area`);
+  assert.equal(list['aria-label'], 'Cards');
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].className, 'trading-asset-empty');
+  assert.equal(list.children[0].textContent, 'None');
+}
+
+test('both players see a None cards area in an empty joined trade before confirming', () => {
+  const sender = account('sender');
+  const recipient = account('recipient');
+  const trade = request(sender, recipient, { status: 'negotiating', requestAccepted: true, version: 2 });
+  for (const user of [sender, recipient]) {
+    const ui = harness({ user, sessionRendering: true });
+    Object.assign(ui.trading, { session: trade, sessionId: trade.id, sessionDraft: { tokens: 0, cards: [], baseVersion: trade.version, dirty: false } });
+    ui.call('renderTradeSession');
+    for (const id of ['tradingOwnReadonly', 'tradingPartnerAssets']) {
+      assert.deepEqual(displayedAssets(ui, id), { tokens: '0 tokens', count: '0 cards', cardIds: [] });
+      assertEmptyCardArea(ui, id);
+    }
+    assert.equal(ui.elements.get('tradingPartnerOffer').hidden, false);
+    assert.equal(ui.elements.get('tradingPartnerConfirmed').textContent, 'Not confirmed');
+  }
+});
+
+test('partner card additions and removals update the visible area while preserving either player’s unsaved offer', () => {
+  const sender = account('sender');
+  const recipient = account('recipient');
+  const trade = request(sender, recipient, { status: 'negotiating', requestAccepted: true, version: 2 });
+  const partnerCard = { id: 'partner-copy', name: 'Partner card' };
+  for (const user of [sender, recipient]) {
+    const ui = harness({ user, sessionRendering: true });
+    const draft = { tokens: '17', cards: [{ id: 'unsaved-copy', name: 'Unsaved card' }], baseVersion: trade.version, dirty: true };
+    Object.assign(ui.trading, { session: trade, sessionId: trade.id, sessionDraft: draft });
+    ui.call('renderTradeSession');
+    assertEmptyCardArea(ui, 'tradingPartnerAssets');
+    const partnerCardsField = user === sender ? 'requestedCards' : 'offeredCards';
+    const partnerTokensField = user === sender ? 'requestedTokens' : 'offeredTokens';
+    const added = { ...trade, version: 3, [partnerCardsField]: [partnerCard], [partnerTokensField]: 9 };
+    ui.call('updateTradeSession', added);
+    assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '9 tokens', count: '1 card', cardIds: [partnerCard.id] });
+    assert.equal(ui.elements.get('tradingPartnerAssets').children[2].children[0].className === 'trading-asset-empty', false);
+    assert.equal(ui.trading.sessionDraft, draft);
+    assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '17 tokens', count: '1 card', cardIds: ['unsaved-copy'] });
+    assert.equal(ui.elements.get('tradingPartnerConfirmed').textContent, 'Not confirmed');
+    ui.call('updateTradeSession', { ...added, version: 4, [partnerCardsField]: [] });
+    assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '9 tokens', count: '0 cards', cardIds: [] });
+    assertEmptyCardArea(ui, 'tradingPartnerAssets');
+    assert.equal(ui.trading.sessionDraft, draft);
+    assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '17 tokens', count: '1 card', cardIds: ['unsaved-copy'] });
+  }
+});
+
+test('an older trade poll cannot replace the partner’s latest cards with an empty area', async () => {
+  const local = account('local_player');
+  const previous = request(local, account('partner'), { status: 'negotiating', requestAccepted: true, version: 2 });
+  const current = { ...previous, version: 3, requestedCards: [{ id: 'latest-copy', name: 'Latest card' }] };
+  const ui = harness({ user: local, sessionRendering: true, network: call => call.route === 'trades' ? { trades: [previous], user: local } : undefined });
+  Object.assign(ui.trading, { trades: [current], session: current, sessionId: current.id, sessionDraft: { tokens: 0, cards: [], baseVersion: current.version, dirty: false } });
+  ui.call('renderTradeSession');
+  await ui.call('loadTrades');
+  assert.equal(ui.trading.session.version, current.version);
+  assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '0 tokens', count: '1 card', cardIds: ['latest-copy'] });
+  assert.equal(ui.elements.get('tradingPartnerOffer').hidden, false);
+});
+
 test('an unsaved own offer previews new assets without inheriting a previous confirmation or changing the partner offer', () => {
   const sender = account('sender');
   const trade = request(sender, account('recipient'), {
@@ -682,7 +787,7 @@ test('pending requests hide and clear both asset panels and the editor after a p
     const ui = harness({ user, sessionRendering: true });
     Object.assign(ui.trading, { session: previous, sessionId: previous.id, sessionDraft: { tokens: 12, cards: [], baseVersion: previous.version, dirty: false } });
     ui.call('renderTradeSession');
-    assert.equal(ui.elements.get('tradingOwnReadonly').children.length, 2);
+    assert.equal(ui.elements.get('tradingOwnReadonly').children.length, 3);
     const pending = request(sender, recipient);
     Object.assign(ui.trading, { session: pending, sessionId: pending.id, sessionDraft: { tokens: 0, cards: [], baseVersion: pending.version, dirty: false } });
     ui.call('renderTradeSession');

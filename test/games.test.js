@@ -73,6 +73,76 @@ test('requests validate inputs, remain private, and save no stake before both pl
   assert.equal((await api('/api/games', undefined, b.cookie)).data.games.length, 1);
 });
 
+test('both games reject zero and negative bets without creating requests or changing wallets', async t => {
+  const { api, store } = await fixture(t);
+  const a = await player(api, store, 'positive_bet_a'); const b = await player(api, store, 'positive_bet_b');
+  const before = await store.users.find({ _id: { $in: [a.id, b.id] } }).sort({ _id: 1 }).toArray();
+  for (const game of ['tic-tac-toe', 'rock-paper-scissors']) {
+    for (const stake of [0, -0, -1, -10, 0.5]) {
+      const response = await api('/api/games', terms(b, { game, stake }), a.cookie);
+      assert.equal(response.status, 400, `${game}, ${stake}`);
+    }
+  }
+  assert.equal(await store.games.countDocuments(), 0);
+  assert.deepEqual(await store.users.find({ _id: { $in: [a.id, b.id] } }).sort({ _id: 1 }).toArray(), before);
+});
+
+test('both games accept a one-token bet and reserve exactly one token per player', async t => {
+  const { api, store } = await fixture(t);
+  const a = await player(api, store, 'minimum_bet_a'); const b = await player(api, store, 'minimum_bet_b');
+  for (const gameType of ['tic-tac-toe', 'rock-paper-scissors']) {
+    const before = await balances(store, a, b);
+    const invitation = await request(api, a, b, { game: gameType, stake: 1 });
+    assert.deepEqual(await balances(store, a, b), before);
+    const game = await accept(api, b, invitation);
+    assert.equal(game.status, 'playing'); assert.equal(game.stake, 1);
+    assert.deepEqual(await balances(store, a, b), before.map(balance => balance - 1));
+    for (const actor of [a, b]) assert.equal((await store.users.findOne({ _id: actor.id })).gamePayoutReserve, 2);
+    assert.equal((await api(`/api/games/${game.id}/resign`, {}, b.cookie)).status, 200);
+    assert.deepEqual(await balances(store, a, b), [before[0] + 1, before[1] - 1]);
+  }
+});
+
+test('legacy invitations with invalid bets cannot be accepted and can still be declined or cancelled', async t => {
+  const { api, store } = await fixture(t);
+  const a = await player(api, store, 'legacy_bet_a'); const b = await player(api, store, 'legacy_bet_b');
+  for (const gameType of ['tic-tac-toe', 'rock-paper-scissors']) {
+    for (const stake of [0, -1, 1.5, '1', null, Number.MAX_SAFE_INTEGER]) {
+      const game = await request(api, a, b, { game: gameType });
+      const id = new ObjectId(game.id);
+      await store.games.updateOne({ _id: id }, { $set: { stake } });
+      const before = await store.games.findOne({ _id: id });
+      const wallets = await store.users.find({ _id: { $in: [a.id, b.id] } }).sort({ _id: 1 }).toArray();
+      const response = await api(`/api/games/${game.id}/accept`, {}, b.cookie);
+      assert.equal(response.status, 409, `${gameType}, ${stake}`);
+      assert.deepEqual(await store.games.findOne({ _id: id }), before);
+      assert.deepEqual(await store.users.find({ _id: { $in: [a.id, b.id] } }).sort({ _id: 1 }).toArray(), wallets);
+      const action = stake === 0 ? 'decline' : 'cancel';
+      const closed = await api(`/api/games/${game.id}/${action}`, {}, (action === 'decline' ? b : a).cookie);
+      assert.equal(closed.status, 200);
+      assert.deepEqual(await balances(store, a, b), [100, 100]);
+    }
+  }
+});
+
+test('already active legacy zero-token games can still settle and close safely', async t => {
+  const { api, store } = await fixture(t);
+  const a = await player(api, store, 'legacy_active_a'); const b = await player(api, store, 'legacy_active_b');
+  for (const gameType of ['tic-tac-toe', 'rock-paper-scissors']) {
+    const game = await request(api, a, b, { game: gameType });
+    await store.games.updateOne({ _id: new ObjectId(game.id) }, { $set: {
+      stake: 0, status: 'playing', escrowed: true, payoutReserved: true,
+      turnUserId: gameType === 'tic-tac-toe' ? a.id : null
+    } });
+    await store.users.updateMany({ _id: { $in: [a.id, b.id] } }, { $set: { gamePayoutReserve: 0 } });
+    assert.equal((await api(`/api/games/${game.id}/accept`, {}, b.cookie)).status, 200);
+    const response = await api(`/api/games/${game.id}/resign`, {}, b.cookie);
+    assert.equal(response.status, 200); assert.equal(response.data.game.status, 'completed');
+    assert.equal((await store.games.findOne({ _id: new ObjectId(game.id) })).escrowed, false);
+    assert.deepEqual(await balances(store, a, b), [100, 100]);
+  }
+});
+
 test('request retries and concurrent acceptance debit each equal stake exactly once', async t => {
   const { api, store } = await fixture(t);
   const a = await player(api, store, 'request_replay_a');
@@ -146,10 +216,10 @@ test('tic tac toe enforces turns and empty squares, pays winners once, and repla
   assert.deepEqual(await balances(store, a, b), [110, 90]);
 });
 
-test('tic tac toe draw refunds each stake, including zero-stake games', async t => {
+test('tic tac toe draw refunds each stake, including one-token games', async t => {
   const { api, store } = await fixture(t);
   const a = await player(api, store, 'draw_a'); const b = await player(api, store, 'draw_b');
-  for (const stake of [10, 0]) {
+  for (const stake of [10, 1]) {
     let game = await accept(api, b, await request(api, a, b, { stake }));
     const positions = [0, 1, 2, 4, 3, 5, 7, 6, 8];
     for (const [index, position] of positions.entries()) {

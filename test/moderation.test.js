@@ -124,7 +124,7 @@ test('banning revokes sessions, closes trades, refunds active games, and preserv
   }
   assert.equal((await api('/api/login', { identifier: target.username, password })).status, 403);
   assert.equal((await api(`/api/profiles/${target.username}`)).data.profile.banned, true);
-  assert.equal((await api('/api/games', { recipientAccountId: target.accountId, game: 'tic-tac-toe', stake: 0, clientRequestId: crypto.randomUUID() }, other.cookie)).status, 409);
+  assert.equal((await api('/api/games', { recipientAccountId: target.accountId, game: 'tic-tac-toe', stake: 1, clientRequestId: crypto.randomUUID() }, other.cookie)).status, 409);
   assert.equal((await patch(api, mod, target, { banned: false })).status, 200);
   assert.equal((await api('/api/me', undefined, target.cookie)).data.user, null);
   const fresh = await api('/api/login', { identifier: target.username, password });

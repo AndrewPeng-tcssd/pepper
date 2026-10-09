@@ -198,6 +198,7 @@ function setUser(user) {
   renderAnnouncementEditor();
   if (previousPresenceIdentity !== (user?.accountId || user?.username || null)) {
     userIdentityRevision++;
+    window.PepperPlayerPicker?.closeAll();
     resetChatSending();
     clearChatReply();
     if (state.chatOutbox.length) {
@@ -479,6 +480,7 @@ function isAppPath(pathname) {
 }
 
 function renderRoute() {
+  window.PepperPlayerPicker?.closeAll();
   routeRevision++;
   profileLoadRevision++;
   routePath = location.pathname.replace(/\/+$/, '') || '/';
@@ -679,6 +681,7 @@ function setAccountSubmitting(submitting, expectedRevision = null) {
   if (expectedRevision !== null && expectedRevision !== accountActionRevision) return;
   const revision = ++accountActionRevision;
   state.accountSubmitting = submitting;
+  if (submitting) window.PepperPlayerPicker?.closeAll();
   ['usernameSubmit', 'passwordSubmit', 'logoutButton', 'headerLogoutButton', 'deleteAccountOpen'].forEach(id => {
     $(id).disabled = submitting;
   });
@@ -1449,10 +1452,15 @@ function renderTradeAssets(element, tokens, cards = []) {
   const count = document.createElement('span');
   count.className = 'trading-assets-count';
   count.textContent = `${cards.length} ${cards.length === 1 ? 'card' : 'cards'}`;
-  element.replaceChildren(tokenAmount, count);
-  if (!cards.length) return;
   const list = document.createElement('ul');
   list.className = 'trading-asset-cards';
+  list.setAttribute('aria-label', 'Cards');
+  if (!cards.length) {
+    const empty = document.createElement('li');
+    empty.className = 'trading-asset-empty';
+    empty.textContent = 'None';
+    list.append(empty);
+  }
   for (const card of cards) {
     const item = document.createElement('li');
     const art = tradeCardArtwork(card);
@@ -1460,7 +1468,7 @@ function renderTradeAssets(element, tokens, cards = []) {
     item.append(tradeCardMetadata(card));
     list.append(item);
   }
-  element.append(list);
+  element.replaceChildren(tokenAmount, count, list);
 }
 
 function tradeProfileLink(player) {
@@ -1650,6 +1658,7 @@ function renderTradingState() {
   $('tradingAuthLoading').hidden = !loading; $('tradingGuest').hidden = loading || !!state.user; $('tradingAccount').hidden = loading || !state.user;
   $('tradingBalance').textContent = state.user ? state.user.balance.toLocaleString() : '0'; $('tradingLayout').hidden = !!trading.sessionId; $('tradingSession').hidden = !trading.sessionId;
   $('tradingRecipient').disabled = busy || trading.lookupLoading || trading.sendUncertain;
+  if ($('tradingRecipient').disabled || trading.sessionId || !state.user) trading.playerPicker?.close();
   $('tradingForm').hidden = false;
   $('tradingSend').disabled = busy || trading.lookupLoading; $('tradingSend').textContent = trading.lookupLoading ? 'Finding…' : trading.submitting ? 'Sending…' : trading.sendUncertain ? 'Retry request' : 'Send request';
   $('tradingRefresh').disabled = tradingBusy() || !!tradeLoadPromise; $('tradingRetry').disabled = tradingBusy() || !!tradeLoadPromise;
@@ -1730,8 +1739,23 @@ function validTradeContribution(tokens, cards, element) {
   if (element.id === 'tradingDraftMessage' && trading.sessionDraft) trading.sessionDraft.error = null;
   return true;
 }
+function setupTradingPlayerPicker() {
+  trading.playerPicker = window.PepperPlayerPicker?.attach({
+    input: $('tradingRecipient'),
+    isEnabled: () => !!state.user && !accountBanned && pageKind === 'trading' && !trading.sessionId && !tradingBusy() && !trading.actionRetry && !trading.sendUncertain && !trading.lookupLoading,
+    renderAvatar: player => profileAvatar(player),
+    search: async prefix => {
+      const identity = state.user?.accountId, revision = userIdentityRevision, navigation = routeRevision;
+      const { players } = await api(`players?username=${encodeURIComponent(prefix)}`);
+      return tradingIdentityIsCurrent(identity, revision) && navigation === routeRevision && pageKind === 'trading' ? players : [];
+    },
+    onSelect: () => { trading.lookupRevision++; trading.lookupLoading = false; invalidateTradeReview(); }
+  });
+}
+setupTradingPlayerPicker();
 $('tradingRecipient').addEventListener('input', () => { if (trading.submitting || trading.sendUncertain) return; trading.lookupRevision++; trading.lookupLoading = false; invalidateTradeReview(); });
 $('tradingForm').addEventListener('submit', async event => {
+  trading.playerPicker?.close();
   event.preventDefault(); if (!state.user || tradingBusy() || trading.lookupLoading || trading.actionRetry) return;
   const identity = state.user.accountId, identityRevision = userIdentityRevision, requestRouteRevision = routeRevision, requestSessionRevision = trading.sessionRevision;
   if (trading.sendUncertain && trading.review?.identity === identity) {

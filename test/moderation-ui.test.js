@@ -14,8 +14,9 @@ function appFunction(name) {
 }
 const person = (accountId, role = 'player', banned = false) => ({ accountId, username: accountId, role, banned });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function harness(user, { storage = new Map(), network } = {}) {
+function harness(user, { storage = new Map(), network, withPicker = false } = {}) {
   const elements = new Map(), calls = [], windowListeners = new Map();
+  const picker = { config: null, resets: 0, closes: 0, refreshes: 0 };
   let context;
   const node = id => {
     const classes = new Set(), listeners = new Map();
@@ -31,7 +32,13 @@ function harness(user, { storage = new Map(), network } = {}) {
   for (const id of html.matchAll(/\bid="([^"]+)"/g)) elements.set(id[1], node(id[1]));
   const document = { getElementById: id => elements.get(id), createElement: () => node(), activeElement: null, body: node('body'), querySelectorAll: () => [] };
   context = vm.createContext({
-    document, window: { addEventListener: (name, listener) => windowListeners.set(name, listener) }, accountBanned: false,
+    document, window: {
+      addEventListener: (name, listener) => windowListeners.set(name, listener),
+      ...(withPicker ? { PepperPlayerPicker: { attach(config) {
+        picker.config = config;
+        return { reset() { picker.resets++; }, close() { picker.closes++; }, refresh() { picker.refreshes++; } };
+      } } } : {})
+    }, accountBanned: false,
     state: { user, accountSubmitting: false, chatMessages: [], profile: null, leaderboard: null }, trading: { chatMessages: [] },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     accountRole: value => value?.role || 'player', profileHref: name => `/profile/${name}`, profileAvatar: () => node(), playerRoleBadges: () => node(),
@@ -41,7 +48,7 @@ function harness(user, { storage = new Map(), network } = {}) {
     setUser: value => { context.state.user = value; context.window.PepperModeration.syncUser(); }
   });
   vm.runInContext(source.replace(/  syncUser\(\);\s*\}\)\(\);\s*$/, '  Object.assign(window.PepperModeration, { canBan, canDeleteChat, changePlayer, deleteChat, findPlayers, inspect: () => moderation });\n  syncUser();\n})();'), context);
-  return { api: context.window.PepperModeration, context, elements, calls, storage, enable: () => elements.get('moderationViewToggle').click(), storageEvent: event => windowListeners.get('storage')?.(event) };
+  return { api: context.window.PepperModeration, context, elements, calls, storage, picker, enable: () => elements.get('moderationViewToggle').click(), storageEvent: event => windowListeners.get('storage')?.(event) };
 }
 function showProfile(ui, player) {
   ui.context.state.profile = player;
@@ -189,6 +196,96 @@ test('opening admin view loads players and exposes moderator controls immediatel
   assert.equal(rows.length, 2);
   assert.ok(rows[0].children[1].children.some(button => button.textContent === 'Make mod'));
   assert.ok(rows[1].children[1].children.some(button => button.textContent === 'Remove mod'));
+});
+
+test('management suggestions use the moderation endpoint and select exactly one permanent account', async () => {
+  const players = [person('e'), { ...person('exact-id', 'player', true), username: 'example' }];
+  const ui = harness(person('admin', 'admin'), { withPicker: true, network: () => ({ players }) });
+  assert.equal(ui.picker.config.input, ui.elements.get('moderationUsername'));
+  assert.equal(ui.picker.config.isEnabled(), false);
+  assert.equal((await ui.picker.config.search('e')).length, 0);
+  assert.equal(ui.calls.length, 0);
+  ui.enable(); await flush();
+  assert.equal(ui.picker.config.isEnabled(), true);
+  const results = await ui.picker.config.search('ex &');
+  assert.equal(results[1].banned, true);
+  assert.equal(ui.calls.at(-1).route, 'moderation/players?username=ex%20%26');
+  const before = ui.calls.length;
+  ui.picker.config.onSelect(results[1]);
+  assert.equal(ui.elements.get('moderationUsername').value, 'example');
+  assert.deepEqual(Array.from(ui.api.inspect().players, player => player.accountId), ['exact-id']);
+  const rows = ui.elements.get('moderationPlayers').children;
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].children[1].children.some(button => button.textContent === 'Unban'));
+  assert.ok(rows[0].children[1].children.every(button => button.dataset.accountId === 'exact-id'));
+  assert.equal(ui.calls.length, before, 'Selection does not ban, change roles, or make another request');
+});
+
+test('editing management search removes old controls and ignores an old target button', async () => {
+  const target = person('old-target');
+  const ui = harness(person('admin', 'admin'), { withPicker: true, network: () => ({ players: [target] }) });
+  ui.enable(); await flush();
+  ui.picker.config.onSelect(target);
+  const stale = ui.elements.get('moderationPlayers').children[0].children[1].children[0];
+  const resets = ui.picker.resets;
+  ui.elements.get('moderationUsername').value = 'new';
+  ui.elements.get('moderationUsername').dispatch('input');
+  assert.equal(ui.picker.resets, resets + 1);
+  assert.equal(ui.elements.get('moderationUsername').value, 'new');
+  assert.equal(ui.elements.get('moderationPlayers').children.length, 0);
+  assert.equal(ui.api.inspect().players.length, 0);
+  ui.elements.get('moderationPlayers').dispatch('click', stale);
+  assert.equal(ui.calls.filter(call => call.method === 'PATCH').length, 0);
+});
+
+test('edited management searches reject late Search form results', async () => {
+  let resolve;
+  const pending = new Promise(done => { resolve = done; });
+  const ui = harness(person('admin', 'admin'), { withPicker: true, network: () => pending });
+  ui.enable();
+  assert.equal(ui.api.inspect().busy, true);
+  ui.elements.get('moderationUsername').value = 'new';
+  ui.elements.get('moderationUsername').dispatch('input');
+  assert.equal(ui.api.inspect().busy, false);
+  resolve({ players: [person('old-target')] }); await flush();
+  assert.equal(ui.elements.get('moderationPlayers').children.length, 0);
+  assert.equal(ui.elements.get('moderationUsername').disabled, false);
+});
+
+test('management picker resets and discards suggestions across account, role, and view changes', async () => {
+  for (const transition of ['account', 'role', 'view', 'storage', 'navigation', 'banned']) {
+    let resolve;
+    const pending = new Promise(done => { resolve = done; });
+    const ui = harness(person('admin', 'admin'), { withPicker: true, network: call => call.route.endsWith('username=') ? { players: [] } : pending });
+    ui.enable(); await flush();
+    const stale = ui.picker.config.search('ex');
+    const resets = ui.picker.resets;
+    if (transition === 'account') ui.context.setUser(person('other-admin', 'admin'));
+    if (transition === 'role') ui.context.setUser(person('admin', 'mod'));
+    if (transition === 'view') ui.enable();
+    if (transition === 'storage') ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'closed' });
+    if (transition === 'navigation') ui.api.closePlayerPicker();
+    if (transition === 'banned') { ui.context.accountBanned = true; ui.api.syncUser(); }
+    resolve({ players: [person('private-target')] });
+    assert.equal((await stale).length, 0, transition);
+    assert.ok(ui.picker.resets > resets, transition);
+    assert.equal(ui.api.inspect().players.length, 0, transition);
+    if (transition !== 'navigation' && transition !== 'role') assert.equal(ui.picker.config.isEnabled(), false, transition);
+  }
+});
+
+test('disabled management picker cannot choose a target or expose controls', async () => {
+  const ui = harness(person('mod', 'mod'), { withPicker: true });
+  ui.picker.config.onSelect(person('target'));
+  assert.equal(ui.api.inspect().players.length, 0);
+  ui.enable(); await flush();
+  ui.context.state.accountSubmitting = true;
+  assert.equal(ui.picker.config.isEnabled(), false);
+  ui.picker.config.onSelect(person('target'));
+  assert.equal(ui.api.inspect().players.length, 0);
+  ui.context.state.accountSubmitting = false;
+  ui.picker.config.onSelect(person('protected', 'admin'));
+  assert.equal(ui.elements.get('moderationPlayers').children[0].children[1].children.length, 0);
 });
 
 test('stored-open views load on startup and login without reloading on routine user refresh', async () => {

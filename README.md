@@ -60,7 +60,9 @@ The public `/leaderboard` page ranks the top 100 players by their current token 
 
 ## Games
 
-At `/games`, choose Tic-Tac-Toe or Rock Paper Scissors, enter a player's username, and choose the tokens each player stakes. Sending the request agrees to that stake. The recipient sees the same amount before accepting; neither balance changes until acceptance. Zero-token games are supported. Accepting reserves both equal stakes together. A winner receives the whole pot, and a draw returns each stake.
+Username fields in Games, Trading, and Admin/Mod settings show alphabetical suggestions as you type. Matches start with the entered prefix, ignoring case. Click a player or use the arrow keys and Enter to select them. Selecting a suggestion fills the username; sending requests and moderation actions use their own buttons. Trading and Games omit your own account and banned players; staff search includes banned accounts.
+
+At `/games`, choose Tic-Tac-Toe or Rock Paper Scissors, enter a player's username, and choose the tokens each player stakes. Bets require at least one whole token per player. Sending the request agrees to that stake. The recipient sees the same amount before accepting; neither balance changes until acceptance. Accepting reserves both equal stakes together. A winner receives the whole pot, and a draw returns each stake.
 
 Tic-Tac-Toe starts with the sender as X. Rock Paper Scissors keeps the opponent's choice hidden until the game ends. Each player can submit only their own moves. Requests, moves, results, and token transfers are saved, and retries do not duplicate them. Pending requests can be declined or cancelled; an active game can be resigned. The Games page includes active games and history, while incoming requests appear across the site.
 
@@ -70,7 +72,7 @@ Requests expire after ten minutes. Tic-Tac-Toe allows two minutes per turn befor
 
 At `/trading`, enter a player's username and send a request with one click. Requests use their permanent account ID internally. Incoming requests appear in a bottom-right popup across the site; accepting opens the trade session. **Decline** permanently declines the request, so it does not reappear after refreshing or signing back in. The recipient can also accept or decline from Trading. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
 
-Your offered tokens and cards appear on the left, and the other player's appear on the right, including on narrow screens. Your selections preview immediately and show **Unsaved changes** until saved. Starting a trade from someone's profile opens the request form for that player, even if you previously viewed another session.
+Your offered tokens and cards appear on the left, and the other player's appear on the right, including on narrow screens. Both card areas stay visible after joining and show **None** when empty. The other player's saved selections update during the trade. Your selections preview immediately and show **Unsaved changes** until saved. Starting a trade from someone's profile opens the request form for that player, even if you previously viewed another session.
 
 Both players must confirm the same current contributions before anything moves. Changing either contribution clears both confirmations, so each player reviews the new terms. Trades can exchange cards, tokens, or both, including gifts, and each side may include up to 50 cards. Separate copies of the same card are separate inventory items. Both sides cannot be empty when confirming.
 

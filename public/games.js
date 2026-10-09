@@ -6,12 +6,25 @@
   const choiceIcons = { rock: '✊', paper: '✋', scissors: '✌' };
   const games = { identity: null, revision: 0, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, listSignature: null, sessionSignature: null };
   const active = game => ['pending', 'playing'].includes(game.status);
+  const validStake = stake => Number.isSafeInteger(stake) && stake >= 1 && stake <= Math.floor(Number.MAX_SAFE_INTEGER / 4);
+  const invalidRequest = game => game.status === 'pending' && !validStake(game.stake);
   const busy = () => !!games.action || state.accountSubmitting;
   const locked = () => busy() || !!games.retry;
   const self = game => game.sender.accountId === games.identity ? game.sender : game.recipient;
   const other = game => game.sender.accountId === games.identity ? game.recipient : game.sender;
   const current = (identity, identityRevision) => state.user?.accountId === identity && games.identity === identity && userIdentityRevision === identityRevision;
   const count = value => Number(value || 0).toLocaleString();
+  const playerPicker = window.PepperPlayerPicker?.attach({
+    input: el('gamesUsername'),
+    isEnabled: () => !!state.user && !accountBanned && pageKind === 'games' && !games.selectedId && !locked(),
+    renderAvatar: player => profileAvatar(player),
+    search: async prefix => {
+      const identity = games.identity, revision = userIdentityRevision, navigation = routeRevision;
+      const { players } = await api(`players?username=${encodeURIComponent(prefix)}`);
+      return current(identity, revision) && navigation === routeRevision && pageKind === 'games' ? players : [];
+    },
+    onSelect: () => message(el('gamesMessage'), '')
+  });
   function newest(incoming, previous) {
     if (!previous || incoming.version > previous.version) return incoming;
     if (incoming.version < previous.version || (!active(previous) && active(incoming))) return previous;
@@ -43,7 +56,7 @@
   function gameActions(game, container, includeOpen = false) {
     if (includeOpen) container.append(button(active(game) ? 'Open game' : 'View game', 'open', game.id, busy()));
     if (game.status === 'pending') {
-      if (game.recipient.accountId === games.identity) container.append(button(`Accept · ${count(game.stake)} tokens`, 'accept', game.id), button('Decline', 'decline', game.id));
+      if (game.recipient.accountId === games.identity) container.append(button(invalidRequest(game) ? 'Invalid bet' : `Accept · ${count(game.stake)} tokens`, 'accept', game.id, locked() || invalidRequest(game)), button('Decline', 'decline', game.id));
       else container.append(button('Cancel request', 'cancel', game.id));
     } else if (game.status === 'playing') container.append(button('Resign', 'review-resign', game.id));
   }
@@ -61,7 +74,7 @@
         const heading = document.createElement('div'); heading.className = 'games-list-card-heading';
         const title = document.createElement('h3'); title.textContent = names[game.game];
         const badge = document.createElement('span'); badge.className = 'trading-status'; badge.textContent = status(game); heading.append(title, badge);
-        const terms = document.createElement('p'); terms.className = 'games-list-stake'; terms.textContent = `${count(game.stake)} tokens each`;
+        const terms = document.createElement('p'); terms.className = 'games-list-stake'; terms.textContent = invalidRequest(game) ? 'Invalid bet' : `${count(game.stake)} tokens each`;
         const actions = document.createElement('div'); actions.className = 'trading-actions'; gameActions(game, actions, true);
         row.append(heading, playerLink(other(game)), terms, actions); return row;
       }));
@@ -92,8 +105,8 @@
       if (game.game === 'tic-tac-toe') { const symbol = document.createElement('strong'); symbol.className = 'games-player-symbol'; symbol.textContent = player.accountId === game.sender.accountId ? 'X' : 'O'; side.append(symbol); }
       return side;
     }));
-    el('gamesStakeSummary').textContent = `${count(game.stake)} tokens each`;
-    el('gamesPot').textContent = `${count(game.stake * 2)} token pot`;
+    el('gamesStakeSummary').textContent = invalidRequest(game) ? 'Invalid bet' : `${count(game.stake)} tokens each`;
+    el('gamesPot').textContent = invalidRequest(game) ? '' : `${count(game.stake * 2)} token pot`;
     const ended = game.status === 'completed';
     el('gamesTurn').textContent = game.status === 'pending' ? 'Awaiting acceptance' : ended ? game.result === 'draw' ? 'Draw · stakes returned' : game.winnerAccountId === games.identity ? `You won ${count(game.stake * 2)} tokens` : 'Opponent won the pot' : game.status !== 'playing' ? status(game) : game.game === 'tic-tac-toe' ? game.turnAccountId === games.identity ? 'Your turn' : 'Opponent’s turn' : game.yourChoice ? 'Waiting for opponent' : 'Choose your move';
     const showPlay = game.status === 'playing' || ended;
@@ -137,12 +150,12 @@
     if (popup.hidden) { if (focused) focusRouteHeading(); return; }
     el('gameNotificationSender').textContent = request.sender.username;
     el('gameNotificationSender').href = profileHref(request.sender.username);
-    el('gameNotificationTerms').textContent = `${names[request.game]} · ${count(request.stake)} tokens each`;
+    el('gameNotificationTerms').textContent = invalidRequest(request) ? `${names[request.game]} · Invalid bet` : `${names[request.game]} · ${count(request.stake)} tokens each`;
     const sameRetry = games.retry?.id === request.id;
     for (const action of ['accept', 'decline']) {
       const control = el(action === 'accept' ? 'gameNotificationAccept' : 'gameNotificationDecline');
-      control.disabled = busy() || (!!games.retry && !(sameRetry && games.retry.action === action));
-      control.textContent = games.action?.id === request.id && games.action.action === action ? action === 'accept' ? 'Accepting…' : 'Declining…' : sameRetry && games.retry.action === action ? 'Retry' : action === 'accept' ? `Accept · ${count(request.stake)} tokens` : 'Decline';
+      control.disabled = busy() || (action === 'accept' && invalidRequest(request)) || (!!games.retry && !(sameRetry && games.retry.action === action));
+      control.textContent = action === 'accept' && invalidRequest(request) ? 'Invalid bet' : games.action?.id === request.id && games.action.action === action ? action === 'accept' ? 'Accepting…' : 'Declining…' : sameRetry && games.retry.action === action ? 'Retry' : action === 'accept' ? `Accept · ${count(request.stake)} tokens` : 'Decline';
     }
     message(el('gameNotificationMessage'), sameRetry ? 'Connection lost. Retry safely.' : games.notificationError?.id === request.id ? games.notificationError.text : '');
   }
@@ -152,6 +165,7 @@
     el('gamesGuest').hidden = loading || !!state.user; el('gamesAccount').hidden = loading || !state.user;
     el('gamesBalance').textContent = state.user ? `${count(state.user.balance)} tokens` : '';
     for (const input of el('gamesRequestForm').querySelectorAll('input')) input.disabled = locked();
+    if (locked() || games.selectedId || !state.user || pageKind !== 'games') playerPicker?.close();
     el('gamesSend').disabled = locked(); el('gamesSend').textContent = games.action?.action === 'request' ? 'Sending…' : 'Send request';
     el('gamesRefresh').disabled = busy() || games.loading;
     el('gamesRetry').hidden = !games.retry; el('gamesRetry').disabled = busy(); el('gamesBack').disabled = busy();
@@ -167,6 +181,7 @@
   function syncUser() {
     const identity = state.user?.accountId || null;
     if (identity !== games.identity) {
+      playerPicker?.reset();
       Object.assign(games, { identity, revision: games.revision + 1, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, notificationError: null, resignId: null, listSignature: null, sessionSignature: null });
       el('gamesRequestForm').reset(); message(el('gamesMessage'), '');
       if (identity) void load();
@@ -227,10 +242,11 @@
   }
   async function requestGame(event) {
     event.preventDefault();
+    playerPicker?.close();
     if (!state.user || locked()) return;
     const username = el('gamesUsername').value.trim(), rawStake = el('gamesStake').value.trim(), stake = Number(rawStake);
     if (!username) { message(el('gamesMessage'), 'Enter a username.'); return; }
-    if (!rawStake || !Number.isSafeInteger(stake) || stake < 0) { message(el('gamesMessage'), 'Enter whole tokens.'); return; }
+    if (!rawStake || !validStake(stake)) { message(el('gamesMessage'), 'Bet at least 1 token.'); return; }
     if (stake > state.user.balance) { message(el('gamesMessage'), 'Not enough tokens.'); return; }
     const gameType = el('gamesRequestForm').querySelector('input[name="gameType"]:checked').value;
     const identity = games.identity, identityRevision = userIdentityRevision, navigationRevision = routeRevision;
@@ -249,6 +265,7 @@
   function act(action, id, payload = {}) {
     if (action === 'open') { if (!busy()) openGame(id); return; }
     if (locked()) return;
+    if (action === 'accept' && games.entries.some(game => game.id === id && invalidRequest(game))) { message(el('gamesMessage'), 'Invalid bet. Decline request.'); return; }
     if (action === 'review-resign' || action === 'keep-playing') { games.resignId = action === 'review-resign' ? id : null; render(); return; }
     if (action === 'accept') { setChatOpen(false); navigateTo('/games', { focus: false }); openGame(id); }
     if (['accept', 'decline', 'cancel', 'resign', 'move'].includes(action)) void perform({ id, action, payload });

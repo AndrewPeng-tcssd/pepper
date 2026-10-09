@@ -353,6 +353,24 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
   moderation.register(app, { requireUser, rateLimit });
 
+  app.get('/api/players', requireUser, async (req, res) => {
+    const query = req.query.username;
+    if ((query !== undefined && typeof query !== 'string') ||
+        Object.keys(req.query).some(key => key.startsWith('username['))) {
+      return sendError(res, 400, 'Enter a valid username.');
+    }
+    const prefix = (query || '').trim();
+    if (!/^[a-zA-Z0-9_]{0,24}$/.test(prefix)) return sendError(res, 400, 'Enter a valid username.');
+    const players = await users.find({
+      _id: { $ne: req.user._id },
+      banned: { $ne: true },
+      ...(prefix ? { usernameKey: { $regex: `^${prefix.toLowerCase()}` } } : {})
+    }, {
+      projection: { username: 1, accountId: 1, avatarVersion: 1, role: 1, banned: 1 }
+    }).sort({ usernameKey: 1, _id: 1 }).limit(25).toArray();
+    res.json({ players: await Promise.all(players.map(player => moderation.publicPlayer(player))) });
+  });
+
   app.get('/api/profiles/:username', async (req, res) => {
     const username = req.params.username;
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
