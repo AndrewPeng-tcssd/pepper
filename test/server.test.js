@@ -337,7 +337,7 @@ test('chat rejects replies to the same permanent account before cooldown even af
   assert.equal(otherReply.status, 201);
   assert.equal(otherReply.data.message.username, 'self_author');
   assert.equal(otherReply.data.message.accountId, other.data.user.accountId);
-  assert.deepEqual(otherReply.data.message.replyTo, { id: parent.data.message.id, username: 'renamed_self_author', text: 'My original message.', available: true });
+  assert.deepEqual(otherReply.data.message.replyTo, { avatarUrl: '/favicon.svg', id: parent.data.message.id, username: 'renamed_self_author', text: 'My original message.', available: true });
   assert.equal(await isolated.messages.countDocuments(), 2);
   assert.deepEqual((await api('/api/chat')).data.messages, [currentParent, otherReply.data.message]);
 });
@@ -359,7 +359,7 @@ test('legacy chat self-replies use normalized names while legacy and missing aut
   const allowed = await api('/api/chat', { text: 'Reply to someone else.', replyToId: otherLegacy._id.toString() }, writer.cookie);
   assert.equal(allowed.status, 201);
   assert.equal(allowed.data.message.accountId, writer.data.user.accountId);
-  assert.deepEqual(allowed.data.message.replyTo, { id: otherLegacy._id.toString(), username: 'older_player', text: 'Someone else wrote this.', available: true });
+  assert.deepEqual(allowed.data.message.replyTo, { avatarUrl: '/favicon.svg', id: otherLegacy._id.toString(), username: 'older_player', text: 'Someone else wrote this.', available: true });
   assert.equal(await isolated.messages.countDocuments(), 4);
   assert.deepEqual((await api('/api/chat')).data.messages.find(message => message.id === allowed.data.message.id), allowed.data.message);
 });
@@ -373,7 +373,7 @@ test('chat replies use authoritative shallow quotes and follow the parent accoun
   const third = await api('/api/register', { username: 'quote_third', password });
   const parent = await api('/api/chat', { text: 'Original parent message.' }, author.cookie);
   assert.equal(parent.status, 201);
-  const quote = { id: parent.data.message.id, username: 'quote_author', text: 'Original parent message.', available: true };
+  const quote = { id: parent.data.message.id, username: 'quote_author', avatarUrl: '/favicon.svg', text: 'Original parent message.', available: true };
   const reply = await api('/api/chat', {
     text: 'My reply.', replyToId: parent.data.message.id.toUpperCase(),
     replyTo: { id: new ObjectId().toString(), username: '675', text: 'Forged quote.', available: false },
@@ -381,11 +381,11 @@ test('chat replies use authoritative shallow quotes and follow the parent accoun
   }, writer.cookie);
   assert.equal(reply.status, 201);
   assert.deepEqual(reply.data.message.replyTo, quote);
-  assert.deepEqual(Object.keys(reply.data.message).sort(), ['accountId', 'clientMessageId', 'createdAt', 'id', 'replyTo', 'text', 'username']);
+  assert.deepEqual(Object.keys(reply.data.message).sort(), ['accountId', 'avatarUrl', 'clientMessageId', 'createdAt', 'id', 'replyTo', 'text', 'username']);
   const nested = await api('/api/chat', { text: 'Replying to that reply.', replyToId: reply.data.message.id }, third.cookie);
   assert.equal(nested.status, 201);
-  assert.deepEqual(nested.data.message.replyTo, { id: reply.data.message.id, username: 'quote_writer', text: 'My reply.', available: true });
-  assert.deepEqual(Object.keys(nested.data.message.replyTo).sort(), ['available', 'id', 'text', 'username']);
+  assert.deepEqual(nested.data.message.replyTo, { avatarUrl: '/favicon.svg', id: reply.data.message.id, username: 'quote_writer', text: 'My reply.', available: true });
+  assert.deepEqual(Object.keys(nested.data.message.replyTo).sort(), ['available', 'avatarUrl', 'id', 'text', 'username']);
   const initial = (await api('/api/chat')).data.messages;
   assert.equal(initial.find(message => message.id === parent.data.message.id).replyTo, null);
   assert.deepEqual(initial.find(message => message.id === reply.data.message.id).replyTo, quote);
@@ -424,7 +424,7 @@ test('chat reply quotes survive parent pruning while new replies cannot target r
   assert.equal(newest.status, 201);
   assert.equal(await isolated.messages.countDocuments(), 100);
   assert.equal(await isolated.messages.findOne({ _id: new ObjectId(parent.data.message.id) }), null);
-  const quote = { id: parent.data.message.id, username: 'pruned_author', text: 'Remember this parent.', available: false };
+  const quote = { id: parent.data.message.id, username: 'pruned_author', avatarUrl: '/favicon.svg', text: 'Remember this parent.', available: false };
   const latest = (await api('/api/chat')).data.messages;
   assert.equal(latest.length, 100);
   assert.deepEqual(latest.find(message => message.id === reply.data.message.id).replyTo, quote);
@@ -644,7 +644,7 @@ test('public profiles can be read anonymously and only include public account de
   assert.match(result.data.profile.accountId, accountIdPattern);
   assert.equal(result.data.profile.accountId, (await store.users.findOne({ usernameKey: username.toLowerCase() })).accountId);
   assert.deepEqual(result.data, { profile: {
-    username, accountId: result.data.profile.accountId, createdAt: createdAt.toISOString(), balance: 25,
+    username, avatarUrl: '/favicon.svg', accountId: result.data.profile.accountId, createdAt: createdAt.toISOString(), balance: 25,
     lastClaimAt, nextClaimAt: lastClaimAt + CLAIM_INTERVAL_MS
   } });
 
@@ -654,7 +654,7 @@ test('public profiles can be read anonymously and only include public account de
   assert.equal(legacy.status, 200);
   assert.match(legacy.data.profile.accountId, accountIdPattern);
   assert.deepEqual(legacy.data, { profile: {
-    username: legacyUsername, accountId: legacy.data.profile.accountId, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
+    username: legacyUsername, avatarUrl: '/favicon.svg', accountId: legacy.data.profile.accountId, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
   } });
 
   const noClaimUsername = `NoClaim_${crypto.randomBytes(3).toString('hex')}`;
@@ -662,7 +662,7 @@ test('public profiles can be read anonymously and only include public account de
   const noClaim = await request(`/api/profiles/${noClaimUsername}`);
   assert.equal(noClaim.status, 200);
   assert.deepEqual(noClaim.data, { profile: {
-    username: noClaimUsername, accountId: noClaim.data.profile.accountId, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
+    username: noClaimUsername, avatarUrl: '/favicon.svg', accountId: noClaim.data.profile.accountId, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
   } });
 
   for (const name of [`missing_${crypto.randomBytes(3).toString('hex')}`, 'ab', 'a'.repeat(25), 'invalid-name', 'invalid%20name']) {
@@ -1219,40 +1219,47 @@ test('announcements validate titles, descriptions, and deletion IDs without chan
   assert.equal(await isolated.announcements.countDocuments(), 1);
 });
 
+function assertPresence(data, count) {
+  assert.equal(data.count, count);
+  assert.equal(data.players.length, count);
+  assert.equal(new Set(data.players.map(player => player.accountId)).size, count);
+  for (const player of data.players) assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'username']);
+}
+
 test('presence counts signed-in players only after heartbeats and deduplicates their active sessions', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);
-  assert.deepEqual((await api('/api/presence')).data, { count: 0 });
+  assertPresence((await api('/api/presence')).data, 0);
   const first = await api('/api/register', { username: 'presence_first', password: '12345678' });
   assert.equal(first.status, 201);
   const firstUser = await isolated.users.findOne({ usernameKey: 'presence_first' });
-  assert.deepEqual((await api('/api/presence', undefined, first.cookie)).data, { count: 0 });
+  assertPresence((await api('/api/presence', undefined, first.cookie)).data, 0);
   const anonymous = await api('/api/presence', { userId: firstUser._id.toString(), accountId: first.data.user.accountId, count: 200 });
   assert.equal(anonymous.status, 200);
-  assert.deepEqual(anonymous.data, { count: 0 });
+  assertPresence(anonymous.data, 0);
   assert.equal(await isolated.sessions.countDocuments({ lastSeenAt: { $exists: true } }), 0);
   const beforeHeartbeat = Date.now();
   const heartbeat = await api('/api/presence', {}, first.cookie);
   assert.equal(heartbeat.status, 200);
-  assert.deepEqual(heartbeat.data, { count: 1 });
+  assertPresence(heartbeat.data, 1);
   const active = await isolated.sessions.findOne({ userId: firstUser._id });
   assert.ok(active.lastSeenAt instanceof Date);
   assert.ok(active.lastSeenAt.getTime() >= beforeHeartbeat);
   assert.ok(active.lastSeenAt.getTime() <= Date.now());
   const anotherSession = await api('/api/login', { identifier: 'presence_first', password: '12345678' });
   assert.equal(anotherSession.status, 200);
-  assert.deepEqual((await api('/api/presence', {}, anotherSession.cookie)).data, { count: 1 });
+  assertPresence((await api('/api/presence', {}, anotherSession.cookie)).data, 1);
   const second = await api('/api/register', { username: 'presence_second', password: '12345678' });
   assert.equal(second.status, 201);
-  assert.deepEqual((await api('/api/presence')).data, { count: 1 });
-  assert.deepEqual((await api('/api/presence', {}, second.cookie)).data, { count: 2 });
-  assert.deepEqual((await api('/api/presence', {}, `pepper_session=${'a'.repeat(64)}`)).data, { count: 2 });
+  assertPresence((await api('/api/presence')).data, 1);
+  assertPresence((await api('/api/presence', {}, second.cookie)).data, 2);
+  assertPresence((await api('/api/presence', {}, `pepper_session=${'a'.repeat(64)}`)).data, 2);
   assert.equal((await api('/api/logout', {}, first.cookie)).status, 200);
-  assert.deepEqual((await api('/api/presence')).data, { count: 2 });
+  assertPresence((await api('/api/presence')).data, 2);
   assert.equal((await api('/api/logout', {}, anotherSession.cookie)).status, 200);
-  assert.deepEqual((await api('/api/presence')).data, { count: 1 });
+  assertPresence((await api('/api/presence')).data, 1);
   assert.equal((await api('/api/logout', {}, second.cookie)).status, 200);
-  assert.deepEqual((await api('/api/presence', {}, second.cookie)).data, { count: 0 });
+  assertPresence((await api('/api/presence', {}, second.cookie)).data, 0);
 });
 
 test('presence stops counting stale and expired sessions while valid players can become active again', async t => {
@@ -1261,16 +1268,16 @@ test('presence stops counting stale and expired sessions while valid players can
   assert.equal(PRESENCE_TIMEOUT_MS, 75000);
   const player = await api('/api/register', { username: 'presence_timeout', password: '12345678' });
   assert.equal(player.status, 201);
-  assert.deepEqual((await api('/api/presence', {}, player.cookie)).data, { count: 1 });
+  assertPresence((await api('/api/presence', {}, player.cookie)).data, 1);
   const user = await isolated.users.findOne({ usernameKey: 'presence_timeout' });
   await isolated.sessions.updateMany({ userId: user._id }, { $set: { lastSeenAt: new Date(Date.now() - PRESENCE_TIMEOUT_MS - 1000) } });
-  assert.deepEqual((await api('/api/presence', undefined, player.cookie)).data, { count: 0 });
-  assert.deepEqual((await api('/api/presence', {})).data, { count: 0 });
-  assert.deepEqual((await api('/api/presence', {}, player.cookie)).data, { count: 1 });
+  assertPresence((await api('/api/presence', undefined, player.cookie)).data, 0);
+  assertPresence((await api('/api/presence', {})).data, 0);
+  assertPresence((await api('/api/presence', {}, player.cookie)).data, 1);
   const refreshed = await isolated.sessions.findOne({ userId: user._id });
   await isolated.sessions.updateMany({ userId: user._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
-  assert.deepEqual((await api('/api/presence')).data, { count: 0 });
-  assert.deepEqual((await api('/api/presence', {}, player.cookie)).data, { count: 0 });
+  assertPresence((await api('/api/presence')).data, 0);
+  assertPresence((await api('/api/presence', {}, player.cookie)).data, 0);
   const expired = await isolated.sessions.findOne({ _id: refreshed._id });
   if (expired) assert.deepEqual(expired.lastSeenAt, refreshed.lastSeenAt);
 });
@@ -1283,25 +1290,25 @@ test('presence is shared across app instances and password changes immediately r
   assert.equal(player.status, 201);
   const otherSession = await api('/api/login', { identifier: 'presence_shared', password });
   assert.equal(otherSession.status, 200);
-  assert.deepEqual((await api('/api/presence', {}, otherSession.cookie)).data, { count: 1 });
+  assertPresence((await api('/api/presence', {}, otherSession.cookie)).data, 1);
   const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
   t.after(() => reconnected.client.close());
   const freshApi = accountApi(t, reconnected);
-  assert.deepEqual((await freshApi('/api/presence')).data, { count: 1 });
+  assertPresence((await freshApi('/api/presence')).data, 1);
   const changed = await api('/api/account/password', { currentPassword: password, newPassword: 'replacement-password' }, player.cookie, 'PATCH');
   assert.equal(changed.status, 200);
-  assert.deepEqual((await freshApi('/api/presence')).data, { count: 0 });
-  assert.deepEqual((await freshApi('/api/presence', {}, otherSession.cookie)).data, { count: 0 });
-  assert.deepEqual((await freshApi('/api/presence', {}, player.cookie)).data, { count: 1 });
+  assertPresence((await freshApi('/api/presence')).data, 0);
+  assertPresence((await freshApi('/api/presence', {}, otherSession.cookie)).data, 0);
+  assertPresence((await freshApi('/api/presence', {}, player.cookie)).data, 1);
   const second = await freshApi('/api/register', { username: 'presence_other_app', password: '12345678' });
   assert.equal(second.status, 201);
-  assert.deepEqual((await freshApi('/api/presence', {}, second.cookie)).data, { count: 2 });
-  assert.deepEqual((await api('/api/presence')).data, { count: 2 });
+  assertPresence((await freshApi('/api/presence', {}, second.cookie)).data, 2);
+  assertPresence((await api('/api/presence')).data, 2);
   const firstUser = await isolated.users.findOne({ usernameKey: 'presence_shared' });
   await isolated.sessions.updateMany({ userId: firstUser._id }, { $set: { lastSeenAt: new Date(Date.now() - PRESENCE_TIMEOUT_MS - 1000) } });
-  assert.deepEqual((await freshApi('/api/presence')).data, { count: 1 });
+  assertPresence((await freshApi('/api/presence')).data, 1);
   assert.equal((await api('/api/logout', {}, second.cookie)).status, 200);
-  assert.deepEqual((await freshApi('/api/presence')).data, { count: 0 });
+  assertPresence((await freshApi('/api/presence')).data, 0);
 });
 
 test('announcement URLs serve the website directly', async () => {

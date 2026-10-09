@@ -130,6 +130,9 @@ async function grantCards(store, { ownerAccountId, cardIds, grantId }, { session
     if (saved) return replay(saved);
     const owner = await users.findOne({ accountId }, { session });
     if (!owner) throw new CardError(404, 'The card recipient could not be found.');
+    // Serialize issuance with account deletion, including grants from a pack transaction.
+    const activeOwner = await users.updateOne({ _id: owner._id, accountId }, { $inc: { activityRevision: 1 } }, { session });
+    if (!activeOwner.matchedCount) throw new CardError(404, 'The card recipient could not be found.');
     const definitions = await cardDefinitions.find({ _id: { $in: [...new Set(definitionIds)] } }, { session }).toArray();
     if (definitions.length !== new Set(definitionIds).size || definitions.some(definition => !cardMetadata(definition))) {
       throw new CardError(400, 'All granted cards must exist in the card catalog.');

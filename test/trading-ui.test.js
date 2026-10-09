@@ -68,7 +68,7 @@ function request(sender, recipient, extra = {}) {
   };
 }
 
-function harness({ user = account('local_player'), page = 'trading', network } = {}) {
+function harness({ user = account('local_player'), page = 'trading', network, sessionRendering = false } = {}) {
   const elements = new Map();
   const calls = [];
   const opened = [];
@@ -90,6 +90,8 @@ function harness({ user = account('local_player'), page = 'trading', network } =
       focus() { document.activeElement = this; },
       reset() { if (id === 'tradingForm') elements.get('tradingRecipient').value = ''; },
       replaceChildren(...children) { this.children = children; },
+      append(...children) { this.children.push(...children); },
+      closest() { return null; },
       querySelectorAll() { return []; },
       contains(target) { return target === this || this.children.includes(target) || (id === 'tradeNotification' && target?.id?.startsWith('tradeNotification')); },
       setAttribute(name, value) { this[name] = value; },
@@ -97,9 +99,10 @@ function harness({ user = account('local_player'), page = 'trading', network } =
     };
   };
   for (const match of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*\bid="([^"]+)"[^>]*)>/g)) elements.set(match[2], element(match[2], match[1]));
-  const document = { getElementById: id => elements.get(id) || null, body: element('body'), activeElement: null };
+  const document = { getElementById: id => elements.get(id) || null, createElement: tag => element(tag), body: element('body'), activeElement: null, querySelectorAll: () => [], querySelector: () => null };
   const boundary = {
-    document, crypto, console,
+    document, crypto, console, URLSearchParams,
+    location: { pathname: page === 'trading' ? '/trading' : '/', search: '' },
     api: async (route, options = {}) => {
       const call = { route, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : undefined };
       calls.push(call);
@@ -108,10 +111,12 @@ function harness({ user = account('local_player'), page = 'trading', network } =
       if (route === 'trades' && call.method === 'GET') return { trades: vm.runInContext('trading.trades || []', context), user: vm.runInContext('state.user', context) };
       throw new Error(`Unexpected network call ${call.method} ${route}`);
     },
-    renderTradeLists() {}, renderTradeSession() {}, renderOverviewProfile() {}, renderChangelogEditor() {}, renderAnnouncementEditor() {},
+    renderTradeLists() {}, renderTradeSession() {}, renderOverviewProfile() {}, renderChangelogEditor() {}, renderAnnouncementEditor() {}, syncPictureSettings() {}, setProfileAvatar() {},
     clearClaimReward() {}, clearChatReply() {}, renderChat() {}, renderProfileDetails() {}, removeTurnstile() {}, renderClaim() {},
-    renderLeaderboard() {}, scrollChatToLatest() {}, loadPresence() {}, prefillTradingRecipient() {},
-    isOwnChatMessage: () => false, refreshTradeInventories() {}, loadTradeSession() {},
+    renderLeaderboard() {}, scrollChatToLatest() {}, loadPresence() {},
+    isOwnChatMessage: () => false, refreshTradeInventories() {}, loadTradeSession() {}, loadTradeChat() {},
+    renderOwnCardPicker() {}, renderTradeChat() {}, unavailableTradeCards: () => [], tradeCardArtwork: () => null,
+    tradeCardMetadata: card => { const metadata = element('card'); metadata.textContent = card.name; metadata.dataset.cardId = card.id; return metadata; },
     profileHref: username => `/profile/${username}`, formatProfileDate: value => value || 'Not available',
     setChatOpen: open => { chatChanges.push(open); elements.get('chat').classList.toggle('open', open); },
     focusRouteHeading: () => elements.get(vm.runInContext("pageKind === 'trading'", context) ? 'tradingTitle' : 'overviewTitle').focus(),
@@ -135,8 +140,10 @@ function harness({ user = account('local_player'), page = 'trading', network } =
     'newTradeInventory', 'message', 'setUser', 'tradingIdentityIsCurrent', 'tradingBusy', 'mergeTradingUser', 'activeTrade',
     'newestTrade', 'rememberTrade', 'syncTradingUser', 'tradeStatusLabel', 'reconcileTradeAction',
     'renderTradeNotification', 'acceptTradeNotification', 'renderTradingState', 'loadTrades',
-    'invalidateTradeReview', 'findTradingRecipient', 'finishSendingTrade', 'sendTradingOffer', 'actOnTrade'
+    'invalidateTradeReview', 'findTradingRecipient', 'finishSendingTrade', 'sendTradingOffer', 'actOnTrade',
+    'prefillTradingRecipient', 'renderRoute'
   ];
+  if (sessionRendering) functions.push('renderTradeSession', 'renderTradeAssets', 'ownTradeSide', 'partnerTradeSide', 'acceptedTradeRequest', 'tradeButton');
   const prefix = source.slice(0, source.indexOf('\nfunction newTradeInventory'));
   vm.runInContext(prefix + '\n' + functions.map(productionFunction).join('\n') + '\n' + [
     productionListener('tradingRecipient', 'input'), productionListener('tradingForm', 'submit'),
@@ -215,6 +222,10 @@ test('an uncertain send retries the frozen recipient and UUID without repeating 
   assert.equal(ui.trading.sendUncertain, true);
   assert.equal(ui.elements.get('tradingRecipient').disabled, true);
   const frozen = plain(ui.trading.review);
+  ui.evaluate("location.search = '?to=different_player';");
+  ui.call('renderRoute');
+  assert.deepEqual(plain(ui.trading.review), frozen);
+  assert.equal(ui.elements.get('tradingRecipient').value, partner.username);
   ui.elements.get('tradingRecipient').value = 'different_player';
   await ui.elements.get('tradingRecipient').dispatch('input');
   assert.deepEqual(plain(ui.trading.review), frozen);
@@ -260,6 +271,79 @@ test('a send that finishes after navigation does not reopen the trading page', a
   assert.equal(ui.opened.length, 0);
   assert.equal(ui.trading.trades.length, 1);
   assert.equal(ui.trading.sendUncertain, false);
+});
+
+test('a profile trade link opens the new recipient form while preserving the previous server trade and chat receipts', async () => {
+  const local = account('local_player');
+  const previous = request(local, account('previous_player'), { status: 'negotiating', requestAccepted: true });
+  const ui = harness({ user: local });
+  const outboxEntry = { tradeId: previous.id, clientMessageId: crypto.randomUUID(), body: 'Still pending' };
+  Object.assign(ui.trading, { trades: [previous], sessionId: previous.id, session: previous, sessionDraft: { tokens: 10, cards: [], dirty: true }, chatOutbox: [outboxEntry] });
+  ui.elements.get('tradingRecipient').value = 'previous_player';
+  ui.evaluate("location.search = '?to=new_player';");
+  ui.call('renderRoute');
+  await tick();
+  assert.equal(ui.trading.sessionId, null);
+  assert.equal(ui.trading.session, null);
+  assert.equal(ui.elements.get('tradingSession').hidden, true);
+  assert.equal(ui.elements.get('tradingForm').hidden, false);
+  assert.equal(ui.elements.get('tradingRecipient').value, 'new_player');
+  assert.equal(ui.trading.trades[0].id, previous.id);
+  assert.equal(ui.trading.chatOutbox[0], outboxEntry);
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
+});
+
+test('ordinary Trading navigation preserves the selected session and routine refreshes do not reopen the request form', async () => {
+  const local = account('local_player');
+  const trade = request(local, account('partner'), { status: 'negotiating', requestAccepted: true });
+  const ui = harness({ user: local });
+  Object.assign(ui.trading, { trades: [trade], sessionId: trade.id, session: trade });
+  ui.call('renderRoute');
+  await tick();
+  assert.equal(ui.trading.sessionId, trade.id);
+  ui.evaluate("location.search = '?to=partner';");
+  ui.call('syncTradingUser');
+  assert.equal(ui.trading.sessionId, trade.id);
+  assert.equal(ui.elements.get('tradingRecipient').value, '');
+});
+
+test('switching profile recipients during lookup cannot send the previous username', async () => {
+  const lookup = deferred();
+  const partner = account('previous_player');
+  const ui = harness({ network: call => call.route.startsWith('profiles/') ? lookup.promise : undefined });
+  ui.elements.get('tradingRecipient').value = partner.username;
+  const submitted = ui.submit();
+  ui.evaluate("location.search = '?to=new_player';");
+  ui.call('renderRoute');
+  lookup.resolve({ profile: partner });
+  await submitted;
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
+  assert.equal(ui.elements.get('tradingRecipient').value, 'new_player');
+  assert.equal(ui.trading.lookupLoading, false);
+});
+
+test('a profile trade link preserves an unresolved request and recovers the newly selected username after success', async () => {
+  const sent = deferred();
+  const local = account('local_player');
+  const partner = account('previous_player');
+  const ui = harness({ user: local, network: call => {
+    if (call.route.startsWith('profiles/')) return { profile: partner };
+    if (call.method === 'POST') return sent.promise;
+  } });
+  ui.elements.get('tradingRecipient').value = partner.username;
+  const submitted = ui.submit();
+  await tick();
+  const frozenRequest = plain(ui.trading.review);
+  ui.evaluate("location.search = '?to=new_player';");
+  ui.call('renderRoute');
+  assert.deepEqual(plain(ui.trading.review), frozenRequest);
+  assert.equal(ui.elements.get('tradingRecipient').value, partner.username);
+  assert.equal(ui.elements.get('tradingRecipient').disabled, true);
+  sent.resolve({ trade: request(local, partner, { clientOfferId: frozenRequest.clientOfferId }), user: local });
+  await submitted;
+  assert.equal(ui.opened.length, 0);
+  assert.equal(ui.elements.get('tradingRecipient').value, 'new_player');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
 });
 
 test('global polling shows received pending requests outside Trading and dismissal advances the queue', async () => {
@@ -412,4 +496,101 @@ test('background trade balance refreshes preserve an unsaved Settings username d
   assert.equal(ui.state.user.balance, 31);
   assert.equal(ui.elements.get('newUsername').value, 'unsaved_new_name');
   assert.equal(ui.elements.get('menuBalance').textContent, '31');
+});
+
+function displayedAssets(ui, id) {
+  const panel = ui.elements.get(id);
+  const cardIds = [];
+  const visit = node => { if (node.dataset.cardId) cardIds.push(node.dataset.cardId); node.children.forEach(visit); };
+  visit(panel);
+  return { tokens: panel.children[0]?.textContent, count: panel.children[1]?.textContent, cardIds };
+}
+
+test('each participant sees their own assets first and the other participant’s assets second', () => {
+  const sender = account('sender');
+  const recipient = account('recipient');
+  const senderCard = { id: 'sender-copy', name: 'Jalapeño' };
+  const recipientCard = { id: 'recipient-copy', name: 'Habanero' };
+  const trade = request(sender, recipient, { status: 'negotiating', requestAccepted: true, offeredTokens: 12, requestedTokens: 38, offeredCards: [senderCard], requestedCards: [recipientCard] });
+  for (const [user, partner, ownTokens, ownCard, partnerTokens, partnerCard] of [
+    [sender, recipient, 12, senderCard, 38, recipientCard],
+    [recipient, sender, 38, recipientCard, 12, senderCard]
+  ]) {
+    const ui = harness({ user, sessionRendering: true });
+    Object.assign(ui.trading, { session: trade, sessionId: trade.id, sessionDraft: { tokens: ownTokens, cards: [ownCard], baseVersion: trade.version, dirty: false } });
+    ui.call('renderTradeSession');
+    assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: `${ownTokens} tokens`, count: '1 card', cardIds: [ownCard.id] });
+    assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: `${partnerTokens} tokens`, count: '1 card', cardIds: [partnerCard.id] });
+    assert.equal(ui.elements.get('tradingSessionTitle').textContent, `Trade with ${partner.username}`);
+    assert.equal(ui.elements.get('tradingOwnOffer').hidden, false);
+    assert.equal(ui.elements.get('tradingPartnerOffer').hidden, false);
+    assert.equal(ui.elements.get('tradingOfferEditor').hidden, false);
+  }
+});
+
+test('an unsaved own offer previews new assets without inheriting a previous confirmation or changing the partner offer', () => {
+  const sender = account('sender');
+  const trade = request(sender, account('recipient'), {
+    status: 'negotiating', requestAccepted: true, offeredTokens: 12, requestedTokens: 38,
+    offeredCards: [{ id: 'old-copy', name: 'Old card' }], requestedCards: [{ id: 'partner-copy', name: 'Partner card' }],
+    senderConfirmed: true, recipientConfirmed: true
+  });
+  const ui = harness({ user: sender, sessionRendering: true });
+  Object.assign(ui.trading, { session: trade, sessionId: trade.id, sessionDraft: { tokens: '17', cards: [{ id: 'new-copy', name: 'New card' }], baseVersion: trade.version, dirty: true } });
+  ui.call('renderTradeSession');
+  assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '17 tokens', count: '1 card', cardIds: ['new-copy'] });
+  assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '38 tokens', count: '1 card', cardIds: ['partner-copy'] });
+  assert.equal(ui.elements.get('tradingOwnConfirmed').textContent, 'Unsaved changes');
+  assert.equal(ui.elements.get('tradingOwnConfirmed').classList.contains('success'), false);
+  assert.equal(ui.elements.get('tradingPartnerConfirmed').textContent, 'Confirmed');
+  assert.equal(ui.elements.get('tradingPartnerConfirmed').classList.contains('success'), true);
+  assert.equal(ui.elements.get('tradingConfirmReview').hidden, true);
+  assert.equal(ui.elements.get('tradingConfirmFinal').disabled, true);
+});
+
+test('pending requests hide and clear both asset panels and the editor after a previous session', () => {
+  const sender = account('sender');
+  const recipient = account('recipient');
+  const previous = request(sender, recipient, { status: 'negotiating', requestAccepted: true, offeredTokens: 12, requestedTokens: 38 });
+  for (const user of [sender, recipient]) {
+    const ui = harness({ user, sessionRendering: true });
+    Object.assign(ui.trading, { session: previous, sessionId: previous.id, sessionDraft: { tokens: 12, cards: [], baseVersion: previous.version, dirty: false } });
+    ui.call('renderTradeSession');
+    assert.equal(ui.elements.get('tradingOwnReadonly').children.length, 2);
+    const pending = request(sender, recipient);
+    Object.assign(ui.trading, { session: pending, sessionId: pending.id, sessionDraft: { tokens: 0, cards: [], baseVersion: pending.version, dirty: false } });
+    ui.call('renderTradeSession');
+    for (const id of ['tradingOwnOffer', 'tradingPartnerOffer', 'tradingOfferEditor', 'tradingContributionForm', 'tradingPrivateChat']) assert.equal(ui.elements.get(id).hidden, true, `${id} is hidden`);
+    for (const id of ['tradingOwnReadonly', 'tradingPartnerAssets', 'tradingSessionCards']) assert.equal(ui.elements.get(id).children.length, 0, `${id} is cleared`);
+    assert.equal(ui.elements.get('tradingSessionTokens').value, '0');
+  }
+});
+
+test('closed trades display persisted assets even when an unsaved draft remains in memory', () => {
+  const local = account('local_player');
+  for (const status of ['accepted', 'cancelled']) {
+    const trade = request(local, account('partner'), {
+      status, requestAccepted: true, offeredTokens: 12, requestedTokens: 38,
+      offeredCards: [{ id: 'saved-copy', name: 'Saved card' }], requestedCards: []
+    });
+    const ui = harness({ user: local, sessionRendering: true });
+    Object.assign(ui.trading, { session: trade, sessionId: trade.id, sessionDraft: { tokens: 999, cards: [{ id: 'unsaved-copy', name: 'Unsaved card' }], baseVersion: trade.version, dirty: true } });
+    ui.call('renderTradeSession');
+    assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '12 tokens', count: '1 card', cardIds: ['saved-copy'] });
+    assert.deepEqual(displayedAssets(ui, 'tradingPartnerAssets'), { tokens: '38 tokens', count: '0 cards', cardIds: [] });
+    assert.equal(ui.elements.get('tradingOfferEditor').hidden, true);
+    assert.equal(ui.elements.get('tradingOwnConfirmed').textContent, status === 'accepted' ? 'Completed' : 'Not confirmed');
+    assert.equal(ui.elements.get('tradingChatForm').hidden, true);
+  }
+});
+
+test('invalid token drafts stay visibly invalid rather than appearing as an offered amount', () => {
+  const local = account('local_player');
+  const trade = request(local, account('partner'), { status: 'negotiating', requestAccepted: true });
+  const ui = harness({ user: local, sessionRendering: true });
+  for (const tokens of ['-2', '1.5', 'invalid']) {
+    Object.assign(ui.trading, { session: trade, sessionId: trade.id, sessionDraft: { tokens, cards: [], baseVersion: trade.version, dirty: true } });
+    ui.call('renderTradeSession');
+    assert.deepEqual(displayedAssets(ui, 'tradingOwnReadonly'), { tokens: '— tokens', count: '0 cards', cardIds: [] });
+  }
 });

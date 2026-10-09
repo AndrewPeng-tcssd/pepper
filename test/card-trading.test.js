@@ -14,9 +14,9 @@ function serve(t, store) {
   const server = createApp(store, { mailer: null }).listen(0);
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
-  return async (route, body, cookie) => {
+  return async (route, body, cookie, method) => {
     const response = await fetch(base + route, {
-      method: body === undefined ? 'GET' : 'POST',
+      method: method || (body === undefined ? 'GET' : 'POST'),
       headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
@@ -373,7 +373,7 @@ test('original card request retries remain idempotent after replacing contributi
   assert.equal((await api('/api/trades', { ...payload, offeredCardIds: [second] }, sender.cookie)).status, 400);
 });
 
-test('trusted card grants create concrete copies once and retries do not replace cards after trading', async t => {
+test('trusted card grant receipts survive trading and account deletion without issuing replacement copies', async t => {
   const { api, store } = await fixture(t);
   const sender = await player(api, store, 'grant_sender');
   const recipient = await player(api, store, 'grant_recipient');
@@ -390,6 +390,8 @@ test('trusted card grants create concrete copies once and retries do not replace
   assert.equal(await store.cardGrants.countDocuments(), 1);
   const trade = await start(api, sender, recipient, granted.cardInstanceIds);
   assert.equal((await settle(api, sender, recipient, trade)).status, 'accepted');
+  const deleted = await api('/api/account', { currentPassword: 'card-trading-password', confirmation: 'DELETE' }, sender.cookie, 'DELETE');
+  assert.equal(deleted.status, 200);
   await store.cardDefinitions.deleteMany({});
   const replayed = await grantCards(store, { ...payload, cardIds: [...payload.cardIds].reverse(), grantId: payload.grantId.toUpperCase() });
   assert.deepEqual(replayed, granted);
@@ -410,6 +412,38 @@ test('concurrent trusted grants with one receipt ID issue only one set of copies
   for (const result of results) assert.deepEqual(result, results[0]);
   assert.equal(await store.cardGrants.countDocuments(), 1);
   assert.equal(await store.cardInstances.countDocuments(), 2);
+});
+
+test('a grant whose owner is deleted after its read cannot create orphan cards or a receipt', async t => {
+  const { api, store } = await fixture(t);
+  const owner = await player(api, store, 'grant_deleted_owner');
+  const payload = { ownerAccountId: owner.accountId, cardIds: ['test-jalapeno'], grantId: crypto.randomUUID() };
+  let ownerRead;
+  const ownerWasRead = new Promise(resolve => { ownerRead = resolve; });
+  let releaseRead;
+  const resume = new Promise(resolve => { releaseRead = resolve; });
+  const findOne = store.users.findOne.bind(store.users);
+  let paused = false;
+  store.users.findOne = async (filter, options) => {
+    const result = await findOne(filter, options);
+    if (!paused && filter.accountId === owner.accountId && options?.session) {
+      paused = true;
+      ownerRead();
+      await resume;
+    }
+    return result;
+  };
+  t.after(() => { releaseRead(); store.users.findOne = findOne; });
+  const issuance = assert.rejects(grantCards(store, payload), error => error.status === 404);
+  await ownerWasRead;
+  try {
+    const deleted = await api('/api/account', { currentPassword: 'card-trading-password', confirmation: 'DELETE' }, owner.cookie, 'DELETE');
+    assert.equal(deleted.status, 200);
+  } finally { releaseRead(); }
+  await issuance;
+  assert.equal(await store.users.countDocuments({ _id: owner.id }), 0);
+  assert.equal(await store.cardInstances.countDocuments({ ownerUserId: owner.id }), 0);
+  assert.equal(await store.cardGrants.countDocuments({ _id: payload.grantId }), 0);
 });
 
 test('one global grant ID cannot concurrently issue cards to two different owners', async t => {
@@ -483,6 +517,4 @@ test('failed card issuance rolls back its receipt and honors a containing transa
   assert.equal(await store.cardInstances.countDocuments(), 1);
   assert.equal(await store.cardGrants.countDocuments(), 1);
 });
-
-
 

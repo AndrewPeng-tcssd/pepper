@@ -7,8 +7,8 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=41">
-  <script src="/app.js?v=39" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=42">
+  <script src="/app.js?v=40" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -16,12 +16,11 @@
   <aside class="chat-sidebar" id="chat" aria-label="Chat">
     <div class="chat-heading">
       <div class="chat-heading-title"><h2>Chat</h2><button class="chat-close" id="chatClose" type="button" aria-label="Close chat">×</button></div>
-      <p class="player-count" id="playerCount" role="status" aria-live="polite" aria-atomic="true" title="Active signed-in players.">Checking players…</p>
+      <button class="player-count" id="playerCount" type="button" aria-haspopup="dialog" aria-controls="onlinePlayersDialog" aria-expanded="false" aria-live="polite">Checking players…</button>
     </div>
     <div class="chat-board">
       <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
       <div class="chat-join" id="chatLoggedOut" hidden>
-        <span>Log in to chat.</span>
         <button class="button" id="chatJoin" type="button">Sign up or log in</button>
       </div>
       <div id="chatLoggedIn" hidden>
@@ -50,14 +49,15 @@
       <a href="/changelog">Changelog</a>
       <a href="/announcements">Announcements</a>
       <a href="/leaderboard">Leaderboard</a>
-      <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat <span class="chat-toggle-count" id="mobilePlayerCount" title="Active signed-in players."></span></button>
+      <button class="chat-toggle" id="chatToggle" type="button" aria-controls="chat" aria-expanded="false">Chat</button>
+      <button class="online-count-toggle" id="mobilePlayerCount" type="button" aria-haspopup="dialog" aria-controls="onlinePlayersDialog" aria-expanded="false">Checking players…</button>
     </nav>
     <div class="header-actions">
       <button class="button" id="accountButton" type="button">Sign up</button>
       <details class="account-menu" id="accountMenu" hidden>
         <summary class="button"><span>Account</span><svg class="account-menu-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" /></svg></summary>
         <div class="account-dropdown">
-          <div class="account-menu-info"><strong id="menuUsername"></strong><span><span id="menuBalance">0</span> tokens</span></div>
+          <div class="account-menu-info"><div class="player-identity"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><strong id="menuUsername"></strong></div><span><span id="menuBalance">0</span> tokens</span></div>
           <a href="/profile">Profile</a>
           <a href="/trading">Trading</a>
           <a href="/settings">Settings</a>
@@ -81,7 +81,7 @@
           <h2 id="overviewProfileTitle">Your profile</h2>
           <p class="overview-profile-guest" id="overviewProfileGuest" role="status">Loading profile…</p>
           <div id="overviewProfileDetails" hidden>
-            <h3 class="overview-profile-name" id="overviewProfileName"></h3>
+            <div class="player-identity overview-profile-identity"><img class="player-avatar profile-avatar" id="overviewProfileAvatar" src="/favicon.svg" alt="" width="56" height="56"><h3 class="overview-profile-name" id="overviewProfileName"></h3></div>
             <div class="overview-profile-balance"><strong id="overviewProfileBalance">0</strong><span>tokens</span></div>
             <dl class="overview-profile-dates">
               <dt>Joined</dt><dd id="overviewProfileJoined"></dd>
@@ -93,12 +93,10 @@
         <section class="overview-widget overview-pack" id="cards" aria-labelledby="cardsTitle">
           <div class="pack-intro">
             <h2 id="cardsTitle">Pack opening test</h2>
-            <p>Try the pack opening animation.</p>
             <div class="pack-controls">
               <button class="button" id="openPack" type="button">Open pack</button>
               <button class="button" id="replayPack" type="button" hidden>Reset</button>
             </div>
-            <p class="pack-help" id="packHelp">Open the demo pack.</p>
           </div>
           <div class="pack-stage" id="packStage" data-phase="sealed" aria-label="Pack opening test">
             <button class="demo-pack" id="demoPack" type="button" aria-label="Open pack">
@@ -119,12 +117,12 @@
 
     <section class="section-wrap profile-overview" id="profileIntro" aria-labelledby="profileTitle" hidden>
       <h1 id="profileTitle">Profile</h1>
-      <p id="profileDescription" role="status">Log in for account details.</p>
+      <p id="profileDescription" role="status">Sign in required.</p>
       <button class="button profile-retry" id="profileRetry" type="button" hidden>Try again</button>
       <a class="button profile-trade" id="profileTrade" href="/trading" hidden>Start a trade</a>
       <div class="profile-details" id="profileDetails" hidden>
         <div class="profile-info-card">
-          <h2 id="profileAccountTitle">Account</h2>
+          <div class="player-identity profile-account-heading"><img class="player-avatar profile-avatar" id="profileAvatar" src="/favicon.svg" alt="" width="56" height="56"><h2 id="profileAccountTitle">Account</h2></div>
           <dl>
             <dt>Username</dt><dd id="profileUsername"></dd>
             <dt>Account ID</dt><dd class="account-id-value" id="profileAccountId"></dd>
@@ -145,12 +143,11 @@
     <section class="tokens-section" id="tokens" aria-labelledby="tokensTitle">
       <div class="section-wrap">
         <div class="tokens-heading">
-          <div><h2 id="tokensTitle">Tokens</h2><p id="tokensIntro">10–20 tokens every hour.</p></div>
+          <div><h2 id="tokensTitle">Tokens</h2></div>
         </div>
         <div class="token-grid">
           <div class="claim-panel">
             <h3 id="claimTitle">Hourly tokens</h3>
-            <p id="claimDescription">Log in to claim tokens.</p>
             <div id="loggedOutClaim">
               <button class="button" id="claimJoin" type="button">Sign up or log in</button>
             </div>
@@ -190,7 +187,6 @@
 
     <section class="section-wrap trading-overview" id="tradingPage" aria-labelledby="tradingTitle" hidden>
       <h1 id="tradingTitle">Trading</h1>
-      <p>Request a trade</p>
       <p id="tradingAuthLoading" role="status">Checking your account…</p>
       <div class="trading-guest" id="tradingGuest" hidden><p>Sign in to trade.</p><button class="button" id="tradingJoin" type="button">Sign up or log in</button></div>
       <div id="tradingAccount" hidden>
@@ -200,28 +196,29 @@
         <section class="trading-session" id="tradingSession" aria-labelledby="tradingSessionTitle" hidden>
           <button class="button" id="tradingSessionBack" type="button">All trades</button>
           <div class="trading-session-heading"><h2 id="tradingSessionTitle" tabindex="-1">Trade session</h2><span class="trading-status" id="tradingSessionStatus"></span></div>
-          <p class="trading-help" id="tradingSessionDescription" role="status"></p><p class="trading-account-id" id="tradingSessionAccountId"></p>
           <p class="form-message" id="tradingSessionMessage" role="status"></p><button class="button" id="tradingSessionRetry" type="button" hidden>Retry loading session</button>
           <div class="trading-session-grid" id="tradingSessionContent" hidden>
-            <section class="trading-card" id="tradingOwnOffer" aria-labelledby="tradingOwnTitle" hidden>
+            <section class="trading-card trading-offer-summary" id="tradingOwnOffer" aria-labelledby="tradingOwnTitle" hidden>
               <h3 id="tradingOwnTitle">Your offer</h3><p class="trading-confirmation-state" id="tradingOwnConfirmed"></p>
               <div id="tradingOwnReadonly"></div>
+            </section>
+            <section class="trading-card trading-offer-summary" id="tradingPartnerOffer" aria-labelledby="tradingPartnerTitle" hidden><h3 id="tradingPartnerTitle">Their offer</h3><p class="trading-confirmation-state" id="tradingPartnerConfirmed"></p><div id="tradingPartnerAssets"></div></section>
+            <section class="trading-card trading-offer-editor" id="tradingOfferEditor" aria-labelledby="tradingEditTitle" hidden>
+              <h3 id="tradingEditTitle">Edit your offer</h3>
               <form class="trading-form" id="tradingContributionForm" hidden>
                 <div><label for="tradingSessionTokens">Your tokens</label><input id="tradingSessionTokens" type="number" min="0" max="9007199254740991" step="1" value="0" inputmode="numeric" required></div>
                 <fieldset class="trading-inventory"><legend>Your cards</legend><p class="trading-card-count" id="tradingSessionCardCount"></p><p class="trading-help" id="tradingSessionInventoryMessage" role="status"></p><button class="button trading-inventory-refresh" id="tradingSessionInventoryRefresh" type="button">Refresh your cards</button><div class="trading-card-picker" id="tradingSessionCards" aria-busy="false"></div></fieldset>
-                <p class="trading-help">Choose your own offer.</p>
                 <p class="form-message" id="tradingDraftMessage" role="status"></p><button class="button" id="tradingUseLatest" type="button" hidden>Use updated terms</button>
                 <button class="button" id="tradingContributionSave" type="submit">Save my offer</button>
               </form>
             </section>
-            <section class="trading-card" id="tradingPartnerOffer" aria-labelledby="tradingPartnerTitle" hidden><h3 id="tradingPartnerTitle">Other player’s offer</h3><p class="trading-confirmation-state" id="tradingPartnerConfirmed"></p><div id="tradingPartnerAssets"></div><p class="trading-help">Partner chooses their own offer.</p></section>
-            <section class="trading-card trading-session-controls" aria-label="Trade actions"><p class="trading-help" id="tradingSessionRules"></p><div class="trading-actions" id="tradingSessionActions"></div><div class="trading-confirm-review" id="tradingConfirmReview" hidden><h3>Confirm these exact terms</h3><p class="trading-help">Both players must confirm.</p><div class="trading-actions"><button class="button trading-primary" id="tradingConfirmFinal" type="button">Confirm my offer</button><button class="button" id="tradingConfirmBack" type="button">Go back</button></div></div></section>
+            <section class="trading-card trading-session-controls" aria-label="Trade actions"><div class="trading-actions" id="tradingSessionActions"></div><div class="trading-confirm-review" id="tradingConfirmReview" hidden><h3>Confirm these exact terms</h3><div class="trading-actions"><button class="button trading-primary" id="tradingConfirmFinal" type="button">Confirm my offer</button><button class="button" id="tradingConfirmBack" type="button">Go back</button></div></div></section>
             <section class="trading-card trading-private-chat" id="tradingPrivateChat" aria-labelledby="tradingChatTitle" hidden>
-              <h3 id="tradingChatTitle">Private chat</h3><p class="trading-help">Private to both players.</p>
+              <h3 id="tradingChatTitle">Private chat</h3>
               <div class="trading-chat-messages" id="tradingChatMessages" aria-live="polite" aria-relevant="additions"></div>
               <p class="form-message" id="tradingChatMessage" role="status"></p><button class="button" id="tradingChatRetry" type="button" hidden>Retry loading chat</button>
               <form class="trading-chat-form" id="tradingChatForm"><label class="sr-only" for="tradingChatInput">Private message</label><input id="tradingChatInput" maxlength="1000" placeholder="Talk about your trade" autocomplete="off" required><button class="button" id="tradingChatSend" type="submit">Send</button></form>
-              <p class="trading-help" id="tradingChatClosed" hidden>Trade ended. Chat is read-only.</p>
+              <p class="trading-help" id="tradingChatClosed" hidden>Chat closed</p>
             </section>
           </div>
         </section>
@@ -237,25 +234,23 @@
           <div class="trading-offers" id="tradingLists" aria-busy="false">
             <section class="trading-offer-section" aria-labelledby="tradingReceivedTitle"><h2 id="tradingReceivedTitle">Received trades</h2><p class="trading-empty" id="tradingReceivedEmpty" hidden>No active trades received.</p><div class="trading-list" id="tradingReceived"></div></section>
             <section class="trading-offer-section" aria-labelledby="tradingSentTitle"><h2 id="tradingSentTitle">Sent trades</h2><p class="trading-empty" id="tradingSentEmpty" hidden>No active trades sent.</p><div class="trading-list" id="tradingSent"></div></section>
-            <section class="trading-offer-section" aria-labelledby="tradingHistoryTitle"><h2 id="tradingHistoryTitle">Trade history</h2><p class="trading-help">Latest 100 completed trades.</p><p class="trading-empty" id="tradingHistoryEmpty" hidden>No completed trades yet.</p><div class="trading-list" id="tradingHistory"></div></section>
+            <section class="trading-offer-section" aria-labelledby="tradingHistoryTitle"><h2 id="tradingHistoryTitle">Trade history</h2><p class="trading-empty" id="tradingHistoryEmpty" hidden>No completed trades yet.</p><div class="trading-list" id="tradingHistory"></div></section>
           </div>
         </div>
       </div>
     </section>
     <section class="section-wrap changelog-overview" id="changelogPage" aria-labelledby="changelogTitleHeading" hidden>
       <h1 id="changelogTitleHeading">Changelog</h1>
-      <p>The latest updates</p>
       <div class="changelog-tools" id="changelogTools" hidden>
         <button class="button" id="changelogPreviewToggle" type="button" aria-pressed="false">View as visitor</button>
         <p class="changelog-preview-notice" id="changelogPreviewNotice" role="status" hidden>Visitor preview; editing hidden.</p>
       </div>
       <section class="changelog-editor" id="changelogEditor" aria-labelledby="changelogEditorTitle" hidden>
         <h2 id="changelogEditorTitle">Add an update</h2>
-        <p>Automatic date and build version.</p>
         <form class="changelog-form" id="changelogForm">
           <div><label for="changelogTitle">Title</label><input id="changelogTitle" name="title" maxlength="120" required></div>
           <div><label for="changelogDescription">Description</label><textarea id="changelogDescription" name="description" maxlength="5000" rows="5" required></textarea></div>
-          <div><label for="changelogVersion">Version</label><input id="changelogVersion" name="version" maxlength="32" pattern="[0-9]+\.[0-9]+\.[0-9]+" placeholder="0.4.1" aria-describedby="changelogVersionHint" required><p id="changelogVersionHint">Version format: 0.4.1</p></div>
+          <div><label for="changelogVersion">Version (e.g. 0.4.1)</label><input id="changelogVersion" name="version" maxlength="32" pattern="[0-9]+\.[0-9]+\.[0-9]+" placeholder="0.4.1" required></div>
           <button class="button" id="changelogSubmit" type="submit">Add entry</button>
           <p class="form-message" id="changelogFormMessage" role="status"></p>
         </form>
@@ -267,14 +262,12 @@
 
     <section class="section-wrap changelog-overview" id="announcementsPage" aria-labelledby="announcementsTitle" hidden>
       <h1 id="announcementsTitle">Announcements</h1>
-      <p>Pepper TCG news.</p>
       <div class="changelog-tools" id="announcementTools" hidden>
         <button class="button" id="announcementPreviewToggle" type="button" aria-pressed="false">View as visitor</button>
         <p class="changelog-preview-notice" id="announcementPreviewNotice" role="status" hidden>Visitor preview; editing hidden.</p>
       </div>
       <section class="changelog-editor" id="announcementEditor" aria-labelledby="announcementEditorTitle" hidden>
         <h2 id="announcementEditorTitle">Add an announcement</h2>
-        <p>Owner publishing; automatic dates.</p>
         <form class="changelog-form" id="announcementForm">
           <div><label for="announcementTitle">Title</label><input id="announcementTitle" name="title" maxlength="120" required></div>
           <div><label for="announcementDescription">Description</label><textarea id="announcementDescription" name="description" maxlength="5000" rows="5" required></textarea></div>
@@ -289,7 +282,6 @@
 
     <section class="section-wrap changelog-overview leaderboard-overview" id="leaderboardPage" aria-labelledby="leaderboardTitle" hidden>
       <h1 id="leaderboardTitle">Token leaderboard</h1>
-      <p>Top 100; ties share ranks.</p>
       <p class="leaderboard-summary" id="leaderboardSummary"></p>
       <p class="changelog-message" id="leaderboardMessage" role="status">Loading leaderboard…</p>
       <button class="button changelog-retry" id="leaderboardRetry" type="button" hidden>Try again</button>
@@ -304,12 +296,10 @@
 
     <section class="section-wrap settings-overview" id="settingsPage" aria-labelledby="settingsTitle" hidden>
       <h1 id="settingsTitle">Settings</h1>
-      <p>Manage your account and appearance.</p>
       <div class="settings-grid">
         <section class="settings-card" aria-labelledby="appearanceTitle">
           <h2 id="appearanceTitle">Appearance</h2>
-          <p id="themeHint">Choose how Pepper TCG looks.</p>
-          <fieldset class="theme-options" aria-describedby="themeHint">
+          <fieldset class="theme-options">
             <legend class="sr-only">Color theme</legend>
             <label class="theme-option" for="themeLight"><input id="themeLight" type="radio" name="theme" value="light" checked><span>Light</span></label>
             <label class="theme-option" for="themeDark"><input id="themeDark" type="radio" name="theme" value="dark"><span>Dark</span></label>
@@ -320,7 +310,6 @@
           <h2 id="accountTitle">Account details</h2>
           <p id="settingsAccountLoading" role="status">Loading account…</p>
           <div id="settingsLoggedOut" hidden>
-            <p>Log in for account details.</p>
             <button class="button" id="settingsJoin" type="button">Sign up or log in</button>
           </div>
           <div id="settingsLoggedIn" hidden>
@@ -339,11 +328,19 @@
           </div>
           <p class="form-message" id="accountMessage" role="status"></p>
         </section>
+        <section class="settings-card" id="pictureSettings" aria-labelledby="pictureSettingsTitle" hidden>
+          <h2 id="pictureSettingsTitle">Profile picture</h2>
+          <form class="settings-form" id="pictureForm">
+            <img class="player-avatar settings-avatar" id="picturePreview" src="/favicon.svg" alt="Profile picture preview" width="96" height="96">
+            <div><label for="pictureFile">Image (PNG/JPG/WebP, 2MB max)</label><input id="pictureFile" type="file" accept="image/png,image/jpeg,image/webp"></div>
+            <div class="settings-account-actions"><button class="button" id="pictureSave" type="submit" disabled>Save picture</button><button class="button" id="pictureReset" type="button">Use default</button></div>
+            <p class="form-message" id="pictureMessage" role="status"></p>
+          </form>
+        </section>
         <section class="settings-card" id="usernameSettings" aria-labelledby="usernameSettingsTitle" hidden>
           <h2 id="usernameSettingsTitle">Change username</h2>
           <form class="settings-form" id="usernameForm">
-            <div><label for="newUsername">New username</label><input id="newUsername" name="username" autocomplete="username" minlength="3" maxlength="24" pattern="[a-zA-Z0-9_]{3,24}" aria-describedby="usernameRules" required></div>
-            <p id="usernameRules">3–24 letters, numbers, or underscores.</p>
+            <div><label for="newUsername">Username (3–24 letters/numbers/underscores)</label><input id="newUsername" name="username" autocomplete="username" minlength="3" maxlength="24" pattern="[a-zA-Z0-9_]{3,24}" required></div>
             <div><label for="usernameCurrentPassword">Current password</label><input id="usernameCurrentPassword" name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></div>
             <button class="button" id="usernameSubmit" type="submit">Save username</button>
             <p class="form-message" id="usernameMessage" role="status"></p>
@@ -359,6 +356,10 @@
             <p class="form-message" id="passwordMessage" role="status"></p>
           </form>
         </section>
+        <section class="settings-card account-danger" id="deleteAccountSettings" aria-labelledby="deleteAccountTitle" hidden>
+          <h2 id="deleteAccountTitle">Delete account</h2>
+          <button class="button danger-button" id="deleteAccountOpen" type="button">Delete account</button>
+        </section>
       </div>
     </section>
 
@@ -372,12 +373,34 @@
     <div class="trading-actions"><button class="button trading-primary" id="tradeNotificationAccept" type="button">Accept</button><button class="button" id="tradeNotificationDismiss" type="button">Later</button></div>
   </aside>
 
+  <dialog id="onlinePlayersDialog" aria-labelledby="onlinePlayersTitle">
+    <div class="dialog-content">
+      <button class="dialog-close" id="onlinePlayersClose" type="button" aria-label="Close online players">×</button>
+      <h2 id="onlinePlayersTitle">Online players</h2>
+      <p class="form-message" id="onlinePlayersMessage" role="status"></p>
+      <ul class="online-players-list" id="onlinePlayersList"></ul>
+    </div>
+  </dialog>
+
+  <dialog id="deleteAccountDialog" aria-labelledby="deleteAccountDialogTitle">
+    <div class="dialog-content">
+      <button class="dialog-close" id="deleteAccountClose" type="button" aria-label="Cancel deletion">×</button>
+      <h2 id="deleteAccountDialogTitle">Delete account permanently?</h2>
+      <form class="settings-form" id="deleteAccountForm">
+        <div><label for="deleteAccountPassword">Current password</label><input id="deleteAccountPassword" type="password" autocomplete="current-password" maxlength="128" required></div>
+        <div><label for="deleteAccountConfirmation">Type DELETE to confirm</label><input id="deleteAccountConfirmation" autocomplete="off" spellcheck="false" pattern="DELETE" required></div>
+        <button class="button danger-button" id="deleteAccountSubmit" type="submit">Delete permanently</button>
+        <button class="button" id="deleteAccountCancel" type="button">Cancel</button>
+        <p class="form-message" id="deleteAccountMessage" role="status"></p>
+      </form>
+    </div>
+  </dialog>
+
   <dialog id="authDialog" aria-labelledby="authTitle">
     <div class="dialog-content">
       <button class="dialog-close" id="closeDialog" type="button" aria-label="Close">×</button>
       <h2 id="authTitle">Create account</h2>
       <div class="auth-tabs"><button class="active" id="signupTab" type="button">Sign up</button><button id="loginTab" type="button">Log in</button></div>
-      <p id="authHint" hidden></p>
       <form id="authForm">
         <div id="usernameField"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required></div>
         <div id="identifierField" hidden><label for="identifier">Username or email</label><input id="identifier" name="identifier" autocomplete="username"></div>

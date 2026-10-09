@@ -7,6 +7,7 @@ let routeRevision = 0;
 let profileLoadRevision = 0;
 let authRevision = 0;
 let userIdentityRevision = 0;
+let accountActionRevision = 0;
 const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true, chatMessages: [], chatOutbox: [], chatReply: null, leaderboard: null, leaderboardSignature: null };
 const chatInFlight = new Set();
 let turnstileScriptPromise;
@@ -23,6 +24,10 @@ let presenceLoadPromise;
 let presenceRefreshQueued = false;
 let presenceRevision = 0;
 let presenceSuspended = false;
+let presencePlayers = null;
+let presenceListSignature = null;
+const accountPicture = { identity: null, draft: null, reading: false, revision: 0 };
+let deletingAccount = false;
 let leaderboardLoadPromise;
 let leaderboardRefreshQueued = false;
 let leaderboardRevision = 0;
@@ -77,7 +82,33 @@ function profileHref(username) {
   return isOwnProfile(username) ? '/profile' : `/profile/${encodeURIComponent(username)}`;
 }
 
+function profilePictureUrl(person) {
+  try {
+    const url = new URL(person?.avatarUrl || '/favicon.svg', location.origin);
+    if (url.origin === location.origin && (url.pathname === '/favicon.svg' || /^\/api\/avatars\/[a-z0-9-]+$/i.test(url.pathname))) return `${url.pathname}${url.search}`;
+  } catch {}
+  return '/favicon.svg';
+}
+
+function setProfileAvatar(image, person) {
+  const source = profilePictureUrl(person);
+  if (image.getAttribute('src') !== source) image.src = source;
+  image.onerror = () => { image.onerror = null; image.src = '/favicon.svg'; };
+}
+
+function profileAvatar(person, className = 'player-avatar') {
+  const image = document.createElement('img');
+  image.className = className;
+  image.alt = '';
+  image.width = 32;
+  image.height = 32;
+  image.decoding = 'async';
+  setProfileAvatar(image, person);
+  return image;
+}
+
 function renderProfileDetails(profile) {
+  setProfileAvatar($('profileAvatar'), profile);
   $('profileUsername').textContent = profile.username;
   $('profileAccountId').textContent = profile.accountId || 'Not available';
   $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
@@ -86,6 +117,7 @@ function renderProfileDetails(profile) {
 }
 
 function renderOverviewProfile(user) {
+  setProfileAvatar($('overviewProfileAvatar'), user);
   $('overviewProfileDetails').hidden = !user;
   $('overviewProfileGuest').hidden = !!user;
   $('overviewProfileGuest').textContent = 'Log in to view profile.';
@@ -100,6 +132,7 @@ function setUser(user) {
   const previousPresenceIdentity = state.user?.accountId || state.user?.username || null;
   const previousUsername = state.user?.username;
   state.user = user;
+  syncPictureSettings();
   renderOverviewProfile(user);
   authRevision++;
   renderChangelogEditor();
@@ -121,9 +154,7 @@ function setUser(user) {
     author.href = profileHref(author.dataset.username);
   });
   if (!viewingPublicProfile) {
-    $('profileDescription').textContent = user
-      ? 'Your account and tokens.'
-      : 'Log in for account details.';
+    $('profileDescription').textContent = user ? '' : 'Sign in required.';
     $('profileDetails').hidden = !user;
     if (user) renderProfileDetails(user);
   }
@@ -139,6 +170,9 @@ function setUser(user) {
   $('settingsLoggedIn').hidden = !user;
   $('usernameSettings').hidden = !user;
   $('passwordSettings').hidden = !user;
+  $('pictureSettings').hidden = !user;
+  $('deleteAccountSettings').hidden = !user;
+  setProfileAvatar($('menuAvatar'), user);
   if (user) {
     if (previousPresenceIdentity !== (user.accountId || user.username) || $('newUsername').value === previousUsername) $('newUsername').value = user.username;
     $('menuUsername').textContent = user.username;
@@ -156,6 +190,8 @@ function setUser(user) {
   } else {
     $('usernameForm').reset();
     $('passwordForm').reset();
+    $('deleteAccountForm').reset();
+    if ($('deleteAccountDialog').open) $('deleteAccountDialog').close();
     message($('usernameMessage'), '');
     message($('passwordMessage'), '');
     ['accountName', 'accountId', 'accountEmail', 'accountJoined', 'accountLastClaim'].forEach(id => { $(id).textContent = ''; });
@@ -163,7 +199,6 @@ function setUser(user) {
     $('accountBalance').textContent = '0';
     removeTurnstile();
     $('claimTitle').textContent = 'Sign in to claim';
-    $('claimDescription').textContent = 'Log in to claim tokens.';
     message($('claimMessage'), '');
   }
   renderClaim();
@@ -200,9 +235,6 @@ function renderClaim() {
   $('claimReady').hidden = !ready;
   $('claimCooldown').hidden = ready;
   $('claimTitle').textContent = ready ? 'Ready to claim' : 'Next claim';
-  $('claimDescription').textContent = ready
-    ? 'Verify, then claim 10–20 tokens.'
-    : 'Claim after the timer ends.';
   if (ready && state.turnstileWidgetId === null && !state.turnstileLoading && !state.turnstileFailed) loadTurnstile();
   if (!ready) { removeTurnstile(); $('cooldownClock').textContent = formatTime(remaining); }
 }
@@ -324,10 +356,6 @@ function setAuthMode(mode) {
   $('password').autocomplete = signup ? 'new-password' : 'current-password';
   $('authTitle').textContent = signup ? 'Create account' : 'Log in';
   $('authSubmit').textContent = signup ? 'Create account' : 'Log in';
-  $('authHint').hidden = signup;
-  $('authHint').textContent = signup
-    ? ''
-    : 'No email signup, sorry.';
   message($('authMessage'), '');
 }
 
@@ -420,13 +448,12 @@ function renderRoute() {
   $('profileAccountTitle').textContent = viewingPublicProfile ? 'About' : 'Account';
   if (pageKind === 'profile') {
     $('tokensTitle').textContent = 'Hourly claim';
-    $('tokensIntro').textContent = '10–20 tokens every hour.';
     if (viewingPublicProfile) {
       removeTurnstile();
       void loadProfile();
     } else {
       $('tokens').hidden = false;
-      $('profileDescription').textContent = state.user ? 'Your account and tokens.' : 'Log in for account details.';
+      $('profileDescription').textContent = state.user ? '' : 'Sign in required.';
       $('profileDetails').hidden = !state.user;
       if (state.user) renderProfileDetails(state.user);
       renderClaim();
@@ -436,7 +463,7 @@ function renderRoute() {
   if (pageKind === 'announcements') void loadAnnouncements(true);
   if (pageKind === 'leaderboard') void loadLeaderboard(true);
   if (pageKind === 'trading') {
-    prefillTradingRecipient();
+    prefillTradingRecipient(true);
     renderTradingState();
     if (state.user) { void loadTrades(true); void loadTradeSession(true); void loadTradeChat(true); refreshTradeInventories(); }
   }
@@ -582,12 +609,17 @@ async function signOut() {
 $('logoutButton').addEventListener('click', signOut);
 $('headerLogoutButton').addEventListener('click', signOut);
 
-function setAccountSubmitting(submitting) {
+function setAccountSubmitting(submitting, expectedRevision = null) {
+  if (expectedRevision !== null && expectedRevision !== accountActionRevision) return;
+  const revision = ++accountActionRevision;
   state.accountSubmitting = submitting;
-  ['usernameSubmit', 'passwordSubmit', 'logoutButton', 'headerLogoutButton'].forEach(id => {
+  ['usernameSubmit', 'passwordSubmit', 'logoutButton', 'headerLogoutButton', 'deleteAccountOpen'].forEach(id => {
     $(id).disabled = submitting;
   });
+  renderPictureControls();
+  ['deleteAccountSubmit', 'deleteAccountPassword', 'deleteAccountConfirmation', 'deleteAccountCancel', 'deleteAccountClose'].forEach(id => { $(id).disabled = deletingAccount; });
   renderTradingState();
+  return revision;
 }
 
 function renderChangelogEditor() {
@@ -1021,14 +1053,65 @@ $('announcementForm').addEventListener('submit', async event => {
   }
 });
 
-function renderPresence(count) {
+function renderOnlinePlayers() {
+  const players = presencePlayers;
+  const list = $('onlinePlayersList');
+  message($('onlinePlayersMessage'), players === null ? 'Online players unavailable.' : players.length ? '' : 'Nobody online yet.');
+  const signature = JSON.stringify(players);
+  if (signature === presenceListSignature) return;
+  presenceListSignature = signature;
+  const focused = document.activeElement;
+  const existing = new Map(Array.from(list.children).map(row => [row.dataset.accountId, row]));
+  const retained = new Set();
+  (players || []).forEach((player, index) => {
+    const id = player.accountId || player.username;
+    retained.add(id);
+    let row = existing.get(id);
+    if (!row) {
+      row = document.createElement('li');
+      row.dataset.accountId = id;
+      const link = document.createElement('a');
+      link.className = 'online-player-link';
+      link.append(profileAvatar(player), document.createElement('span'));
+      row.append(link);
+    }
+    const link = row.firstElementChild;
+    link.href = profileHref(player.username);
+    link.lastElementChild.textContent = player.username;
+    setProfileAvatar(link.firstElementChild, player);
+    if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
+  });
+  Array.from(list.children).forEach(row => { if (!retained.has(row.dataset.accountId)) row.remove(); });
+  if (focused && !focused.isConnected && $('onlinePlayersDialog').open) $('onlinePlayersClose').focus({ preventScroll: true });
+}
+
+function renderPresence(count, players = null) {
   const available = Number.isSafeInteger(count) && count >= 0;
   const text = available ? `${count.toLocaleString()} ${count === 1 ? 'player' : 'players'} online` : 'Player count unavailable';
   if ($('playerCount').textContent !== text) $('playerCount').textContent = text;
   $('playerCount').dataset.status = available ? 'live' : 'unavailable';
   const mobileText = available ? `${count.toLocaleString()} online` : 'count unavailable';
   if ($('mobilePlayerCount').textContent !== mobileText) $('mobilePlayerCount').textContent = mobileText;
+  presencePlayers = available && Array.isArray(players) ? players : null;
+  if ($('onlinePlayersDialog').open) renderOnlinePlayers();
 }
+
+function openOnlinePlayers() {
+  const dialog = $('onlinePlayersDialog');
+  if (dialog.open) return;
+  renderOnlinePlayers();
+  if (presencePlayers === null) message($('onlinePlayersMessage'), 'Loading players…');
+  dialog.showModal();
+  ['playerCount', 'mobilePlayerCount'].forEach(id => $(id).setAttribute('aria-expanded', 'true'));
+  void loadPresence(true);
+}
+
+['playerCount', 'mobilePlayerCount'].forEach(id => $(id).addEventListener('click', openOnlinePlayers));
+$('onlinePlayersClose').addEventListener('click', () => $('onlinePlayersDialog').close());
+$('onlinePlayersDialog').addEventListener('close', () => { ['playerCount', 'mobilePlayerCount'].forEach(id => $(id).setAttribute('aria-expanded', 'false')); });
+$('onlinePlayersList').addEventListener('click', event => {
+  if (event.target.closest('a')) { setChatOpen(false); $('onlinePlayersDialog').close(); }
+});
 
 function loadPresence(refresh = false) {
   if (presenceSuspended) return Promise.resolve();
@@ -1043,7 +1126,7 @@ function loadPresence(refresh = false) {
     try {
       const data = await api('presence', { signal: controller.signal, ...(state.user ? { method: 'POST', body: '{}' } : {}) });
       if (revision !== presenceRevision) return;
-      renderPresence(data.count);
+      renderPresence(data.count, data.players);
     } catch {
       if (revision === presenceRevision) renderPresence(null);
     }
@@ -1057,6 +1140,151 @@ function loadPresence(refresh = false) {
   });
   return presenceLoadPromise;
 }
+
+function renderPictureControls() {
+  const busy = state.accountSubmitting || accountPicture.reading || !state.user;
+  $('pictureFile').disabled = busy;
+  $('pictureSave').disabled = busy || !accountPicture.draft;
+  $('pictureReset').disabled = busy || (!accountPicture.draft && profilePictureUrl(state.user) === '/favicon.svg');
+}
+
+function syncPictureSettings() {
+  const identity = state.user?.accountId || state.user?.username || null;
+  if (identity !== accountPicture.identity) {
+    accountPicture.identity = identity;
+    accountPicture.revision++;
+    accountPicture.draft = null;
+    accountPicture.reading = false;
+    $('pictureForm').reset();
+    message($('pictureMessage'), '');
+  }
+  if (!accountPicture.draft) setProfileAvatar($('picturePreview'), state.user);
+  renderPictureControls();
+}
+
+function readPictureFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => resolve(reader.result), { once: true });
+    reader.addEventListener('error', () => reject(new Error('Image could not load.')), { once: true });
+    reader.addEventListener('abort', () => reject(new Error('Image could not load.')), { once: true });
+    reader.readAsDataURL(file);
+  });
+}
+
+$('pictureFile').addEventListener('change', async () => {
+  if (!state.user || state.accountSubmitting) return;
+  const file = $('pictureFile').files?.[0];
+  if (!file) return;
+  const revision = ++accountPicture.revision;
+  const identity = accountPicture.identity;
+  message($('pictureMessage'), '');
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    $('pictureFile').value = '';
+    message($('pictureMessage'), 'Choose PNG, JPG, or WebP.');
+    return;
+  }
+  if (!file.size || file.size > 2 * 1024 * 1024) {
+    $('pictureFile').value = '';
+    message($('pictureMessage'), 'Image must be under 2MB.');
+    return;
+  }
+  accountPicture.reading = true;
+  renderPictureControls();
+  try {
+    const dataUrl = await readPictureFile(file);
+    if (identity !== accountPicture.identity || revision !== accountPicture.revision) return;
+    accountPicture.draft = dataUrl;
+    $('picturePreview').src = dataUrl;
+    $('picturePreview').onerror = () => {
+      if (identity !== accountPicture.identity || revision !== accountPicture.revision) return;
+      accountPicture.draft = null;
+      $('pictureFile').value = '';
+      setProfileAvatar($('picturePreview'), state.user);
+      message($('pictureMessage'), 'Image could not load.');
+      renderPictureControls();
+    };
+  } catch (error) {
+    if (identity === accountPicture.identity && revision === accountPicture.revision) message($('pictureMessage'), error.message);
+  } finally {
+    if (identity === accountPicture.identity && revision === accountPicture.revision) {
+      accountPicture.reading = false;
+      renderPictureControls();
+    }
+  }
+});
+
+async function saveProfilePicture(reset = false) {
+  if (!state.user || state.accountSubmitting || accountPicture.reading || (!reset && !accountPicture.draft)) return;
+  const identity = state.user.accountId || state.user.username;
+  const revision = userIdentityRevision;
+  const isCurrent = () => revision === userIdentityRevision && identity === (state.user?.accountId || state.user?.username);
+  const actionRevision = setAccountSubmitting(true);
+  message($('pictureMessage'), reset ? 'Resetting picture…' : 'Saving picture…');
+  try {
+    const { user } = await api('account/avatar', reset ? { method: 'DELETE' } : { method: 'PUT', body: JSON.stringify({ imageDataUrl: accountPicture.draft }) });
+    if (!isCurrent()) return;
+    accountPicture.revision++;
+    accountPicture.draft = null;
+    $('pictureForm').reset();
+    setUser({ ...state.user, avatarUrl: user.avatarUrl });
+    state.chatOutbox.forEach(entry => { if (entry.identity === identity) entry.avatarUrl = user.avatarUrl; });
+    renderChat(state.chatMessages);
+    message($('pictureMessage'), reset ? 'Default picture restored.' : 'Profile picture updated.', true);
+    presenceRevision++;
+    void loadPresence(true);
+    void loadChat(true);
+  } catch (error) {
+    if (isCurrent()) settingsError($('pictureMessage'), error);
+  } finally { setAccountSubmitting(false, actionRevision); }
+}
+
+$('pictureForm').addEventListener('submit', event => { event.preventDefault(); void saveProfilePicture(); });
+$('pictureReset').addEventListener('click', () => { void saveProfilePicture(true); });
+
+$('deleteAccountOpen').addEventListener('click', () => {
+  if (!state.user || state.accountSubmitting) return;
+  $('deleteAccountForm').reset();
+  message($('deleteAccountMessage'), '');
+  $('deleteAccountDialog').showModal();
+  $('deleteAccountPassword').focus();
+});
+['deleteAccountClose', 'deleteAccountCancel'].forEach(id => $(id).addEventListener('click', () => { if (!deletingAccount) $('deleteAccountDialog').close(); }));
+$('deleteAccountDialog').addEventListener('cancel', event => { if (deletingAccount) event.preventDefault(); });
+$('deleteAccountDialog').addEventListener('close', () => { $('deleteAccountForm').reset(); });
+$('deleteAccountForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!state.user || state.accountSubmitting || deletingAccount) return;
+  if ($('deleteAccountConfirmation').value !== 'DELETE') {
+    message($('deleteAccountMessage'), 'Type DELETE to confirm.');
+    $('deleteAccountConfirmation').focus();
+    return;
+  }
+  const identity = state.user.accountId || state.user.username;
+  const revision = userIdentityRevision;
+  const isCurrent = () => revision === userIdentityRevision && identity === (state.user?.accountId || state.user?.username);
+  const body = JSON.stringify({ currentPassword: $('deleteAccountPassword').value, confirmation: 'DELETE' });
+  deletingAccount = true;
+  const actionRevision = setAccountSubmitting(true);
+  message($('deleteAccountMessage'), 'Deleting account…');
+  try {
+    await api('account', { method: 'DELETE', body });
+    if (!isCurrent()) return;
+    setUser(null);
+    $('deleteAccountDialog').close();
+    message($('accountMessage'), 'Account deleted.', true);
+    leaderboardRevision++;
+    void loadLeaderboard(true);
+    void loadChat(true);
+    $('settingsJoin').focus();
+  } catch (error) {
+    if (isCurrent()) settingsError($('deleteAccountMessage'), error);
+  } finally {
+    $('deleteAccountPassword').value = '';
+    deletingAccount = false;
+    setAccountSubmitting(false, actionRevision);
+  }
+});
 
 function settingsError(element, error) {
   if (error.status === 401) {
@@ -1166,12 +1394,12 @@ function tradeCardArtwork(card) {
 function renderTradeAssets(element, tokens, cards = []) {
   const tokenAmount = document.createElement('span');
   tokenAmount.className = 'trading-assets-tokens';
-  tokenAmount.textContent = `${tokens.toLocaleString()} tokens`;
-  element.replaceChildren(tokenAmount);
-  if (!cards.length) return;
+  tokenAmount.textContent = `${Number.isSafeInteger(tokens) && tokens >= 0 ? tokens.toLocaleString() : '—'} tokens`;
   const count = document.createElement('span');
   count.className = 'trading-assets-count';
   count.textContent = `${cards.length} ${cards.length === 1 ? 'card' : 'cards'}`;
+  element.replaceChildren(tokenAmount, count);
+  if (!cards.length) return;
   const list = document.createElement('ul');
   list.className = 'trading-asset-cards';
   for (const card of cards) {
@@ -1181,7 +1409,7 @@ function renderTradeAssets(element, tokens, cards = []) {
     item.append(tradeCardMetadata(card));
     list.append(item);
   }
-  element.append(count, list);
+  element.append(list);
 }
 
 function tradeProfileLink(player) {
@@ -1206,10 +1434,21 @@ function tradeButton(label, action, id, disabled = false) {
 function tradingIdentityIsCurrent(identity, revision) {
   return !!identity && identity === state.user?.accountId && revision === userIdentityRevision;
 }
-function prefillTradingRecipient() {
-  if ($('tradingRecipient').value || trading.review) return;
-  const username = new URLSearchParams(location.search).get('to');
-  if (username) $('tradingRecipient').value = username.slice(0, 32);
+function prefillTradingRecipient(fresh = false) {
+  const username = new URLSearchParams(location.search).get('to')?.trim().slice(0, 32);
+  if (!username) return;
+  if (fresh) {
+    trading.lookupRevision++; trading.lookupLoading = false; trading.sessionRevision++; trading.chatRevision++;
+    trading.sessionId = null; trading.session = null; trading.sessionDraft = null; trading.confirmReviewVersion = null;
+    trading.chatMessages = []; trading.chatSignature = null; $('tradingChatInput').value = ''; $('tradingChatMessages').replaceChildren();
+    if (trading.submitting || trading.sendUncertain) {
+      $('tradingRecipient').value = trading.review?.recipient.username || $('tradingRecipient').value;
+      if (trading.sendUncertain) message($('tradingFormMessage'), 'Resolve your pending request first.');
+      return;
+    }
+    trading.review = null; trading.recipient = null; message($('tradingFormMessage'), '');
+  } else if ($('tradingRecipient').value || trading.review || trading.sessionId || trading.lookupLoading) return;
+  $('tradingRecipient').value = username;
 }
 function ownTradeSide(trade) {
   const sender = trade.sender.accountId === state.user?.accountId;
@@ -1256,7 +1495,7 @@ function syncTradingUser() {
     $('tradingRetry').hidden = true; ['tradingReceived', 'tradingSent', 'tradingHistory', 'tradingChatMessages', 'tradingSessionCards', 'tradingOwnReadonly', 'tradingPartnerAssets'].forEach(id => $(id).replaceChildren());
     $('tradingSessionCards').removeAttribute('data-signature');
   } else if (state.user) {
-    trading.chatOutbox.forEach(entry => { if (entry.identity === identity) entry.sender.username = state.user.username; });
+    trading.chatOutbox.forEach(entry => { if (entry.identity === identity) { entry.sender.username = state.user.username; entry.sender.avatarUrl = state.user.avatarUrl; } });
   }
   renderTradingState();
   if (changed && identity) void loadTrades(true);
@@ -1304,7 +1543,8 @@ function renderOwnCardPicker(containerId, countId, messageId, selected, disabled
   const inventory = tradeInventories.offered, container = $(containerId), missing = unavailableTradeCards(selected);
   $(countId).textContent = `${selected.length} / 50 selected`; container.setAttribute('aria-busy', String(inventory.loading));
   const status = $(messageId);
-  status.textContent = inventory.error ? 'Cards unavailable. Try refreshing.' : inventory.loading && !inventory.cards ? 'Loading your tradable cards…' : missing.length ? 'Remove unavailable card copies.' : inventory.cards?.length === 0 ? 'No tradable cards yet.' : 'Choose your card copies.';
+  status.textContent = inventory.error ? 'Cards unavailable. Try refreshing.' : inventory.loading && !inventory.cards ? 'Loading your cards…' : missing.length ? 'Remove unavailable card copies.' : inventory.cards?.length === 0 ? 'No tradable cards yet.' : '';
+  status.hidden = !status.textContent;
   status.classList.toggle('trading-inventory-error', !!inventory.error || missing.length > 0);
   const signature = JSON.stringify([inventory.cards, selected, disabled]); if (container.dataset.signature === signature) return; container.dataset.signature = signature;
   const focused = document.activeElement?.closest(`#${containerId} [data-card-id]`), focusedId = focused?.dataset.cardId, focusedTag = focused?.tagName;
@@ -1448,6 +1688,7 @@ function finishSendingTrade(trade, request = trading.review) {
   rememberTrade(trade); trading.review = null; trading.sendUncertain = false; trading.recipient = null; trading.lookupRevision++; $('tradingForm').reset();
   message($('tradingFormMessage'), `Request sent to ${trade.recipient.username}.`, true);
   if (pageKind === 'trading' && request?.routeRevision === routeRevision && request.sessionRevision === trading.sessionRevision) openTradeSession(trade.id, trade);
+  if (pageKind === 'trading') prefillTradingRecipient();
 }
 async function sendTradingOffer() {
   const request = trading.review;
@@ -1507,7 +1748,8 @@ function renderTradeSession() {
   const trade = trading.session; $('tradingSessionContent').hidden = !trade;
   if (!trade || !state.user) {
     $('tradingSessionTitle').textContent = 'Trade session';
-    ['tradingSessionStatus', 'tradingSessionDescription', 'tradingSessionAccountId', 'tradingOwnConfirmed', 'tradingPartnerConfirmed'].forEach(id => { $(id).textContent = ''; });
+    ['tradingSessionStatus', 'tradingOwnConfirmed', 'tradingPartnerConfirmed'].forEach(id => { $(id).textContent = ''; });
+    ['tradingOwnOffer', 'tradingPartnerOffer', 'tradingOfferEditor'].forEach(id => { $(id).hidden = true; });
     ['tradingOwnReadonly', 'tradingPartnerAssets'].forEach(id => $(id).replaceChildren());
     return;
   }
@@ -1515,17 +1757,19 @@ function renderTradeSession() {
   const pending = trade.status === 'pending', requestAccepted = acceptedTradeRequest(trade), editable = trade.status === 'negotiating', busy = tradingBusy() || !!trading.actionRetry, draft = trading.sessionDraft;
   $('tradingOwnOffer').hidden = !requestAccepted; $('tradingPartnerOffer').hidden = !requestAccepted;
   $('tradingSessionTitle').textContent = `Trade with ${partner.player.username}`; $('tradingSessionStatus').textContent = tradeStatusLabel(trade.status); $('tradingSessionStatus').className = `trading-status trading-status-${trade.status}`;
-  $('tradingSessionAccountId').textContent = `Permanent account ID: ${partner.player.accountId}`;
-  $('tradingSessionDescription').textContent = pending ? sender ? 'Wait for request acceptance.' : 'Accept this trade request.' : trade.status === 'negotiating' ? 'Choose your own offer.' : trade.status === 'accepted' ? 'Trade completed. Assets transferred.' : `Trade ${trade.status}.`;
-  $('tradingOwnConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : own.confirmed ? 'You confirmed' : 'You have not confirmed';
-  $('tradingPartnerConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : partner.confirmed ? `${partner.player.username} confirmed` : `${partner.player.username} has not confirmed`;
-  $('tradingOwnConfirmed').classList.toggle('success', !!own.confirmed); $('tradingPartnerConfirmed').classList.toggle('success', !!partner.confirmed);
+  const previewDraft = editable && draft;
+  $('tradingOwnConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : previewDraft?.dirty ? 'Unsaved changes' : own.confirmed ? 'Confirmed' : 'Not confirmed';
+  $('tradingPartnerConfirmed').textContent = trade.status === 'accepted' ? 'Completed' : partner.confirmed ? 'Confirmed' : 'Not confirmed';
+  $('tradingOwnConfirmed').classList.toggle('success', !!own.confirmed && !previewDraft?.dirty); $('tradingPartnerConfirmed').classList.toggle('success', !!partner.confirmed);
   if (!requestAccepted) {
     ['tradingOwnReadonly', 'tradingPartnerAssets', 'tradingSessionCards'].forEach(id => $(id).replaceChildren());
     $('tradingSessionCards').removeAttribute('data-signature');
     $('tradingSessionTokens').value = '0';
-  } else { renderTradeAssets($('tradingOwnReadonly'), own.tokens, own.cards); renderTradeAssets($('tradingPartnerAssets'), partner.tokens, partner.cards); }
-  $('tradingOwnReadonly').hidden = editable; $('tradingContributionForm').hidden = !editable;
+  } else {
+    renderTradeAssets($('tradingOwnReadonly'), previewDraft ? (String(draft.tokens).trim() ? Number(draft.tokens) : null) : own.tokens, previewDraft ? draft.cards : own.cards);
+    renderTradeAssets($('tradingPartnerAssets'), partner.tokens, partner.cards);
+  }
+  $('tradingOwnReadonly').hidden = !requestAccepted; $('tradingOfferEditor').hidden = !editable; $('tradingContributionForm').hidden = !editable;
   if (editable && draft) {
     if ($('tradingSessionTokens').value !== String(draft.tokens)) $('tradingSessionTokens').value = draft.tokens; $('tradingSessionTokens').disabled = busy;
     renderOwnCardPicker('tradingSessionCards', 'tradingSessionCardCount', 'tradingSessionInventoryMessage', draft.cards, busy);
@@ -1535,7 +1779,6 @@ function renderTradeSession() {
     $('tradingUseLatest').hidden = !changed; $('tradingUseLatest').disabled = busy;
     $('tradingContributionSave').disabled = busy || !draft.dirty || changed || unavailableTradeCards(draft.cards).length > 0; $('tradingContributionSave').textContent = trading.action?.action === 'contribution' ? 'Saving…' : 'Save my offer';
   }
-  $('tradingSessionRules').textContent = trade.status === 'negotiating' ? 'Both players must confirm.' : pending ? 'Wait for request acceptance.' : 'This trade has ended.';
   const actions = $('tradingSessionActions'), focusedAction = document.activeElement?.closest('#tradingSessionActions button')?.dataset.tradeAction; actions.replaceChildren();
   if (pending && !sender) actions.append(tradeButton('Accept request', 'join', trade.id, busy), tradeButton('Decline', 'decline', trade.id, busy));
   if (trade.status === 'negotiating') actions.append(tradeButton(own.confirmed ? 'You confirmed' : 'Review & confirm', 'review-confirm', trade.id, busy || own.confirmed || draft.dirty || draft.baseVersion !== trade.version));
@@ -1621,7 +1864,7 @@ function renderTradeChat() {
   const receivedIds = new Set(trading.chatMessages.map(item => `${item.sender.accountId}:${item.clientMessageId}`)), entries = [...trading.chatMessages, ...outbox.filter(item => !receivedIds.has(`${item.sender.accountId}:${item.clientMessageId}`))];
   container.replaceChildren(...entries.map(entry => {
     const row = document.createElement('article'); row.className = 'trading-chat-row';
-    const header = document.createElement('div'); header.className = 'trading-chat-meta'; header.append(tradeProfileLink(entry.sender));
+    const header = document.createElement('div'); header.className = 'trading-chat-meta'; header.append(profileAvatar(entry.sender, 'player-avatar chat-avatar'), tradeProfileLink(entry.sender));
     const time = document.createElement('time'); time.dateTime = entry.createdAt; time.textContent = formatProfileDate(entry.createdAt, true); header.append(time);
     const body = document.createElement('p'); body.textContent = entry.body; row.append(header, body);
     if (entry.status) { const status = document.createElement('span'); status.className = 'trading-chat-send-status'; status.textContent = entry.status === 'sending' ? 'Sending…' : entry.error || 'Could not send.'; row.append(status); }
@@ -1659,7 +1902,7 @@ $('tradingChatForm').addEventListener('submit', event => {
   event.preventDefault(); const trade = trading.session, body = $('tradingChatInput').value.trim();
   if (!state.user || !trade || trade.status !== 'negotiating' || !body || trading.chatOutbox.some(entry => entry.tradeId === trade.id && entry.status === 'sending')) return;
   if (body.length > 1000) { message($('tradingChatMessage'), 'Use 1,000 characters or fewer.'); return; }
-  const entry = { tradeId: trade.id, identity: state.user.accountId, clientMessageId: crypto.randomUUID(), sender: { username: state.user.username, accountId: state.user.accountId }, body, createdAt: new Date().toISOString(), status: 'new' };
+  const entry = { tradeId: trade.id, identity: state.user.accountId, clientMessageId: crypto.randomUUID(), sender: { username: state.user.username, accountId: state.user.accountId, avatarUrl: state.user.avatarUrl }, body, createdAt: new Date().toISOString(), status: 'new' };
   trading.chatOutbox.push(entry); $('tradingChatInput').value = ''; message($('tradingChatMessage'), ''); void sendTradeChatEntry(entry);
 });
 $('tradingChatMessages').addEventListener('click', event => { const button = event.target.closest('button[data-trade-chat-retry]'); if (button) { const entry = trading.chatOutbox.find(item => item.clientMessageId === button.dataset.tradeChatRetry && item.tradeId === trading.sessionId); if (entry) void sendTradeChatEntry(entry); } });
@@ -1684,7 +1927,7 @@ async function loadProfile() {
     }
     document.title = `${profile.username} — Pepper TCG`;
     $('profileTitle').textContent = profile.username;
-    $('profileDescription').textContent = 'Account and tokens.';
+    $('profileDescription').textContent = '';
     renderProfileDetails(profile);
     renderClaim();
     $('profileDetails').hidden = false;
@@ -1857,7 +2100,7 @@ function createChatRow(item) {
   const time = document.createElement('time');
   time.dateTime = item.createdAt;
   time.textContent = new Date(item.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-  head.append(author, time);
+  head.append(profileAvatar(item, 'player-avatar chat-avatar'), author, time);
   row.append(head);
   if (item.replyTo) {
     const quote = document.createElement(item.replyTo.available ? 'button' : 'div');
@@ -2079,6 +2322,7 @@ $('chatForm').addEventListener('submit', event => {
     clientMessageId,
     accountId: state.user.accountId ?? null,
     username: state.user.username,
+    avatarUrl: state.user.avatarUrl,
     text,
     createdAt: new Date().toISOString(),
     replyTo: reply ? { ...reply, available: true } : null,
@@ -2130,7 +2374,6 @@ const revealCards = $('revealCards');
 const openPackButton = $('openPack');
 const demoPackButton = $('demoPack');
 const replayPackButton = $('replayPack');
-const packHelp = $('packHelp');
 const packStatus = $('packStatus');
 const reducePackMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let packTimers = [];
@@ -2148,7 +2391,6 @@ function resetPack() {
   openPackButton.disabled = false;
   demoPackButton.disabled = false;
   replayPackButton.hidden = true;
-  packHelp.textContent = 'Open the demo pack.';
   packStatus.textContent = 'Ready';
   demoPackButton.focus();
 }
@@ -2158,7 +2400,6 @@ function openDemoPack() {
   packStage.dataset.phase = 'opening';
   openPackButton.disabled = true;
   demoPackButton.disabled = true;
-  packHelp.textContent = 'Opening…';
   packStatus.textContent = 'Opening';
 
   packLater(() => {
@@ -2173,7 +2414,6 @@ function openDemoPack() {
     revealCards.hidden = false;
     packStage.dataset.phase = 'revealed';
     packStatus.textContent = '5 blank cards';
-    packHelp.textContent = 'Reset to open again.';
     replayPackButton.hidden = false;
     cards.forEach((card, index) => packLater(() => card.classList.add('is-dealt'), reducePackMotion.matches ? 0 : index * 110));
     packLater(() => { if (pageKind === 'home') replayPackButton.focus({ preventScroll: true }); }, reducePackMotion.matches ? 0 : 1000);

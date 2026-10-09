@@ -5,6 +5,7 @@ const { ObjectId } = require('mongodb');
 const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory, resolveChangelogOwner, createAccountId, ensureAccountId } = require('./mongo');
 const { createMailer } = require('./mailer');
 const { registerTrading } = require('./trading');
+const { avatarUrl, AccountError, withAccountActivity, registerAccountFeatures } = require('./accounts');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOURLY_TOKEN_MIN = 10;
@@ -35,6 +36,7 @@ const passwordMatches = (password, stored) => {
 const publicUser = (user, canManageChangelog = false) => ({
   username: user.username,
   accountId: user.accountId,
+  avatarUrl: avatarUrl(user),
   email: user.email ?? null,
   createdAt: user.createdAt ?? null,
   balance: user.balance,
@@ -92,6 +94,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     }
     next();
   });
+  app.use('/api/account/avatar', express.json({ limit: '3mb' }));
   app.use(express.json({ limit: '32kb' }));
 
   function rateLimit(max, windowMs) {
@@ -133,7 +136,9 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   }
   async function startSession(res, userId) {
     const token = crypto.randomBytes(32).toString('hex');
-    await sessions.insertOne({ _id: sha256(token), userId, expiresAt: new Date(Date.now() + SESSION_MS) });
+    await withAccountActivity({ client, users }, [userId], session => sessions.insertOne(
+      { _id: sha256(token), userId, expiresAt: new Date(Date.now() + SESSION_MS) }, session ? { session } : {}
+    ));
     res.set('Set-Cookie', `${cookieName}=${token}; ${cookieOptions()}`);
   }
 
@@ -143,7 +148,11 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       expiresAt: { $gt: now },
       lastSeenAt: { $gt: new Date(now.getTime() - PRESENCE_TIMEOUT_MS) }
     });
-    return { count: activeUserIds.length };
+    const activeUsers = activeUserIds.length ? await users.find({ _id: { $in: activeUserIds } }, {
+      projection: { accountId: 1, username: 1, avatarVersion: 1 }
+    }).sort({ usernameKey: 1, _id: 1 }).toArray() : [];
+    const players = activeUsers.map(user => ({ accountId: user.accountId, username: user.username, avatarUrl: avatarUrl(user) }));
+    return { count: players.length, players };
   }
   app.get('/api/presence', async (req, res) => {
     res.json(await presenceSnapshot());
@@ -178,7 +187,9 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     const url = new URL('/verify.html', siteOrigin);
     url.searchParams.set('purpose', purpose);
     url.searchParams.set('token', token);
-    await verificationTokens.insertOne({ _id: tokenHash, userId: user._id, purpose, expiresAt });
+    await withAccountActivity({ client, users }, [user._id], session => verificationTokens.insertOne(
+      { _id: tokenHash, userId: user._id, purpose, expiresAt }, session ? { session } : {}
+    ));
     try {
       await mailer.sendVerification({ to: user.email, purpose, url: url.toString() });
     } catch (error) {
@@ -314,18 +325,23 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json({ ok: true });
   });
 
+  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, tradeMessages, cardInstances }, {
+    requireUser, rateLimit, signedInUser, passwordMatches, cookieName
+  });
+
   app.get('/api/profiles/:username', async (req, res) => {
     const username = req.params.username;
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
     const user = await users.findOne(
       { usernameKey: username.toLowerCase() },
-      { projection: { username: 1, accountId: 1, createdAt: 1, balance: 1, lastClaimAt: 1 } }
+      { projection: { username: 1, accountId: 1, createdAt: 1, balance: 1, lastClaimAt: 1, avatarVersion: 1 } }
     );
     if (!user) return sendError(res, 404, 'Profile not found.');
     await ensureAccountId(users, user);
     res.json({ profile: {
       username: user.username,
       accountId: user.accountId,
+      avatarUrl: avatarUrl(user),
       createdAt: user.createdAt ?? null,
       balance: user.balance ?? 0,
       lastClaimAt: user.lastClaimAt ?? null,
@@ -459,12 +475,14 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     id: message._id.toString(),
     username: authors.get(message.userId?.toString())?.username ?? message.username,
     accountId: authors.get(message.userId?.toString())?.accountId ?? null,
+    avatarUrl: authors.get(message.userId?.toString())?.avatarUrl ?? avatarUrl(null),
     text: message.text,
     createdAt: message.createdAt.toISOString(),
     clientMessageId: message.clientMessageId ?? null,
     replyTo: message.replyTo ? {
       id: message.replyTo.id.toString(),
       username: authors.get(message.replyTo.userId?.toString())?.username ?? message.replyTo.username,
+      avatarUrl: authors.get(message.replyTo.userId?.toString())?.avatarUrl ?? avatarUrl(null),
       text: message.replyTo.text,
       available: availableMessageIds.has(message.replyTo.id.toString())
     } : null
@@ -473,9 +491,9 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     const authorIds = [...new Map(chatMessages.flatMap(message => [message.userId, message.replyTo?.userId])
       .filter(Boolean).map(userId => [userId.toString(), userId])).values()];
     const authors = authorIds.length ? await users.find(
-      { _id: { $in: authorIds } }, { projection: { username: 1, accountId: 1 } }
+      { _id: { $in: authorIds } }, { projection: { username: 1, accountId: 1, avatarVersion: 1 } }
     ).toArray() : [];
-    return new Map(authors.map(author => [author._id.toString(), { username: author.username, accountId: author.accountId ?? null }]));
+    return new Map(authors.map(author => [author._id.toString(), { username: author.username, accountId: author.accountId ?? null, avatarUrl: avatarUrl(author) }]));
   }
   app.get('/api/chat', async (req, res) => {
     const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
@@ -543,7 +561,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     }
     const message = { userId: req.user._id, username: req.user.username, text: messageText, createdAt: new Date(), replyTo };
     if (clientMessageId) message.clientMessageId = clientMessageId;
-    try { await messages.insertOne(message); }
+    try { await withAccountActivity({ client, users }, [req.user._id, ...(replyTo?.userId ? [replyTo.userId] : [])], session => messages.insertOne(message, session ? { session } : {})); }
     catch (error) {
       if (error.code !== 11000 || !clientMessageId || (error.keyPattern && !error.keyPattern.clientMessageId)) throw error;
       if (await replayIfSaved()) return;
@@ -559,6 +577,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   app.get('/packs/test', (req, res) => res.redirect(302, '/#cards'));
   app.use(express.static(path.join(__dirname, 'public')));
   app.use((error, req, res, next) => {
+    if (error instanceof AccountError) return sendError(res, error.status, error.message);
     console.error(error);
     if (error instanceof SyntaxError && 'body' in error) return sendError(res, 400, 'Invalid request.');
     if (error.type === 'entity.too.large') return sendError(res, 413, 'The request is too large.');

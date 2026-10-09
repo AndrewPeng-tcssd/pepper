@@ -120,6 +120,11 @@ input:focus { border-color: var(--accent); }
 .account-menu-info { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .account-menu-info strong { overflow-wrap: anywhere; }
 .account-menu-info span { color: var(--muted); }
+.player-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.player-avatar { display: block; flex: 0 0 auto; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 50%; background: var(--paper); object-fit: cover; }
+.profile-avatar { width: 56px; height: 56px; }
+.settings-avatar { width: 96px; height: 96px; }
+.chat-avatar { width: 28px; height: 28px; }
 .account-dropdown > a, .account-dropdown > button { display: block; width: 100%; padding: 12px 16px; border: 0; background: var(--surface); color: var(--ink); font-size: 14px; text-align: left; text-decoration: none; }
 .account-dropdown > a:hover, .account-dropdown > button:hover { background: var(--paper); }
 .account-menu-message { padding: 0 16px 14px; margin: 0 !important; }
@@ -144,6 +149,8 @@ input:focus { border-color: var(--accent); }
 .overview-profile:hover, .overview-profile:focus-visible { border-color: var(--accent); background: var(--button-hover); }
 .overview-profile-guest { margin: 0; color: var(--muted); font-size: 14px; }
 .overview-profile-name { margin: 16px 0 20px; overflow-wrap: anywhere; font-size: 26px; }
+.overview-profile-identity { margin: 16px 0 20px; }
+.overview-profile-identity .overview-profile-name { min-width: 0; margin: 0; }
 .overview-profile-balance { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 28px; font-variant-numeric: tabular-nums; }
 .overview-profile-balance strong { overflow-wrap: anywhere; font-size: 44px; line-height: 1; letter-spacing: -.05em; }
 .overview-profile-balance span { color: var(--muted); font-size: 14px; }
@@ -158,6 +165,8 @@ input:focus { border-color: var(--accent); }
 .profile-trade { margin-top: 20px; }
 .profile-info-card { min-width: 0; padding: 24px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .profile-info-card h2 { margin-bottom: 22px; font-size: 18px; }
+.profile-account-heading { margin-bottom: 22px; }
+.profile-account-heading h2 { margin: 0; }
 .profile-info-card dl, .account-details { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 12px 16px; margin: 0; }
 .profile-info-card dt, .account-details dt { color: var(--muted); font-size: 13px; }
 .profile-info-card dd, .account-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
@@ -182,10 +191,15 @@ input:focus { border-color: var(--accent); }
 .settings-form label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; }
 .settings-form > p:not(.form-message) { margin: 0; color: var(--muted); font-size: 13px; }
 .settings-form .button { width: 100%; }
+.settings-form .settings-account-actions .button { width: auto; }
 .settings-form .form-message { margin: 0 !important; }
 #settingsJoin { margin-top: 16px; }
+.account-danger { border-left: 3px solid var(--error); }
+.button.danger-button { border-color: var(--error); color: var(--error); }
+.button.danger-button:hover { border-color: var(--error); background: var(--accent-soft); }
 
 .trading-overview > #tradingAuthLoading { margin-top: 28px; font-size: 14px; }
+.trading-overview .form-message:empty, #profileDescription:empty { display: none; }
 .trading-guest { margin-top: 32px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .trading-guest p { margin: 0 0 16px; color: var(--muted); }
 .trading-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 0; }
@@ -195,7 +209,6 @@ input:focus { border-color: var(--accent); }
 .trading-card { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .trading-create h2, .trading-offer-section h2 { font-size: 21px; }
 .trading-help { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
-.trading-help code, .trading-account-id code { overflow-wrap: anywhere; font-size: 12px; }
 .trading-form { display: grid; gap: 18px; margin-top: 24px; }
 .trading-form label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 600; }
 .trading-form .form-message { margin: 0 !important; }
@@ -220,7 +233,6 @@ input:focus { border-color: var(--accent); }
 .trading-status { padding: 5px 8px; border-radius: 6px; background: var(--paper); color: var(--muted); font-size: 12px; font-weight: 600; }
 .trading-status-pending { background: var(--accent-soft); color: var(--accent); }
 .trading-status-accepted { color: var(--success); }
-.trading-account-id { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
 .trading-date { margin: 0; color: var(--muted); font-size: 12px; }
 .trading-offer-card .trading-actions { margin-top: 18px; }
 .trading-accept-confirmation { flex-basis: 100%; padding: 12px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }
@@ -255,8 +267,15 @@ input:focus { border-color: var(--accent); }
 .trading-session-grid > .trading-card > h3 { font-size: 20px; }
 .trading-confirmation-state { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
 .trading-confirmation-state.success { color: var(--success); }
-.trading-session-controls, .trading-private-chat { grid-column: 1 / -1; }
-.trading-session-controls > .trading-actions { margin-top: 20px; }
+.trading-offer-editor, .trading-session-controls, .trading-private-chat { grid-column: 1 / -1; }
+.trading-offer-summary { border-top: 3px solid var(--line); }
+#tradingOwnOffer { border-top-color: var(--accent); }
+.trading-offer-summary .trading-assets-tokens { font-size: clamp(20px, 2.3vw, 30px); font-weight: 700; }
+.trading-offer-summary .trading-assets-count { margin: 0; color: var(--muted); font-size: 13px; }
+.trading-offer-summary .trading-asset-cards { margin-top: 4px; }
+.trading-offer-summary .trading-copy-art { flex-basis: 64px; width: 64px; height: 88px; }
+.trading-offer-editor .trading-card-picker { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); }
+.trading-offer-editor input[type="number"] { max-width: 250px; }
 .trading-confirm-review { margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line); }
 .trading-confirm-review h3 { margin-bottom: 12px; font-size: 18px; }
 .trading-confirm-review .trading-actions { margin-top: 18px; }
@@ -264,7 +283,7 @@ input:focus { border-color: var(--accent); }
 .trading-chat-messages { display: grid; align-content: start; gap: 14px; max-height: 360px; min-height: 100px; margin-top: 20px; padding: 16px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .trading-chat-row { min-width: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .trading-chat-row:last-child { padding-bottom: 0; border-bottom: 0; }
-.trading-chat-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; font-size: 12px; }
+.trading-chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; }
 .trading-chat-meta a { overflow-wrap: anywhere; font-weight: 650; }
 .trading-chat-meta time { color: var(--muted); font-size: 11px; }
 .trading-chat-row > p { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
@@ -273,10 +292,9 @@ input:focus { border-color: var(--accent); }
 .trading-chat-form { display: flex; gap: 10px; margin-top: 16px; }
 .trading-chat-form input { min-width: 0; }
 .trading-chat-form .button { flex: 0 0 auto; }
-#tradingOwnReadonly, #tradingPartnerAssets { display: grid; gap: 10px; margin-bottom: 20px; font-variant-numeric: tabular-nums; }
+#tradingOwnReadonly, #tradingPartnerAssets { display: grid; gap: 10px; font-variant-numeric: tabular-nums; }
 #tradingDraftMessage { margin: 0; }
 #tradingDraftMessage.trading-draft-info { color: var(--muted); }
-#tradingSessionRules { max-width: 760px; }
 #tradingChatClosed { margin-top: 16px; }
 
 .trade-notification { position: fixed; z-index: 45; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); width: min(340px, calc(100vw - 32px)); max-height: calc(100svh - 32px); overflow-y: auto; padding: 22px; border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 40px var(--dialog-shadow); }
@@ -292,7 +310,14 @@ input:focus { border-color: var(--accent); }
 
 @media (max-width: 600px) { .trade-notification { right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); padding: 20px; } }
 
-@media (max-width: 700px) { .trading-session-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 700px) {
+  .trading-session-grid { gap: 12px; }
+  .trading-session-grid > .trading-offer-summary { padding: 14px 10px; }
+  .trading-session-grid > .trading-offer-summary > h3 { font-size: 17px; }
+  .trading-offer-summary .trading-confirmation-state { min-height: 32px; margin-bottom: 12px; font-size: 12px; }
+  .trading-offer-summary .trading-asset-cards li { flex-direction: column; padding: 8px; }
+  .trading-offer-summary .trading-copy-art { flex-basis: auto; width: 56px; height: 76px; }
+}
 
 @media (max-width: 1100px) {
   .trading-layout { grid-template-columns: minmax(0, 1fr); }
@@ -379,7 +404,6 @@ input:focus { border-color: var(--accent); }
 
 .pack-intro > p { margin: 0; color: var(--muted); font-size: 14px; }
 .pack-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-.pack-help { margin: 12px 0 0 !important; color: var(--muted); font-size: 12px; }
 .pack-stage { position: relative; display: grid; flex: none; place-items: center; height: 320px; min-width: 0; overflow: hidden; border: 1px solid var(--stage-line); border-radius: 12px; background: radial-gradient(circle at 50% 44%, var(--stage-center) 0, var(--stage-edge) 72%); }
 .pack-stage::before { content: ""; position: absolute; inset: 13px; border: 1px dashed var(--stage-dash); border-radius: 8px; pointer-events: none; }
 .demo-pack { position: relative; width: 160px; height: 230px; padding: 0; border: 0; background: transparent; color: #fff; transform: rotate(-5deg); transition: transform .18s; }
@@ -415,7 +439,8 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-heading { flex: none; padding: 23px 21px; border-bottom: 1px solid var(--line); }
 .chat-heading-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-heading h2 { margin: 0; font-size: 25px; }
-.player-count { display: flex; align-items: center; gap: 7px; margin: 10px 0 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.player-count { display: flex; align-items: center; gap: 7px; min-height: 28px; margin: 7px 0 -3px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.player-count:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .player-count::before { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); content: ""; }
 .player-count[data-status="live"]::before { background: var(--success); }
 .chat-board { display: flex; flex: 1; min-height: 0; flex-direction: column; }
@@ -423,10 +448,11 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-messages::-webkit-scrollbar { display: none; }
 .chat-empty { display: grid; place-items: center; height: 100%; padding: 20px; color: var(--muted); text-align: center; font-size: 13px; }
 .chat-row { padding: 16px 0; border-bottom: 1px solid var(--line); }
-.chat-row-head { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+.chat-row-head { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 3px 8px; font-size: 12px; }
+.chat-row-head .chat-avatar { grid-row: 1 / span 2; }
 .chat-author { overflow-wrap: anywhere; color: var(--ink); font-weight: 700; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
 .chat-author:hover, .chat-author:focus-visible { color: var(--accent-dark); text-decoration-color: currentColor; }
-.chat-row-head time { color: var(--muted); font-size: 11px; }
+.chat-row-head time { grid-column: 2; color: var(--muted); font-size: 11px; }
 .chat-row p { margin: 6px 0 0; overflow-wrap: anywhere; font-size: 13px; }
 .chat-row.is-reply-highlighted { border-radius: 6px; background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: 4px; }
 .chat-reply-button { min-height: 30px; margin-top: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; }
@@ -457,7 +483,7 @@ button.chat-reply-quote:hover { background: var(--accent-soft); }
 #cancelChatReply:hover { background: var(--paper); color: var(--ink); }
 .chat-form { display: grid; gap: 8px; }
 .chat-form .button, .chat-join .button { width: 100%; }
-.chat-close, .chat-toggle, .chat-overlay { display: none; }
+.chat-close, .chat-toggle, .chat-overlay, .online-count-toggle { display: none; }
 
 dialog { width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); color: var(--ink); box-shadow: 0 20px 60px var(--dialog-shadow); }
 dialog::backdrop { background: var(--dialog-backdrop); }
@@ -466,6 +492,10 @@ dialog::backdrop { background: var(--dialog-backdrop); }
 .dialog-close:hover { background: var(--paper); color: var(--ink); }
 .dialog-content h2 { padding-right: 35px; margin-bottom: 22px; font-size: 27px; }
 .dialog-content > p { color: var(--muted); font-size: 14px; }
+.online-players-list { max-height: min(440px, 60vh); margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.online-player-link { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 4px; border-bottom: 1px solid var(--line); color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; }
+.online-player-link span { min-width: 0; overflow-wrap: anywhere; }
+.online-player-link:hover { color: var(--accent); background: var(--paper); }
 .auth-tabs { display: flex; gap: 23px; margin-bottom: 19px; border-bottom: 1px solid var(--line); }
 .auth-tabs button { min-height: 39px; padding: 5px 0; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 14px; }
 .auth-tabs button.active { border-color: var(--accent); color: var(--ink); font-weight: 700; }
@@ -494,7 +524,8 @@ dialog::backdrop { background: var(--dialog-backdrop); }
   .chat-sidebar { width: min(340px, calc(100vw - 32px)); transform: translateX(-101%); transition: transform .22s ease; box-shadow: 10px 0 30px var(--sidebar-shadow); }
   .chat-sidebar.open { transform: translateX(0); }
   .main-nav .chat-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 46px; padding: 0; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 14px; font-weight: 600; }
-  .chat-toggle-count { font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .main-nav .online-count-toggle { display: inline-flex; align-items: center; min-height: 46px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .main-nav .online-count-toggle:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
   .main-nav .chat-toggle:hover, .main-nav .chat-toggle[aria-expanded="true"] { color: var(--ink); }
   .chat-close { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font-size: 24px; }
   .chat-overlay:not([hidden]) { position: fixed; inset: 0; z-index: 39; display: block; background: var(--chat-backdrop); }

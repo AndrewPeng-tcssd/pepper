@@ -1,5 +1,6 @@
 const { ObjectId } = require('mongodb');
 const { CardError, normalizeCardIds, cardSnapshots, tradableInventory, moveCards } = require('./cards');
+const { avatarUrl, withAccountActivity } = require('./accounts');
 
 const UUID_V4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const ACCOUNT_ID = /^PPR-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -79,15 +80,16 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
     const ids = [...new Map(entries.flatMap(trade => [trade.senderUserId, trade.recipientUserId])
       .map(id => [id.toString(), id])).values()];
     const players = ids.length ? await users.find({ _id: { $in: ids } }, {
-      projection: { username: 1 }
+      projection: { username: 1, accountId: 1, avatarVersion: 1 }
     }).toArray() : [];
     const names = new Map(players.map(player => [player._id.toString(), player.username]));
+    const avatars = new Map(players.map(player => [player._id.toString(), avatarUrl(player)]));
     return entries.map(trade => {
       const requestAccepted = trade.status === 'negotiating' || trade.status === 'accepted' || Boolean(trade.requestAcceptedAt);
       return {
       id: trade._id.toString(), clientOfferId: trade.clientOfferId,
-      sender: { username: names.get(trade.senderUserId.toString()) ?? trade.senderUsername, accountId: trade.senderAccountId },
-      recipient: { username: names.get(trade.recipientUserId.toString()) ?? trade.recipientUsername, accountId: trade.recipientAccountId },
+      sender: { username: names.get(trade.senderUserId.toString()) ?? trade.senderUsername, accountId: trade.senderAccountId, avatarUrl: avatars.get(trade.senderUserId.toString()) ?? avatarUrl(null) },
+      recipient: { username: names.get(trade.recipientUserId.toString()) ?? trade.recipientUsername, accountId: trade.recipientAccountId, avatarUrl: avatars.get(trade.recipientUserId.toString()) ?? avatarUrl(null) },
       requestAccepted,
       offeredTokens: requestAccepted ? trade.offeredTokens : 0,
       requestedTokens: requestAccepted ? trade.requestedTokens : 0,
@@ -217,7 +219,7 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
       senderConfirmed: false, recipientConfirmed: false,
       status: 'pending', createdAt: now, updatedAt: now
     };
-    try { await trades.insertOne(trade); }
+    try { await withAccountActivity({ client, users }, [sender._id, recipient._id], session => trades.insertOne(trade, session ? { session } : {})); }
     catch (error) {
       if (error.code !== 11000 || (error.keyPattern && !error.keyPattern.clientOfferId)) throw error;
       if (await replayIfSaved()) return;
@@ -370,11 +372,12 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
 
   async function publicMessages(entries) {
     const ids = [...new Map(entries.map(message => [message.senderUserId.toString(), message.senderUserId])).values()];
-    const players = ids.length ? await users.find({ _id: { $in: ids } }, { projection: { username: 1 } }).toArray() : [];
+    const players = ids.length ? await users.find({ _id: { $in: ids } }, { projection: { username: 1, accountId: 1, avatarVersion: 1 } }).toArray() : [];
     const names = new Map(players.map(player => [player._id.toString(), player.username]));
+    const avatars = new Map(players.map(player => [player._id.toString(), avatarUrl(player)]));
     return entries.map(message => ({
       id: message._id.toString(), clientMessageId: message.clientMessageId,
-      sender: { username: names.get(message.senderUserId.toString()) ?? message.senderUsername, accountId: message.senderAccountId },
+      sender: { username: names.get(message.senderUserId.toString()) ?? message.senderUsername, accountId: message.senderAccountId, avatarUrl: avatars.get(message.senderUserId.toString()) ?? avatarUrl(null) },
       body: message.body, createdAt: message.createdAt.toISOString()
     }));
   }
