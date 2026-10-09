@@ -14,7 +14,7 @@ A private development version of the pepper trading card game website. Accounts,
    ```
 
    Use MongoDB Atlas or a MongoDB replica set so trades, games, moderation, publishing, and account deletion can update related records in one transaction. These operations require a replica set. Keep the real connection string private. `.env` is excluded by `.gitignore`.
-4. Run `npm start`, then open `http://localhost:3000` in Chrome. Use `/profile` for the hourly token claim and Overview (`/`) for the pack animation test. The Packs page at `/packs` shows “Coming soon.” Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
+4. Run `npm start`, then open `http://localhost:3000` in Chrome. Overview (`/`) has the hourly token claim below the profile and pack animation test; you can also claim from `/profile`. The Packs page at `/packs` shows “Coming soon.” Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
 
 ## Accounts
 
@@ -44,7 +44,7 @@ Unseen announcements appear in a popup when visiting the site. **Got it** dismis
 
 ## Moderation
 
-The permanent site owner is the administrator. **Open admin view** in Settings loads players automatically, with **Make mod** and **Remove mod** beside eligible accounts. Use the username search to find someone specific. Admin view also enables bans, chat deletion, and publishing controls. Moderators use **Open mod view** for announcements, ordinary-player bans, and chat moderation. A moderator cannot ban an administrator or another moderator, or delete their messages; their own messages can still be deleted. Changelog publishing remains administrator-only. Closing either view hides these controls.
+The permanent site owner is the administrator. **Open admin view** in Settings loads players automatically. Expand **Players** at the bottom of Settings to find **Make mod** and **Remove mod** beside eligible accounts, or use the username search. The player list starts folded in both admin and mod view. Admin view also enables bans, chat deletion, and publishing controls. Moderators use **Open mod view** for announcements, ordinary-player bans, and chat moderation. A moderator cannot ban an administrator or another moderator, or delete their messages; their own messages can still be deleted. Changelog publishing remains administrator-only. Closing either view hides these controls.
 
 Settings links directly to the available announcement and changelog editors while the management view is open. Moderation, privileged publishing, and deletion require MongoDB transactions on a replica set.
 

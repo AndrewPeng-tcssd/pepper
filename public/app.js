@@ -237,9 +237,6 @@ function setUser(user) {
   setProfileAvatar($('menuAvatar'), user);
   if (user) {
     if (previousPresenceIdentity !== (user.accountId || user.username) || $('newUsername').value === previousUsername) $('newUsername').value = user.username;
-    $('menuUsername').textContent = user.username;
-    $('menuUsername').append(playerRoleBadges(user));
-    $('menuBalance').textContent = user.balance.toLocaleString();
     $('panelBalance').textContent = user.balance.toLocaleString();
     $('accountBalance').textContent = user.balance.toLocaleString();
     $('accountName').textContent = user.username;
@@ -293,13 +290,17 @@ function formatTime(ms) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function claimRouteVisible() {
+  return pageKind === 'home' || (pageKind === 'profile' && !viewingPublicProfile);
+}
+
 function renderClaim() {
   const profile = viewingPublicProfile ? state.profile : state.user;
-  if (!profile || pageKind !== 'profile') return;
+  if (!profile || (pageKind !== 'home' && pageKind !== 'profile')) return;
   const remaining = profile.nextClaimAt ? profile.nextClaimAt - Date.now() : 0;
   const ready = remaining <= 0;
-  $('profileNextClaim').textContent = ready ? 'Ready now' : formatTime(remaining);
-  if (viewingPublicProfile) return;
+  if (pageKind === 'profile') $('profileNextClaim').textContent = ready ? 'Ready now' : formatTime(remaining);
+  if (!claimRouteVisible()) return;
   $('claimReady').hidden = !ready;
   $('claimCooldown').hidden = ready;
   $('claimTitle').textContent = ready ? 'Ready to claim' : 'Next claim';
@@ -385,14 +386,14 @@ function loadTurnstileScript() {
 }
 
 async function loadTurnstile() {
-  if (!state.user || pageKind !== 'profile' || viewingPublicProfile || state.turnstileLoading || state.turnstileWidgetId !== null) return;
+  if (!state.user || !claimRouteVisible() || state.turnstileLoading || state.turnstileWidgetId !== null) return;
   state.turnstileLoading = true;
   const generation = ++state.turnstileGeneration;
   try {
     const config = await api('turnstile-config');
     if (!config.siteKey) throw new Error('Cloudflare verification is unavailable.');
     await loadTurnstileScript();
-    if (generation !== state.turnstileGeneration || !state.user) return;
+    if (generation !== state.turnstileGeneration || !state.user || !claimRouteVisible()) return;
     state.turnstileWidgetId = window.turnstile.render('#turnstileWidget', {
       sitekey: config.siteKey,
       action: 'claim_tokens',
@@ -509,6 +510,15 @@ function renderRoute() {
   ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage', 'tradingPage', 'gamesPage', 'friendsPage'].forEach(id => { $(id).hidden = true; });
   const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage', trading: 'tradingPage', games: 'gamesPage', friends: 'friendsPage' }[pageKind];
   $(sectionId).hidden = false;
+  const claim = $('tokens');
+  const claimSlot = pageKind === 'home' ? $('overviewClaimSlot') : $('packsPage').parentNode;
+  if (claim.parentNode !== claimSlot) {
+    removeTurnstile();
+    if (pageKind === 'home') claimSlot.append(claim);
+    else $('packsPage').before(claim);
+  }
+  $('tokens').hidden = !claimRouteVisible();
+  if (claimRouteVisible()) $('tokensTitle').textContent = 'Hourly claim';
   document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG', games: 'Games — Pepper TCG', friends: 'Friends — Pepper TCG' }[pageKind];
   state.profile = null;
   window.PepperModeration?.renderProfileControls();
@@ -517,7 +527,6 @@ function renderRoute() {
   $('profileTitle').textContent = 'Profile';
   $('profileAccountTitle').textContent = viewingPublicProfile ? 'About' : 'Account';
   if (pageKind === 'profile') {
-    $('tokensTitle').textContent = 'Hourly claim';
     if (viewingPublicProfile) {
       removeTurnstile();
       void loadProfile();
@@ -528,7 +537,8 @@ function renderRoute() {
       if (state.user) renderProfileDetails(state.user);
       renderClaim();
     }
-  } else removeTurnstile();
+  } else if (pageKind === 'home') renderClaim();
+  else removeTurnstile();
   if (pageKind === 'changelog') void loadChangelog(true);
   if (pageKind === 'announcements') void loadAnnouncements(true);
   if (pageKind === 'leaderboard') void loadLeaderboard(true);
@@ -621,7 +631,7 @@ $('authForm').addEventListener('submit', async (event) => {
 
 $('claimForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (state.claimSubmitting || state.accountSubmitting || !state.user) return;
+  if (state.claimSubmitting || state.accountSubmitting || !state.user || !claimRouteVisible()) return;
   if (!state.turnstileToken) { message($('claimMessage'), 'Complete Cloudflare verification first.'); return; }
   const button = $('claimForm').querySelector('button');
   const token = state.turnstileToken;
@@ -2385,11 +2395,12 @@ function createChatRow(item) {
 }
 
 function renderChat(messages) {
-  const canonical = messages.slice(-100);
+  const canonical = messages.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)).slice(-100);
   state.chatMessages = canonical;
   const savedClientIds = new Set(canonical.map(item => item.clientMessageId).filter(Boolean));
   state.chatOutbox = state.chatOutbox.filter(item => !savedClientIds.has(item.clientMessageId));
-  const latest = [...canonical, ...state.chatOutbox].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  // Accepted messages use server time; pending messages keep their local queue order.
+  const latest = [...canonical, ...state.chatOutbox];
   const signature = JSON.stringify(latest);
   if (signature === state.chatSignature) return;
   const container = $('chatMessages');

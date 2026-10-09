@@ -21,7 +21,7 @@ function harness(user, { storage = new Map(), network, versionNetwork, withPicke
   const node = id => {
     const classes = new Set(), listeners = new Map();
     return {
-      id, children: [], dataset: {}, hidden: false, disabled: false, textContent: '', value: '',
+      id, children: [], dataset: {}, hidden: false, disabled: false, open: false, textContent: '', value: '',
       classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
       addEventListener(type, callback) { listeners.set(type, callback); },
       dispatch(type, target = this) { return listeners.get(type)?.({ preventDefault() {}, target }); },
@@ -187,6 +187,72 @@ test('management view is opt-in and remembered separately for each privileged ac
   assert.equal(harness(person('mod', 'mod'), { storage }).api.enabled(), false);
   first.context.setUser(person('ordinary')); assert.equal(first.api.enabled(), false);
   assert.equal(first.elements.get('moderationSettings').hidden, true);
+});
+
+test('player lists start folded in admin and mod views and preserve expansion during refresh', async () => {
+  for (const role of ['admin', 'mod']) {
+    const user = person(role, role), storage = new Map();
+    const ui = harness(user, { storage, network: () => ({ players: [person('target')] }) });
+    const section = ui.elements.get('moderationPlayerSettings'), details = ui.elements.get('moderationPlayerDetails');
+    assert.equal(section.hidden, true);
+    ui.enable();
+    assert.equal(section.hidden, false);
+    assert.equal(details.open, false);
+    details.open = true;
+    await flush();
+    assert.equal(details.open, true, 'Loading players preserves the chosen expansion');
+    assert.equal(ui.elements.get('moderationPlayers').children.length, 1);
+    ui.context.setUser({ ...user, balance: 42 });
+    assert.equal(details.open, true, 'Routine account refresh preserves expansion');
+    ui.enable();
+    assert.equal(section.hidden, true);
+    assert.equal(details.open, false);
+    ui.enable(); await flush();
+    assert.equal(section.hidden, false);
+    assert.equal(details.open, false);
+    const restored = harness(user, { storage });
+    assert.equal(restored.api.enabled(), true);
+    assert.equal(restored.elements.get('moderationPlayerDetails').open, false, 'Remembered management view starts folded');
+    await flush();
+  }
+});
+
+test('player lists fold across account, role, storage, and banned view changes', async () => {
+  for (const transition of ['account', 'role', 'storage', 'banned']) {
+    const storage = new Map([['pepper-moderation-view:other-admin', 'open']]);
+    const ui = harness(person('admin', 'admin'), { storage });
+    ui.enable(); await flush();
+    const details = ui.elements.get('moderationPlayerDetails'); details.open = true;
+    if (transition === 'account') ui.context.setUser(person('other-admin', 'admin'));
+    if (transition === 'role') ui.context.setUser(person('admin', 'mod'));
+    if (transition === 'storage') {
+      ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'closed' });
+      assert.equal(details.open, false);
+      assert.equal(ui.elements.get('moderationPlayerSettings').hidden, true);
+      ui.storageEvent({ key: 'pepper-moderation-view:admin', newValue: 'open' });
+    }
+    if (transition === 'banned') { ui.context.accountBanned = true; ui.api.syncUser(); }
+    assert.equal(details.open, false, transition);
+    assert.equal(ui.elements.get('moderationPlayerSettings').hidden, transition === 'banned', transition);
+    await flush();
+  }
+});
+
+test('collapsing players closes suggestions while preserving the in-progress player load', async () => {
+  let resolve;
+  const pending = new Promise(done => { resolve = done; });
+  const ui = harness(person('admin', 'admin'), { withPicker: true, network: () => pending });
+  ui.enable();
+  const details = ui.elements.get('moderationPlayerDetails');
+  details.open = true; details.dispatch('toggle');
+  const resets = ui.picker.resets;
+  details.open = false; details.dispatch('toggle');
+  assert.equal(ui.picker.resets, resets + 1);
+  assert.equal(ui.api.inspect().busy, true);
+  resolve({ players: [person('target')] }); await flush();
+  assert.equal(ui.elements.get('moderationPlayers').children.length, 1);
+  assert.equal(ui.api.inspect().busy, false);
+  assert.equal(details.open, false);
 });
 
 test('opening admin view loads players and exposes moderator controls immediately', async () => {

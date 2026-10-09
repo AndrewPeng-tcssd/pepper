@@ -88,7 +88,7 @@ function rateLimit(retryAfterMs = 900) {
   return Object.assign(new Error('Please wait before sending again.'), { status: 429, retryAfterMs });
 }
 
-function harness({ user = account(), network = () => undefined } = {}) {
+function harness({ user = account(), network = () => undefined, productionRender = false } = {}) {
   const clock = fakeClock();
   const elements = new Map();
   const calls = [];
@@ -106,8 +106,27 @@ function harness({ user = account(), network = () => undefined } = {}) {
         contains: name => classes.has(name), add: name => classes.add(name), remove: name => classes.delete(name),
         toggle: (name, enabled) => { if (enabled) classes.add(name); else classes.delete(name); }
       },
-      append(...children) { this.children.push(...children); },
-      replaceChildren(...children) { this.children = children; },
+      parentNode: null,
+      get childNodes() { return this.children; },
+      append(...children) { children.forEach(child => this.insertBefore(child, null)); },
+      replaceChildren(...children) { this.children.forEach(child => { child.parentNode = null; }); this.children = []; this.append(...children); },
+      insertBefore(child, before) {
+        child.remove();
+        const index = before ? this.children.indexOf(before) : this.children.length;
+        assert.ok(index >= 0, 'Insertion target is a child');
+        this.children.splice(index, 0, child); child.parentNode = this;
+      },
+      remove() {
+        if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1);
+        this.parentNode = null;
+      },
+      replaceWith(child) {
+        const parent = this.parentNode;
+        if (!parent) return;
+        parent.insertBefore(child, this); this.remove();
+      },
+      contains(child) { return this === child || this.children.some(node => node.contains(child)); },
+      getBoundingClientRect() { return { top: 0, bottom: 20 }; },
       querySelectorAll(selector) {
         const className = /^\.([\w-]+)$/.exec(selector)?.[1];
         return this.children.flatMap(child => [
@@ -115,7 +134,9 @@ function harness({ user = account(), network = () => undefined } = {}) {
           ...(child.querySelectorAll?.(selector) || [])
         ]);
       },
-      closest() { return null; },
+      querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+      matches(selector) { return selector.split(',').some(part => part.trim() === id || part.trim().startsWith('.') && classes.has(part.trim().slice(1))); },
+      closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector) || null; },
       setAttribute(name, value) { this[name] = value; },
       removeAttribute(name) { delete this[name]; },
       reset() {}, close() { this.open = false; }, focus() { document.activeElement = this; },
@@ -166,7 +187,8 @@ function harness({ user = account(), network = () => undefined } = {}) {
     'newTradeInventory', 'message', 'isOwnProfile', 'profileHref', 'tradeProfileLink',
     'setUser', 'syncTradingUser', 'prefillTradingRecipient', 'tradingIdentityIsCurrent', 'acceptedTradeRequest', 'cancelTradeAutosave',
     'chatRetryDelay', 'resetChatSending', 'scheduleChatSend', 'queueTradeChatRetry',
-    'sendChatEntry', 'sendTradeChatEntry', 'createChatRow', 'renderTradeChat'
+    'sendChatEntry', 'sendTradeChatEntry', 'createChatRow', 'renderTradeChat',
+    ...(productionRender ? ['renderChat'] : [])
   ];
   const prefix = source.slice(0, source.indexOf('\nfunction newTradeInventory'));
   vm.runInContext(prefix + '\n' + functions.map(productionFunction).join('\n') + '\n' + productionListener('chatForm', 'submit'), context);
@@ -244,6 +266,61 @@ test('queued public messages preserve order and concurrent retry clicks cannot d
   await ui.clock.advance(0);
   assert.deepEqual(ui.calls.map(call => call.body.text), ['First', 'First', 'Second']);
   assert.equal(ui.state.chatOutbox.length, 0);
+});
+
+test('a pending rapid message stays below its earlier accepted message during retries and polling', async () => {
+  const firstResponse = deferred();
+  const secondResponse = deferred();
+  const ui = harness({ productionRender: true, network: () => {
+    if (ui.calls.length === 1) return firstResponse.promise;
+    if (ui.calls.length === 2) throw rateLimit();
+    if (ui.calls.length === 3) return secondResponse.promise;
+  } });
+  const rows = () => ui.elements.get('chatMessages').children.map(row => row.dataset.messageId);
+  const first = ui.publicEntry('First');
+  void ui.call('sendChatEntry', first);
+  await ui.clock.advance(1);
+  const second = ui.publicEntry('Second');
+  void ui.call('sendChatEntry', second);
+  await tick();
+  assert.deepEqual(rows(), [first.id, second.id]);
+
+  // The first acceptance happens after the second was queued, with server time ahead of local time.
+  const savedFirst = { ...first, id: 'first-saved', status: undefined, createdAt: new ui.clock.Date(ui.clock.Date.now() + 3000).toISOString() };
+  firstResponse.resolve({ message: savedFirst });
+  await tick();
+  await ui.clock.advance(0);
+  assert.equal(ui.calls.length, 2);
+  assert.deepEqual(rows(), ['first-saved', second.id]);
+  assert.match(textIn(ui.elements.get('chatMessages').children.at(-1)), /Second.*Sending…/);
+
+  const polledMessage = { id: 'polled-friend-message', ...account('friend'), text: 'Hello', createdAt: new ui.clock.Date(ui.clock.Date.now() + 4000).toISOString() };
+  ui.call('renderChat', [polledMessage, savedFirst]);
+  assert.deepEqual(rows(), ['first-saved', 'polled-friend-message', second.id]);
+  await ui.clock.advance(999);
+  assert.equal(ui.calls.length, 2);
+  await ui.clock.advance(1);
+  assert.equal(ui.calls.length, 3);
+  assert.equal(ui.calls[2].body.clientMessageId, second.clientMessageId);
+  assert.deepEqual(rows(), ['first-saved', 'polled-friend-message', second.id]);
+
+  const savedSecond = { ...second, id: 'second-saved', status: undefined, createdAt: new ui.clock.Date(ui.clock.Date.now() + 5000).toISOString() };
+  secondResponse.resolve({ message: savedSecond });
+  await tick();
+  ui.call('renderChat', [savedFirst, polledMessage, savedSecond]);
+  assert.deepEqual(rows(), ['first-saved', 'polled-friend-message', 'second-saved']);
+  assert.equal(ui.state.chatOutbox.length, 0);
+  assert.doesNotMatch(textIn(ui.elements.get('chatMessages')), /Sending…/);
+});
+
+test('an earlier accepted public message stays before a newer message received by polling', () => {
+  const ui = harness({ productionRender: true });
+  const earlier = { id: 'earlier', ...account(), text: 'Earlier', createdAt: new ui.clock.Date(ui.clock.Date.now() - 1000).toISOString() };
+  const newer = { id: 'newer', ...account('friend'), text: 'Newer', createdAt: new ui.clock.Date().toISOString() };
+  ui.call('renderChat', [newer]);
+  ui.call('renderChat', [newer, earlier]);
+  assert.deepEqual(ui.elements.get('chatMessages').children.map(row => row.dataset.messageId), ['earlier', 'newer']);
+  assert.deepEqual(plain(ui.state.chatMessages).map(item => item.id), ['earlier', 'newer']);
 });
 
 test('repeated public rate limits honor each cooldown while retaining the same message', async () => {

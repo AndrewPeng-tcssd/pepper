@@ -146,6 +146,8 @@
     el('moderationViewToggle').setAttribute('aria-pressed', String(enabled()));
     el('moderationViewToggle').disabled = moderation.busy || state.accountSubmitting;
     el('moderationControls').hidden = !enabled();
+    el('moderationPlayerSettings').hidden = !enabled();
+    if (!enabled()) el('moderationPlayerDetails').open = false;
     el('moderationChangelog').hidden = !admin;
     renderVersionSettings();
     el('moderationUsername').disabled = moderation.busy; el('moderationFind').disabled = moderation.busy;
@@ -169,6 +171,7 @@
     const changed = moderation.identity !== identity || moderation.role !== role;
     if (changed) {
       closePlayerPicker();
+      el('moderationPlayerDetails').open = false;
       versionSettings = newVersionSettings(); el('adminVersion').value = ''; message(el('adminVersionMessage'), '');
       Object.assign(moderation, { identity, role, open: !!identity && storedOpen(identity), players: [], busy: false, deleteId: null, revision: moderation.revision + 1 });
       el('moderationSearch').reset(); message(el('moderationMessage'), ''); message(el('profileModerationMessage'), '');
@@ -245,10 +248,14 @@
   el('moderationViewToggle').addEventListener('click', () => {
     if (!privileged() || moderation.busy || state.accountSubmitting) return;
     moderation.open = !moderation.open; moderation.deleteId = null;
+    el('moderationPlayerDetails').open = false;
     closePlayerPicker(); if (!enabled()) moderation.players = [];
     try { localStorage.setItem(storageKey(moderation.identity), moderation.open ? 'open' : 'closed'); } catch {}
     render(); refreshEditors(); syncVersionView();
     if (enabled()) void findPlayers();
+  });
+  el('moderationPlayerDetails').addEventListener('toggle', () => {
+    if (!el('moderationPlayerDetails').open) playerPicker?.reset();
   });
   el('moderationSearch').addEventListener('submit', event => void findPlayers(event));
   el('adminVersionForm').addEventListener('submit', event => void saveVersion(event));
@@ -289,7 +296,8 @@
   });
   window.addEventListener('storage', event => {
     if (moderation.identity && event.key === storageKey(moderation.identity)) {
-      moderation.open = event.newValue === 'open'; closePlayerPicker(); if (!enabled()) moderation.players = [];
+      moderation.open = event.newValue === 'open'; el('moderationPlayerDetails').open = false;
+      closePlayerPicker(); if (!enabled()) moderation.players = [];
       render(); refreshEditors(); syncVersionView();
       if (enabled()) void findPlayers();
     }

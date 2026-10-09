@@ -68,13 +68,14 @@ function request(sender, recipient, extra = {}) {
   };
 }
 
-function harness({ user = account('local_player'), page = 'trading', network, sessionRendering = false } = {}) {
+function harness({ user = account('local_player'), page = 'trading', network, sessionRendering = false, claimRendering = false } = {}) {
   const elements = new Map();
   const calls = [];
   const opened = [];
   const navigated = [];
   const chatChanges = [];
   const playerPickers = [];
+  const verification = { renders: [], removed: [], resets: [] };
   const timers = new Map(); let timerId = 0, clock = Date.now();
   let context;
   const element = (id, attributes = '') => {
@@ -92,8 +93,23 @@ function harness({ user = account('local_player'), page = 'trading', network, se
       focus() { document.activeElement = this; },
       reset() { if (id === 'tradingForm') elements.get('tradingRecipient').value = ''; },
       replaceChildren(...children) { this.children = children; },
-      append(...children) { this.children.push(...children); },
+      append(...children) {
+        for (const child of children) {
+          child.remove?.(); child.parentNode = this; this.children.push(child);
+        }
+      },
+      before(...children) {
+        for (const child of children) {
+          child.remove?.(); child.parentNode = this.parentNode;
+          this.parentNode.children.splice(this.parentNode.children.indexOf(this), 0, child);
+        }
+      },
+      remove() {
+        if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1);
+        this.parentNode = null;
+      },
       closest() { return null; },
+      querySelector(selector) { return id === 'claimForm' && selector === 'button' ? claimButton : selector === 'iframe' ? this.children.find(child => child.id === 'iframe') : null; },
       querySelectorAll() { return []; },
       contains(target) { return target === this || this.children.includes(target) || (id === 'tradeNotification' && target?.id?.startsWith('tradeNotification')); },
       setAttribute(name, value) { this[name] = value; },
@@ -101,11 +117,21 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     };
   };
   for (const match of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*\bid="([^"]+)"[^>]*)>/g)) elements.set(match[2], element(match[2], match[1]));
+  const claimButton = element('claim-button');
+  element('main').append(elements.get('tokens'), elements.get('packsPage'));
   const document = { getElementById: id => elements.get(id) || null, createElement: tag => element(tag), body: element('body'), activeElement: null, querySelectorAll: () => [], querySelector: () => null };
   const boundary = {
     document, crypto, console, URLSearchParams, Date: class extends Date { static now() { return clock; } }, window: { setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, at: clock + delay }); return id; }, clearTimeout(id) { timers.delete(id); }, PepperPlayerPicker: {
       attach(settings) { const picker = { closed: 0, close() { this.closed++; }, reset() { this.closed++; } }; playerPickers.push({ settings, picker }); return picker; },
       closeAll() { playerPickers.forEach(({ picker }) => picker.reset()); }
+    }, matchMedia: () => ({ matches: false }), turnstile: {
+      render(selector, settings) {
+        verification.renders.push({ selector, settings });
+        elements.get('turnstileWidget').append(element('iframe'));
+        return 'claim-verification';
+      },
+      remove(id) { verification.removed.push(id); elements.get('turnstileWidget').replaceChildren(); },
+      reset(id) { verification.resets.push(id); }
     } },
     location: { pathname: page === 'trading' ? '/trading' : '/', search: '' },
     api: async (route, options = {}) => {
@@ -119,6 +145,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     renderTradeLists() {}, renderTradeSession() {}, renderOverviewProfile() {}, renderChangelogEditor() {}, renderAnnouncementEditor() {}, syncPictureSettings() {}, setProfileAvatar() {},
     clearClaimReward() {}, clearChatReply() {}, resetChatSending() {}, renderChat() {}, renderProfileDetails() {}, removeTurnstile() {}, renderClaim() {},
     renderLeaderboard() {}, scrollChatToLatest() {}, loadPresence() {},
+    loadProfile() {}, loadLeaderboard() {}, revealClaimReward: async () => true,
     isOwnChatMessage: () => false, refreshTradeInventories() {}, loadTradeSession() {}, loadTradeChat() {},
     renderOwnCardPicker() {}, renderTradeChat() {}, unavailableTradeCards: () => [], tradeCardArtwork: () => null,
     tradeCardMetadata: card => { const metadata = element('card'); metadata.textContent = card.name; metadata.dataset.cardId = card.id; return metadata; },
@@ -142,13 +169,14 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   };
   context = vm.createContext(boundary);
   const functions = [
-    'accountRole', 'playerRoleBadges',
+    'accountRole', 'playerRoleBadges', 'claimRouteVisible', 'isOwnProfile', 'routeProfileUsername',
     'newTradeInventory', 'message', 'setUser', 'tradingIdentityIsCurrent', 'tradingBusy', 'mergeTradingUser', 'activeTrade',
     'newestTrade', 'rememberTrade', 'syncTradingUser', 'tradeStatusLabel', 'reconcileTradeAction',
     'renderTradeNotification', 'acceptTradeNotification', 'declineTradeNotification', 'renderTradingState', 'loadTrades',
     'invalidateTradeReview', 'findTradingRecipient', 'finishSendingTrade', 'sendTradingOffer', 'actOnTrade',
     'prefillTradingRecipient', 'renderRoute', 'setupTradingPlayerPicker', 'cancelTradeAutosave', 'syncTradeAutosaveRoute', 'scheduleTradeAutosave'
   ];
+  if (claimRendering) functions.push('formatTime', 'renderClaim', 'setClaimToken', 'removeTurnstile', 'resetTurnstile', 'loadTurnstileScript', 'loadTurnstile');
   if (sessionRendering) functions.push('renderTradeSession', 'renderTradeAssets', 'ownTradeSide', 'partnerTradeSide', 'acceptedTradeRequest', 'tradeButton', 'tradeCardSnapshot', 'newSessionDraft', 'sameContribution', 'updateTradeSession', 'tradeDraftPayload', 'validateTradeDraft', 'changeTradeDraft', 'saveTradeContribution', 'unavailableTradeCards', 'openTradeSession');
   const prefix = source.slice(0, source.indexOf('\nfunction newTradeInventory'));
   vm.runInContext(prefix + '\n' + functions.map(productionFunction).join('\n') + '\n' + [
@@ -156,6 +184,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     productionListener('tradeNotificationAccept', 'click'), productionListener('tradeNotificationDecline', 'click')
   ].join('\n'), context);
   if (sessionRendering) vm.runInContext(productionListener('tradingSessionTokens', 'input') + productionListener('tradingConfirmFinal', 'click') + source.slice(source.indexOf("for (const containerId of ['tradingSessionCards'])"), source.indexOf('\nfunction renderTradeChat')), context);
+  if (claimRendering) vm.runInContext(productionListener('claimForm', 'submit'), context);
   const shared = vm.runInContext('({ state, trading, tradeNotification, tradeAutosave, tradeInventories })', context);
   shared.state.user = user;
   shared.trading.identity = user?.accountId || null;
@@ -163,7 +192,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   vm.runInContext('pageKind = initialPage;', context);
   context.setupTradingPlayerPicker();
   return {
-    ...shared, calls, opened, navigated, chatChanges, elements, playerPickers,
+    ...shared, calls, opened, navigated, chatChanges, elements, playerPickers, verification, claimButton,
     call: (name, ...args) => context[name](...args),
     evaluate: code => vm.runInContext(code, context),
     async advance(milliseconds) {
@@ -177,6 +206,80 @@ function harness({ user = account('local_player'), page = 'trading', network, se
     submit: () => elements.get('tradingForm').dispatch('submit')
   };
 }
+
+test('Overview claims update the shared balance and hourly cooldown', async () => {
+  const local = account('local_player');
+  const ui = harness({ user: local, page: 'home', claimRendering: true, network: call => {
+    if (call.route === 'turnstile-config') return { siteKey: 'preview-key' };
+    if (call.route === 'claim') return { awarded: 15, user: { ...local, balance: 35, lastClaimAt: Date.now(), nextClaimAt: Date.now() + 3600000 } };
+  } });
+  ui.call('renderRoute');
+  await tick();
+  assert.equal(ui.elements.get('tokens').parentNode, ui.elements.get('overviewClaimSlot'));
+  assert.equal(ui.elements.get('tokens').hidden, false);
+  assert.equal(ui.elements.get('tokensTitle').textContent, 'Hourly claim');
+  assert.equal(ui.verification.renders.length, 1);
+  ui.verification.renders[0].settings.callback('verified-token');
+  assert.equal(ui.claimButton.disabled, false);
+  await ui.elements.get('claimForm').dispatch('submit');
+  assert.equal(ui.calls.filter(call => call.route === 'claim').length, 1);
+  assert.equal(ui.state.user.balance, 35);
+  assert.equal(ui.elements.get('accountBalance').textContent, '35');
+  assert.equal(ui.elements.get('claimReady').hidden, true);
+  assert.equal(ui.elements.get('claimCooldown').hidden, false);
+  assert.equal(ui.elements.get('claimTitle').textContent, 'Next claim');
+  assert.equal(ui.claimButton.disabled, true);
+});
+
+test('the shared claim refreshes verification when moving and stays hidden on other profiles', async () => {
+  const local = account('local_player');
+  const ui = harness({ user: local, page: 'home', claimRendering: true, network: call => call.route === 'turnstile-config' ? { siteKey: 'preview-key' } : undefined });
+  ui.call('renderRoute');
+  await tick();
+  const claim = ui.elements.get('tokens');
+  const oldVerification = ui.verification.renders[0].settings;
+  oldVerification.callback('old-token');
+  ui.evaluate("location.pathname = '/profile';");
+  ui.call('renderRoute');
+  await tick();
+  assert.equal(claim.parentNode, ui.elements.get('packsPage').parentNode);
+  assert.equal(claim.hidden, false);
+  assert.equal(ui.verification.removed.length, 1);
+  assert.equal(ui.verification.renders.length, 2);
+  assert.equal(ui.state.turnstileToken, null);
+  oldVerification.callback('stale-token');
+  assert.equal(ui.state.turnstileToken, null);
+  ui.verification.renders[1].settings.callback('current-token');
+  assert.equal(ui.state.turnstileToken, 'current-token');
+  ui.call('renderRoute');
+  await tick();
+  assert.equal(ui.verification.renders.length, 2);
+  ui.evaluate("location.pathname = '/profile/other_player';");
+  ui.call('renderRoute');
+  ui.state.profile = { ...account('other_player'), nextClaimAt: 0 };
+  ui.call('renderClaim');
+  await ui.call('loadTurnstile');
+  await ui.elements.get('claimForm').dispatch('submit');
+  assert.equal(claim.hidden, true);
+  assert.equal(ui.elements.get('profileNextClaim').textContent, 'Ready now');
+  assert.equal(ui.state.turnstileToken, null);
+  assert.equal(ui.claimButton.disabled, true);
+  assert.equal(ui.verification.renders.length, 2);
+  assert.equal(ui.calls.filter(call => call.route === 'claim').length, 0);
+});
+
+test('verification requested from Overview cannot finish after navigating to a public profile', async () => {
+  const config = deferred();
+  const ui = harness({ page: 'home', claimRendering: true, network: call => call.route === 'turnstile-config' ? config.promise : undefined });
+  ui.call('renderRoute');
+  ui.evaluate("location.pathname = '/profile/other_player';");
+  ui.call('renderRoute');
+  config.resolve({ siteKey: 'preview-key' });
+  await tick();
+  assert.equal(ui.verification.renders.length, 0);
+  assert.equal(ui.state.turnstileWidgetId, null);
+  assert.equal(ui.elements.get('tokens').hidden, true);
+});
 
 test('trading suggestions select a username without sending a request or retaining old recipient terms', async () => {
   const partner = account('example');
@@ -668,7 +771,7 @@ test('background trade balance refreshes preserve an unsaved Settings username d
   ui.call('mergeTradingUser', { ...local, balance: 31 });
   assert.equal(ui.state.user.balance, 31);
   assert.equal(ui.elements.get('newUsername').value, 'unsaved_new_name');
-  assert.equal(ui.elements.get('menuBalance').textContent, '31');
+  assert.equal(ui.elements.get('accountBalance').textContent, '31');
 });
 
 function displayedAssets(ui, id) {

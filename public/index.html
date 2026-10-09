@@ -7,11 +7,11 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=49">
+  <link rel="stylesheet" href="/styles.css?v=50">
   <script src="/player-picker.js?v=1" defer></script>
-  <script src="/app.js?v=49" defer></script>
+  <script src="/app.js?v=50" defer></script>
   <script src="/games.js?v=4" defer></script>
-  <script src="/moderation.js?v=6" defer></script>
+  <script src="/moderation.js?v=7" defer></script>
   <script src="/friends.js?v=1" defer></script>
   <script src="/news-comments.js?v=1" defer></script>
   <script src="/announcement-popup.js?v=1" defer></script>
@@ -65,10 +65,7 @@
       <details class="account-menu" id="accountMenu" hidden>
         <summary class="button"><span>Account</span><svg class="account-menu-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" /></svg></summary>
         <div class="account-dropdown">
-          <a class="account-menu-info" href="/profile" aria-label="View your profile"><span class="player-identity"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><strong id="menuUsername"></strong></span><span><span id="menuBalance">0</span> tokens</span></a>
-          <a href="/profile">Profile</a>
-          <a href="/trading">Trading</a>
-          <a href="/games">Games</a>
+          <a class="account-menu-profile" href="/profile"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><span>Profile</span></a>
           <a href="/friends">Friends</a>
           <a href="/settings">Settings</a>
           <button id="headerLogoutButton" type="button">Sign out</button>
@@ -123,6 +120,7 @@
           </div>
         </section>
       </div>
+      <div id="overviewClaimSlot"></div>
     </section>
 
     <section class="section-wrap profile-overview" id="profileIntro" aria-labelledby="profileTitle" hidden>
@@ -376,8 +374,6 @@
                 <p class="form-message" id="adminVersionMessage" role="status"></p>
               </form>
             </section>
-            <form class="settings-form moderation-search" id="moderationSearch"><label for="moderationUsername">Username</label><div class="player-picker"><input id="moderationUsername" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Find a player"></div><button class="button" id="moderationFind" type="submit">Find player</button></form>
-            <p class="form-message" id="moderationMessage" role="status"></p><div class="moderation-players" id="moderationPlayers"></div>
           </div>
         </section>
         <section class="settings-card" aria-labelledby="appearanceTitle">
@@ -442,6 +438,13 @@
         <section class="settings-card account-danger" id="deleteAccountSettings" aria-labelledby="deleteAccountTitle" hidden>
           <h2 id="deleteAccountTitle">Delete account</h2>
           <button class="button danger-button" id="deleteAccountOpen" type="button">Delete account</button>
+        </section>
+        <section class="settings-card moderation-player-settings" id="moderationPlayerSettings" hidden aria-labelledby="moderationPlayerSummary">
+          <details class="moderation-player-details" id="moderationPlayerDetails">
+            <summary id="moderationPlayerSummary">Players</summary>
+            <form class="settings-form moderation-search" id="moderationSearch"><label for="moderationUsername">Username</label><div class="player-picker"><input id="moderationUsername" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Find a player"></div><button class="button" id="moderationFind" type="submit">Find player</button></form>
+            <p class="form-message" id="moderationMessage" role="status"></p><div class="moderation-players" id="moderationPlayers"></div>
+          </details>
         </section>
       </div>
     </section>
