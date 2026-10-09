@@ -58,7 +58,7 @@ const publicUser = (user, fields = { role: 'player', banned: false }) => ({
   hourlyTokenMax: HOURLY_TOKEN_MAX,
   ...fields,
   canManageChangelog: fields.role === 'admin',
-  canManageAnnouncements: ['admin', 'mod'].includes(fields.role)
+  canManageAnnouncements: ['admin', 'senior_mod', 'mod'].includes(fields.role)
 });
 const sendError = (res, status, message) => res.status(status).json({ error: message });
 const sendRateLimit = (res, message, remainingMs) => {
@@ -432,7 +432,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
 
   registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
-  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields });
+  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields, randomDice: options.randomDice });
   registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime, claimIntervalMs: CLAIM_INTERVAL_MS });
   const news = registerNews(app, { users, changelog, announcements, newsComments, announcementSeen }, {
     requireUser, rateLimit, moderation, now: currentTime, publicAnnouncement: entry => publicAnnouncementEntry(entry)
@@ -479,7 +479,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json(await changelogSnapshot());
   });
   app.post('/api/changelog', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
-    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can publish updates.');
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Admin access required.');
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     const version = typeof req.body?.version === 'string' ? req.body.version.trim().replace(/^v/i, '') : '';
@@ -497,7 +497,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.status(201).json({ entry: await publicChangelogEntry(entry), latestVersion: await currentBuildVersion() });
   });
   app.delete('/api/changelog/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
-    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can delete updates.');
+    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Admin access required.');
     if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This changelog entry ID is invalid.');
     const result = await moderation.runAs(req.user._id, async ({ session, role }) => {
       if (role !== 'admin') throw new ModerationError(403, 'Admin access required.');
@@ -516,6 +516,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     description: entry.description,
     authorAccountId: entry.authorAccountId ?? null,
     createdAt: entry.createdAt.toISOString(),
+    updatedAt: entry.updatedAt?.toISOString() ?? null,
     ...await news.publicFields('announcements', entry)
   });
   async function announcementsSnapshot() {
@@ -526,29 +527,63 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json(await announcementsSnapshot());
   });
   app.post('/api/announcements', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
-    if (!['admin', 'mod'].includes((await moderation.publicFields(req.user)).role)) return sendError(res, 403, 'Moderator access required.');
+    if (!['admin', 'senior_mod', 'mod'].includes((await moderation.publicFields(req.user)).role)) return sendError(res, 403, 'Moderator access required.');
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     if (!title || title.length > 120) return sendError(res, 400, 'Title must be 1–120 characters.');
     if (!description || description.length > 5000) return sendError(res, 400, 'Description must be 1–5,000 characters.');
     const entry = { title, description, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
     await moderation.runAs(req.user._id, async ({ session, role }) => {
-      if (!['admin', 'mod'].includes(role)) throw new ModerationError(403, 'Moderator access required.');
+      if (!['admin', 'senior_mod', 'mod'].includes(role)) throw new ModerationError(403, 'Moderator access required.');
       await announcements.insertOne(entry, { session });
       await news.markSeen(entry._id, req.user._id, session);
     });
     res.status(201).json({ entry: await publicAnnouncementEntry(entry) });
   });
+  async function requireAnnouncementManagement(entry, { session, actor, role, roleOf }) {
+    const own = entry.authorAccountId === actor.accountId || entry.authorId?.equals(actor._id);
+    if (role === 'admin' || (['senior_mod', 'mod'].includes(role) && own)) return;
+    const author = entry.authorAccountId ? await users.findOne({ accountId: entry.authorAccountId }, { session })
+      : entry.authorId ? await users.findOne({ _id: entry.authorId }, { session }) : null;
+    if (role === 'senior_mod' && ['player', 'mod'].includes(roleOf(author || { accountId: entry.authorAccountId }))) return;
+    throw new ModerationError(403, 'Action unavailable.');
+  }
+  app.patch('/api/announcements/:id', requireUser, rateLimit(60, 60 * 60 * 1000), async (req, res) => {
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'Invalid announcement.');
+    const payload = req.body || {};
+    if (Object.keys(payload).some(key => !['title', 'description'].includes(key))) return sendError(res, 400, 'Invalid announcement fields.');
+    const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+    const description = typeof payload.description === 'string' ? payload.description.trim() : '';
+    if (!title || title.length > 120) return sendError(res, 400, 'Title must be 1–120 characters.');
+    if (!description || description.length > 5000) return sendError(res, 400, 'Description must be 1–5,000 characters.');
+    const saved = await announcements.findOne({ _id: new ObjectId(req.params.id) });
+    if (!saved) return sendError(res, 404, 'Announcement not found.');
+    await moderation.runAs(req.user._id, async context => {
+      const { session, actor } = context;
+      const entry = await announcements.findOne({ _id: saved._id }, { session });
+      if (!entry) throw new ModerationError(404, 'Announcement not found.');
+      await requireAnnouncementManagement(entry, context);
+      const own = entry.authorAccountId === actor.accountId || entry.authorId?.equals(actor._id);
+      await announcements.updateOne({ _id: entry._id }, {
+        $set: { title, description, updatedAt: new Date(currentTime()) },
+        ...(!own ? { $addToSet: { editorAccountIds: actor.accountId } } : {})
+      }, { session });
+    }, saved.authorId ? [saved.authorId] : []);
+    res.json(await announcementsSnapshot());
+  });
   app.delete('/api/announcements/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This announcement entry ID is invalid.');
-    const result = await moderation.runAs(req.user._id, async ({ session, actor, role }) => {
+    const saved = await announcements.findOne({ _id: new ObjectId(req.params.id) });
+    if (!saved) return sendError(res, 404, 'Announcement not found.');
+    const result = await moderation.runAs(req.user._id, async context => {
+      const { session } = context;
       const entry = await announcements.findOne({ _id: new ObjectId(req.params.id) }, { session });
       if (!entry) throw new ModerationError(404, 'Announcement not found.');
-      if (role !== 'admin' && !(role === 'mod' && (entry.authorAccountId === actor.accountId || entry.authorId?.equals(actor._id)))) throw new ModerationError(403, 'Action unavailable.');
+      await requireAnnouncementManagement(entry, context);
       const deleted = await announcements.deleteOne({ _id: entry._id }, { session });
       if (deleted.deletedCount) await news.cleanup('announcements', entry._id, session);
       return deleted;
-    });
+    }, saved.authorId ? [saved.authorId] : []);
     if (!result.deletedCount) return sendError(res, 404, 'Announcement entry not found.');
     res.json(await announcementsSnapshot());
   });

@@ -98,6 +98,15 @@ test('first visits show the newest unseen announcement site-wide with the author
   assert.deepEqual(ui.calls.map(call => call.route), ['announcements/unseen']);
 });
 
+test('announcement popups retain the original author and show distinct editors', async () => {
+  const announcement = entry('edited'), editor = { ...user('editor'), role: 'admin' };
+  announcement.contributors = [announcement.author, editor, editor];
+  const ui = harness({ user: user('reader'), entries: [announcement] }); await tick();
+  const authors = ui.elements.get('announcementPopupAuthor').children;
+  assert.deepEqual(authors.map(author => author.children[1].textContent), ['admin', 'editor']);
+  assert.deepEqual(authors.map(author => author.href), ['/profile/admin', '/profile/editor']);
+});
+
 test('dismiss, Escape, and Close acknowledge only the displayed entry and advance the queue', async () => {
   const reader = user('reader'), ui = harness({ user: reader, entries: [entry('oldest'), entry('middle', 1), entry('newest', 2)] }); await tick();
   ui.click('announcementPopupDismiss'); await tick();

@@ -14,6 +14,21 @@ function appFunction(name) {
 }
 const person = (accountId, role = 'player', banned = false) => ({ accountId, username: accountId, role, banned });
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('shared player badges identify senior moderators across player surfaces', () => {
+  const document = { createElement: () => ({ className: '', textContent: '', children: [], append(child) { this.children.push(child); } }) };
+  const context = vm.createContext({ document });
+  const roleFunction = appSource.match(/^function accountRole\(person\).*$/m)?.[0];
+  assert.ok(roleFunction);
+  vm.runInContext(roleFunction + '\n' + appFunction('playerRoleBadges'), context);
+  assert.equal(context.accountRole({ role: 'senior_mod' }), 'senior_mod');
+  assert.equal(context.accountRole({ canManageChangelog: true }), 'admin');
+  const badges = context.playerRoleBadges({ role: 'senior_mod', banned: true });
+  assert.deepEqual(Array.from(badges.children, badge => [badge.textContent, badge.className]), [
+    ['Senior mod', 'role-badge role-badge-senior-mod'], ['Banned', 'role-badge role-badge-banned']
+  ]);
+});
+
 function harness(user, { storage = new Map(), network, versionNetwork, withPicker = false } = {}) {
   const elements = new Map(), calls = [], versionCalls = [], changelogRefreshes = [], windowListeners = new Map();
   const picker = { config: null, resets: 0, closes: 0, refreshes: 0 };
@@ -52,7 +67,7 @@ function harness(user, { storage = new Map(), network, versionNetwork, withPicke
     },
     setUser: value => { context.state.user = value; context.window.PepperModeration.syncUser(); }
   });
-  vm.runInContext(source.replace(/  syncUser\(\);\s*\}\)\(\);\s*$/, '  Object.assign(window.PepperModeration, { canBan, canDeleteChat, changePlayer, deleteChat, findPlayers, inspect: () => moderation });\n  syncUser();\n})();'), context);
+  vm.runInContext(source.replace(/  syncUser\(\);\s*\}\)\(\);\s*$/, '  Object.assign(window.PepperModeration, { canBan, canChangeRole, canDeleteChat, changePlayer, deleteChat, findPlayers, inspect: () => moderation });\n  syncUser();\n})();'), context);
   return { api: context.window.PepperModeration, context, elements, calls, versionCalls, changelogRefreshes, storage, picker, enable: () => elements.get('moderationViewToggle').click(), storageEvent: event => windowListeners.get('storage')?.(event) };
 }
 function showProfile(ui, player) {
@@ -77,45 +92,45 @@ test('admin profile actions work without a matching settings search result', asy
   const settingsMessage = ui.elements.get('moderationMessage').textContent;
   showProfile(ui, player);
   assert.equal(ui.elements.get('profileModeration').hidden, false);
-  assert.deepEqual(profileLabels(ui), ['Ban', 'Make mod']);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make admin', 'Make mod', 'Make senior mod']);
   assert.equal(ui.api.inspect().players.length, 0);
 
   clickProfileAction(ui, 'make-mod'); await flush();
   assert.deepEqual(ui.calls.find(call => call.method === 'PATCH'), { route: 'moderation/players/permanent-id', method: 'PATCH', payload: { role: 'mod' } });
   assert.equal(ui.context.state.profile.role, 'mod');
   assert.equal(ui.context.state.profile.balance, 42);
-  assert.deepEqual(profileLabels(ui), ['Ban', 'Remove mod']);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make admin', 'Make senior mod', 'Remove mod']);
   assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Moderator added.');
   assert.equal(ui.elements.get('moderationMessage').textContent, settingsMessage);
 
   clickProfileAction(ui, 'ban'); await flush();
   assert.equal(ui.context.state.profile.banned, true);
-  assert.deepEqual(profileLabels(ui), ['Remove mod', 'Unban']);
+  assert.deepEqual(profileLabels(ui), ['Make admin', 'Make senior mod', 'Remove mod', 'Unban']);
   assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Player banned.');
   clickProfileAction(ui, 'unban'); await flush();
   assert.equal(ui.context.state.profile.banned, false);
   assert.equal(ui.elements.get('profileModerationMessage').textContent, 'Player unbanned.');
   clickProfileAction(ui, 'remove-mod'); await flush();
   assert.equal(ui.context.state.profile.role, 'player');
-  assert.deepEqual(profileLabels(ui), ['Ban', 'Make mod']);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make admin', 'Make mod', 'Make senior mod']);
 });
 
 test('profile moderation follows role hierarchy and management view state', async () => {
   for (const user of [person('admin', 'admin'), person('moderator', 'mod')]) {
     const ui = harness(user); ui.enable(); await flush();
-    for (const player of [null, user, person('protected-admin', 'admin')]) {
+    for (const player of [null, user, { ...person('protected-account-id', 'admin'), username: 'Renamed owner', protectedAdmin: true }]) {
       showProfile(ui, player);
       assert.equal(ui.elements.get('profileModeration').hidden, true);
       assert.equal(profileActions(ui).length, 0);
     }
     showProfile(ui, person('ordinary'));
     assert.equal(ui.elements.get('profileModeration').hidden, false);
-    assert.deepEqual(profileLabels(ui), user.role === 'admin' ? ['Ban', 'Make mod'] : ['Ban']);
+    assert.deepEqual(profileLabels(ui), user.role === 'admin' ? ['Ban', 'Make admin', 'Make mod', 'Make senior mod'] : ['Ban']);
     showProfile(ui, person('banned', 'player', true));
     assert.ok(profileLabels(ui).includes('Unban'));
     showProfile(ui, person('other-mod', 'mod'));
     assert.equal(ui.elements.get('profileModeration').hidden, user.role !== 'admin');
-    assert.deepEqual(profileLabels(ui), user.role === 'admin' ? ['Ban', 'Remove mod'] : []);
+    assert.deepEqual(profileLabels(ui), user.role === 'admin' ? ['Ban', 'Make admin', 'Make senior mod', 'Remove mod'] : []);
     ui.enable();
     showProfile(ui, person('ordinary'));
     assert.equal(ui.elements.get('profileModeration').hidden, true);
@@ -157,7 +172,7 @@ test('profile actions stay pending once and do not overwrite a newly opened prof
   assert.equal(ui.context.state.profile.accountId, 'new-target');
   assert.equal(ui.context.state.profile.banned, false);
   assert.equal(ui.elements.get('profileModerationMessage').textContent, '');
-  assert.deepEqual(profileLabels(ui), ['Ban', 'Make mod']);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Make admin', 'Make mod', 'Make senior mod']);
   assert.ok(profileActions(ui).every(action => !action.disabled));
 });
 
@@ -190,7 +205,7 @@ test('management view is opt-in and remembered separately for each privileged ac
 });
 
 test('player lists start folded in admin and mod views and preserve expansion during refresh', async () => {
-  for (const role of ['admin', 'mod']) {
+  for (const role of ['admin', 'senior_mod', 'mod']) {
     const user = person(role, role), storage = new Map();
     const ui = harness(user, { storage, network: () => ({ players: [person('target')] }) });
     const section = ui.elements.get('moderationPlayerSettings'), details = ui.elements.get('moderationPlayerDetails');
@@ -437,6 +452,89 @@ test('role changes and bans use permanent IDs and prevent unauthorized client ac
   assert.equal(mod.calls.filter(call => call.method !== 'GET').length, 0);
 });
 
+test('admin profiles and settings expose every assignable role except the current role', async () => {
+  const cases = [
+    ['player', ['Ban', 'Make admin', 'Make mod', 'Make senior mod']],
+    ['mod', ['Ban', 'Make admin', 'Make senior mod', 'Remove mod']],
+    ['senior_mod', ['Ban', 'Make admin', 'Make mod', 'Remove senior mod']],
+    ['admin', ['Ban', 'Make mod', 'Make senior mod', 'Remove admin']]
+  ];
+  for (const [role, labels] of cases) {
+    const target = person(`target-${role}`, role);
+    const ui = harness(person('viewer', 'admin'), { network: call => call.method === 'GET' ? { players: [target] } : { player: { ...target, ...call.payload } } });
+    ui.enable(); await flush(); showProfile(ui, target);
+    assert.deepEqual(profileLabels(ui), labels);
+    assert.deepEqual(ui.elements.get('moderationPlayers').children[0].children[1].children.map(button => button.textContent).sort(), labels);
+    const action = role === 'admin' ? 'remove-admin' : 'make-admin';
+    clickProfileAction(ui, action); await flush();
+    assert.deepEqual(ui.calls.find(call => call.method === 'PATCH').payload, { role: role === 'admin' ? 'player' : 'admin' });
+  }
+});
+
+test('senior moderators revoke mods and sanction lower ranks without granting roles', async () => {
+  const viewer = person('senior-id', 'senior_mod'), target = { ...person('mod-id', 'mod'), username: 'Renamed moderator' };
+  const ui = harness(viewer, { network: call => call.method === 'GET' ? { players: [target] } : { player: { ...target, ...call.payload } } });
+  assert.equal(ui.elements.get('moderationViewToggle').textContent, 'Open senior mod view');
+  ui.enable(); await flush();
+  assert.equal(ui.elements.get('moderationViewToggle').textContent, 'Close senior mod view');
+  assert.equal(ui.elements.get('moderationTitle').textContent, 'Senior mod');
+  assert.equal(ui.elements.get('moderationChangelog').hidden, true);
+  assert.equal(ui.elements.get('adminVersionSettings').hidden, true);
+  showProfile(ui, target);
+  assert.deepEqual(profileLabels(ui), ['Ban', 'Remove mod']);
+  assert.deepEqual(ui.elements.get('moderationPlayers').children[0].children[1].children.map(button => button.textContent).sort(), ['Ban', 'Remove mod']);
+  for (const role of ['senior_mod', 'admin']) {
+    const peer = person(`target-${role}`, role); showProfile(ui, peer);
+    assert.deepEqual(profileLabels(ui), []);
+    assert.equal(ui.api.canBan(peer), false);
+    assert.equal(ui.api.canDeleteChat({ ...peer, id: `message-${role}` }), false);
+    await ui.api.changePlayer(peer, 'ban');
+  }
+  showProfile(ui, person('ordinary'));
+  assert.deepEqual(profileLabels(ui), ['Ban']);
+  for (const action of ['make-mod', 'make-senior-mod', 'make-admin', 'remove-admin']) await ui.api.changePlayer(target, action);
+  assert.equal(ui.calls.filter(call => call.method === 'PATCH').length, 0);
+  assert.equal(ui.api.canDeleteChat({ ...target, id: 'mod-message' }), true);
+  assert.equal(ui.api.canDeleteChat({ ...viewer, id: 'own-message' }), true);
+  showProfile(ui, target); clickProfileAction(ui, 'remove-mod'); await flush();
+  assert.deepEqual(ui.calls.find(call => call.method === 'PATCH'), { route: 'moderation/players/mod-id', method: 'PATCH', payload: { role: 'player' } });
+  assert.deepEqual(profileLabels(ui), ['Ban']);
+});
+
+test('protected owner and self controls stay unavailable by account identity', async () => {
+  for (const viewerRole of ['admin', 'senior_mod', 'mod']) {
+    const viewer = person('viewer-id', viewerRole), owner = { ...person('permanent-owner-id', 'admin'), username: 'Changed owner name', protectedAdmin: true };
+    const ui = harness(viewer, { network: () => ({ players: [owner, viewer] }) });
+    ui.enable(); await flush();
+    for (const player of [owner, viewer]) {
+      showProfile(ui, player); assert.deepEqual(profileLabels(ui), []);
+      for (const action of ['make-mod', 'make-senior-mod', 'make-admin', 'remove-mod', 'remove-senior-mod', 'remove-admin', 'ban', 'unban']) await ui.api.changePlayer(player, action);
+    }
+    assert.ok(ui.elements.get('moderationPlayers').children.every(row => row.children[1].children.length === 0));
+    assert.equal(ui.calls.filter(call => call.method === 'PATCH').length, 0);
+  }
+  const ui = harness(person('admin-viewer', 'admin')); ui.enable(); await flush();
+  showProfile(ui, { ...person('another-id'), username: '675' });
+  assert.ok(profileLabels(ui).includes('Make admin'), 'A reused username receives no owner protection');
+});
+
+test('admins promote senior moderators and senior moderators lose controls after demotion', async () => {
+  const target = person('target-id');
+  const admin = harness(person('admin-id', 'admin'), { network: call => call.method === 'GET' ? { players: [target] } : { player: { ...target, ...call.payload } } });
+  admin.enable(); await flush(); showProfile(admin, target);
+  clickProfileAction(admin, 'make-senior-mod'); await flush();
+  assert.deepEqual(admin.calls.find(call => call.method === 'PATCH').payload, { role: 'senior_mod' });
+  assert.equal(admin.context.state.profile.role, 'senior_mod');
+  const senior = harness(person('senior-id', 'senior_mod')); senior.enable(); await flush();
+  showProfile(senior, person('mod-id', 'mod'));
+  const stale = profileActions(senior).find(button => button.dataset.moderationAction === 'remove-mod');
+  senior.context.setUser(person('senior-id'));
+  senior.elements.get('profileModerationActions').dispatch('click', stale); await flush();
+  assert.equal(senior.api.enabled(), false);
+  assert.equal(senior.elements.get('moderationSettings').hidden, true);
+  assert.equal(senior.calls.filter(call => call.method === 'PATCH').length, 0);
+});
+
 test('a moderation response after switching accounts cannot populate the new account', async () => {
   let resolve; const pending = new Promise(done => { resolve = done; });
   const ui = harness(person('admin', 'admin'), { network: () => pending }); ui.enable();
@@ -514,7 +612,7 @@ function editVersion(ui, value) {
 const submitVersion = ui => ui.elements.get('adminVersionForm').dispatch('submit');
 
 test('site version controls and reads require an enabled admin view', async () => {
-  for (const user of [null, person('ordinary'), person('mod', 'mod'), person('banned', 'admin', true)]) {
+  for (const user of [null, person('ordinary'), person('mod', 'mod'), person('senior', 'senior_mod'), person('banned', 'admin', true)]) {
     const ui = harness(user); ui.enable(); await flush();
     assert.equal(ui.elements.get('adminVersionSettings').hidden, true);
     assert.equal(ui.elements.get('adminVersionSave').disabled, true);

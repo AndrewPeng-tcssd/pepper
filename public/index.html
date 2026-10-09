@@ -7,15 +7,15 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=53">
+  <link rel="stylesheet" href="/styles.css?v=56">
   <script src="/player-picker.js?v=1" defer></script>
-  <script src="/app.js?v=52" defer></script>
-  <script src="/games.js?v=4" defer></script>
-  <script src="/moderation.js?v=7" defer></script>
+  <script src="/app.js?v=53" defer></script>
+  <script src="/games.js?v=6" defer></script>
+  <script src="/moderation.js?v=8" defer></script>
   <script src="/friends.js?v=3" defer></script>
   <script src="/notifications.js?v=1" defer></script>
-  <script src="/news-comments.js?v=1" defer></script>
-  <script src="/announcement-popup.js?v=1" defer></script>
+  <script src="/news-comments.js?v=2" defer></script>
+  <script src="/announcement-popup.js?v=2" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -219,8 +219,14 @@
             <fieldset class="games-pick"><legend>Game</legend>
               <label><input type="radio" name="gameType" value="tic-tac-toe" checked><span class="games-pick-icon" aria-hidden="true">× ○</span><span>Tic-Tac-Toe</span></label>
               <label><input type="radio" name="gameType" value="rock-paper-scissors"><span class="games-pick-icon" aria-hidden="true">✊ ✋ ✌</span><span>Rock Paper Scissors</span></label>
+              <label><input type="radio" name="gameType" value="dice"><span class="games-pick-icon" aria-hidden="true">⚄</span><span>Dice</span></label>
             </fieldset>
+            <div class="games-dice-options" id="gamesDiceOptions" hidden>
+              <div><label for="gamesPlayerCount">Players</label><select id="gamesPlayerCount"><option value="2">2 players</option><option value="3">3 players</option><option value="4">4 players</option></select></div>
+              <div id="gamesPayoutModeField"><label for="gamesPayoutMode">Prizes</label><select id="gamesPayoutMode"><option value="shared">Shared</option><option value="single-winner">Single winner</option></select></div>
+            </div>
             <label for="gamesUsername">Username</label><div class="player-picker"><input id="gamesUsername" autocomplete="off" maxlength="24" spellcheck="false" required placeholder="Player username"></div>
+            <button class="button" id="gamesAddPlayer" type="button" hidden>Add player</button><div class="games-invitees" id="gamesInvitees" hidden></div>
             <label for="gamesStake">Tokens each</label><input id="gamesStake" type="number" min="1" max="2251799813685247" step="1" value="1" required inputmode="numeric">
             <button class="button trading-primary" id="gamesSend" type="submit">Send request</button>
           </form>
@@ -233,6 +239,7 @@
           <p class="games-turn" id="gamesTurn" role="status"></p><p class="games-deadline" id="gamesDeadline"></p>
           <div class="games-board" id="gamesBoard" aria-label="Tic-Tac-Toe board" hidden></div>
           <div class="games-rps" id="gamesRps" hidden><div class="games-rps-choices" id="gamesChoices"></div><div class="games-reveal" id="gamesReveal"></div></div>
+          <div class="games-dice" id="gamesDice" hidden><h3 id="gamesDiceRound"></h3><div class="games-rolls" id="gamesRolls"></div><div class="games-roll-action" id="gamesRollAction"></div><div class="games-placements" id="gamesPlacements"></div><div class="games-dice-history" id="gamesDiceHistory"></div></div>
           <div class="trading-actions games-session-actions" id="gamesSessionActions"></div>
         </section>
         <p class="form-message" id="gamesMessage" role="status"></p><button class="button" id="gamesRetry" type="button" hidden>Retry</button>
@@ -349,6 +356,7 @@
           <div><label for="announcementTitle">Title</label><input id="announcementTitle" name="title" maxlength="120" required></div>
           <div><label for="announcementDescription">Description</label><textarea id="announcementDescription" name="description" maxlength="5000" rows="5" required></textarea></div>
           <button class="button" id="announcementSubmit" type="submit">Publish announcement</button>
+          <button class="button" id="announcementCancel" type="button" hidden>Cancel</button>
           <p class="form-message" id="announcementFormMessage" role="status"></p>
         </form>
       </section>

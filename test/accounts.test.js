@@ -79,7 +79,7 @@ test('avatars are sanitized, persisted, public by account ID, and reflected in c
   const reply = await api('/api/chat', { text: 'Avatar reply', replyToId: sent.data.message.id }, other.cookie);
   assert.equal(reply.data.message.replyTo.avatarUrl, url);
   const active = await api('/api/presence', {}, owner.cookie);
-  assert.deepEqual(active.data, { count: 1, players: [{ accountId: owner.accountId, username: owner.username, avatarUrl: url, role: 'player', banned: false }] });
+  assert.deepEqual(active.data, { count: 1, players: [{ accountId: owner.accountId, username: owner.username, avatarUrl: url, role: 'player', banned: false, protectedAdmin: false }] });
   const room = await trade(api, owner, other);
   const privateMessage = await api(`/api/trades/${room.id}/messages`, { body: 'Private avatar', clientMessageId: crypto.randomUUID() }, owner.cookie);
   assert.equal(privateMessage.data.message.sender.avatarUrl, url);
@@ -123,7 +123,7 @@ test('presence exposes only distinct current players and excludes orphan session
   const online = (await api('/api/presence')).data;
   assert.equal(online.count, 2);
   assert.deepEqual(online.players.map(user => user.username), ['alpha_player', 'Zed_player']);
-  for (const user of online.players) assert.deepEqual(Object.keys(user).sort(), ['accountId', 'avatarUrl', 'banned', 'role', 'username']);
+  for (const user of online.players) assert.deepEqual(Object.keys(user).sort(), ['accountId', 'avatarUrl', 'banned', 'protectedAdmin', 'role', 'username']);
 });
 
 test('deletion requires authentication, password, and explicit confirmation before changing anything', async t => {

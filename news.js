@@ -24,10 +24,18 @@ function registerNews(app, { users, changelog, announcements, newsComments, anno
     const userId = comment ? record.authorUserId : record.authorId;
     const author = accountId ? await users.findOne({ accountId }) : userId ? await users.findOne({ _id: userId }) : null;
     if (author) return moderation.publicPlayer(author);
-    return { username: userId || accountId || comment ? 'Deleted player' : 'Unknown author', accountId: null, avatarUrl: '/favicon.svg', role: 'player', banned: false };
+    return { username: userId || accountId || comment ? 'Deleted player' : 'Unknown author', accountId: null, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false };
   }
   async function publicFields(kind, entry) {
-    return { author: await publicAuthor(entry), commentCount: await newsComments.countDocuments({ kind, entryId: entry._id, deleted: { $ne: true } }) };
+    const author = await publicAuthor(entry);
+    const fields = { author, commentCount: await newsComments.countDocuments({ kind, entryId: entry._id, deleted: { $ne: true } }) };
+    if (kind === 'announcements') {
+      fields.contributors = [author];
+      for (const accountId of [...new Set(entry.editorAccountIds || [])]) {
+        if (accountId !== entry.authorAccountId) fields.contributors.push(await publicAuthor({ authorAccountId: accountId }));
+      }
+    }
+    return fields;
   }
   async function publicComment(comment) {
     return { id: comment._id.toString(), clientMessageId: comment.clientMessageId, author: await publicAuthor(comment, true),
@@ -113,7 +121,8 @@ function registerNews(app, { users, changelog, announcements, newsComments, anno
         if (!comment) fail(404, 'Comment not found.');
         const author = await users.findOne({ _id: comment.authorUserId }, { session });
         const own = comment.authorUserId.equals(actor._id);
-        if (!own && role !== 'admin' && !(role === 'mod' && roleOf(author || { accountId: comment.authorAccountId }) === 'player')) fail(403, 'Action unavailable.');
+        const authorRole = roleOf(author || { accountId: comment.authorAccountId });
+        if (!own && role !== 'admin' && !(role === 'senior_mod' && ['player', 'mod'].includes(authorRole)) && !(role === 'mod' && authorRole === 'player')) fail(403, 'Action unavailable.');
         if (!comment.deleted) {
           await newsComments.updateOne({ _id: commentId }, { $set: { deleted: true, text: '', deletedAt: new Date(now()), deletedByAccountId: actor.accountId } }, { session });
           comment = { ...comment, deleted: true, text: '' };

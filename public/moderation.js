@@ -5,7 +5,7 @@
   const newVersionSettings = () => ({ known: '', dirty: false, saving: false, loading: false, open: false, revision: 0, loadRequest: null });
   let versionSettings = newVersionSettings();
   let playerPicker;
-  const privileged = () => ['admin', 'mod'].includes(accountRole(state.user)) && !state.user?.banned;
+  const privileged = () => ['admin', 'senior_mod', 'mod'].includes(accountRole(state.user)) && !state.user?.banned;
   const storageKey = id => `pepper-moderation-view:${id}`;
   function enabled() { return privileged() && moderation.identity === state.user?.accountId && moderation.open && !accountBanned; }
   const adminEnabled = () => enabled() && accountRole(state.user) === 'admin';
@@ -76,14 +76,27 @@
   }
   function storedOpen(id) { try { return localStorage.getItem(storageKey(id)) === 'open'; } catch { return false; } }
   function canBan(player) {
-    return enabled() && !!player?.accountId && player.accountId !== state.user.accountId && accountRole(player) !== 'admin' && (accountRole(state.user) === 'admin' || accountRole(player) === 'player');
+    if (!enabled() || !player?.accountId || player.protectedAdmin || player.accountId === state.user.accountId) return false;
+    const role = accountRole(state.user), targetRole = accountRole(player);
+    return role === 'admin' || role === 'senior_mod' && ['player', 'mod'].includes(targetRole) || role === 'mod' && targetRole === 'player';
   }
-  function canChangeRole(player) {
-    return enabled() && !!player?.accountId && accountRole(state.user) === 'admin' && accountRole(player) !== 'admin' && player.accountId !== state.user.accountId;
+  function canChangeRole(player, nextRole) {
+    if (!enabled() || !player?.accountId || player.protectedAdmin || player.accountId === state.user.accountId) return false;
+    if (!['player', 'mod', 'senior_mod', 'admin'].includes(nextRole) || accountRole(player) === nextRole) return false;
+    return accountRole(state.user) === 'admin' || accountRole(state.user) === 'senior_mod' && accountRole(player) === 'mod' && nextRole === 'player';
+  }
+  function roleActions(player) {
+    const role = accountRole(player);
+    const remove = role === 'admin' ? ['Remove admin', 'remove-admin'] : role === 'senior_mod' ? ['Remove senior mod', 'remove-senior-mod'] : ['Remove mod', 'remove-mod'];
+    return [
+      [remove[0], remove[1], 'player'], ['Make mod', 'make-mod', 'mod'],
+      ['Make senior mod', 'make-senior-mod', 'senior_mod'], ['Make admin', 'make-admin', 'admin']
+    ].filter(([, , nextRole]) => canChangeRole(player, nextRole)).map(([label, action]) => actionButton(label, action, player));
   }
   function canDeleteChat(item) {
     if (!enabled() || item.deleted || item.status || !item.id) return false;
-    return accountRole(state.user) === 'admin' || item.accountId === state.user.accountId || accountRole(item) === 'player';
+    const role = accountRole(state.user), targetRole = accountRole(item);
+    return role === 'admin' || item.accountId === state.user.accountId || role === 'senior_mod' && ['player', 'mod'].includes(targetRole) || role === 'mod' && targetRole === 'player';
   }
   function chatDeleteButton(item) {
     if (!canDeleteChat(item)) return null;
@@ -132,7 +145,7 @@
     }
     const focused = document.activeElement;
     const actions = [];
-    if (canChangeRole(player)) actions.push(actionButton(accountRole(player) === 'mod' ? 'Remove mod' : 'Make mod', accountRole(player) === 'mod' ? 'remove-mod' : 'make-mod', player));
+    actions.push(...roleActions(player));
     if (canBan(player)) actions.push(actionButton(player.banned ? 'Unban' : 'Ban', player.banned ? 'unban' : 'ban', player));
     el('profileModeration').hidden = !actions.length;
     el('profileModerationActions').replaceChildren(...actions);
@@ -141,8 +154,9 @@
   function render() {
     el('moderationSettings').hidden = !privileged() || accountBanned;
     const admin = accountRole(state.user) === 'admin';
-    el('moderationTitle').textContent = admin ? 'Admin' : 'Moderation';
-    el('moderationViewToggle').textContent = `${enabled() ? 'Close' : 'Open'} ${admin ? 'admin' : 'mod'} view`;
+    const senior = accountRole(state.user) === 'senior_mod';
+    el('moderationTitle').textContent = admin ? 'Admin' : senior ? 'Senior mod' : 'Moderation';
+    el('moderationViewToggle').textContent = `${enabled() ? 'Close' : 'Open'} ${admin ? 'admin' : senior ? 'senior mod' : 'mod'} view`;
     el('moderationViewToggle').setAttribute('aria-pressed', String(enabled()));
     el('moderationViewToggle').disabled = moderation.busy || state.accountSubmitting;
     el('moderationControls').hidden = !enabled();
@@ -159,7 +173,7 @@
       const name = document.createElement('span'); name.textContent = player.username; link.append(profileAvatar(player), name, playerRoleBadges(player));
       const actions = document.createElement('div'); actions.className = 'trading-actions';
       if (canBan(player)) actions.append(actionButton(player.banned ? 'Unban' : 'Ban', player.banned ? 'unban' : 'ban', player));
-      if (canChangeRole(player)) actions.append(actionButton(accountRole(player) === 'mod' ? 'Remove mod' : 'Make mod', accountRole(player) === 'mod' ? 'remove-mod' : 'make-mod', player));
+      actions.append(...roleActions(player));
       row.append(link, actions); return row;
     }));
     if (focusedId) Array.from(el('moderationPlayers').querySelectorAll('[data-moderation-action]')).find(button => button.dataset.accountId === focusedId && button.dataset.moderationAction === focusedAction && !button.disabled)?.focus({ preventScroll: true });
@@ -202,7 +216,7 @@
     } finally { if (moderation.identity === identity && moderation.revision === revision && moderation.searchRevision === searchRevision) { moderation.busy = false; moderation.searching = false; render(); } }
   }
   function refreshPlayer(player) {
-    const update = person => person?.accountId === player.accountId ? { ...person, role: player.role, banned: player.banned } : person;
+    const update = person => person?.accountId === player.accountId ? { ...person, role: player.role, banned: player.banned, protectedAdmin: !!player.protectedAdmin } : person;
     state.chatMessages = state.chatMessages.map(item => ({ ...update(item), ...(item.replyTo ? { replyTo: update(item.replyTo) } : {}) }));
     renderChat(state.chatMessages);
     if (state.profile?.accountId === player.accountId) { state.profile = update(state.profile); renderProfileDetails(state.profile); }
@@ -215,11 +229,14 @@
   }
   async function changePlayer(player, action, statusTarget = el('moderationMessage')) {
     if (!enabled() || moderation.busy || state.accountSubmitting) return;
-    if (!['make-mod', 'remove-mod', 'ban', 'unban'].includes(action)) return;
-    const roleChange = ['make-mod', 'remove-mod'].includes(action);
-    if (roleChange ? !canChangeRole(player) : !canBan(player)) return;
+    const roleChanges = { 'make-mod': 'mod', 'remove-mod': 'player', 'make-senior-mod': 'senior_mod', 'remove-senior-mod': 'player', 'make-admin': 'admin', 'remove-admin': 'player' };
+    if (!Object.hasOwn(roleChanges, action) && !['ban', 'unban'].includes(action)) return;
+    const removalRoles = { 'remove-mod': 'mod', 'remove-senior-mod': 'senior_mod', 'remove-admin': 'admin' };
+    if (Object.hasOwn(removalRoles, action) && removalRoles[action] !== accountRole(player)) return;
+    const roleChange = Object.hasOwn(roleChanges, action), nextRole = roleChanges[action];
+    if (roleChange ? !canChangeRole(player, nextRole) : !canBan(player)) return;
     const identity = moderation.identity, revision = ++moderation.revision;
-    const payload = roleChange ? { role: action === 'make-mod' ? 'mod' : 'player' } : { banned: action === 'ban' };
+    const payload = roleChange ? { role: nextRole } : { banned: action === 'ban' };
     const profileAction = statusTarget === el('profileModerationMessage');
     const notify = (text, success = false) => { if (!profileAction || state.profile?.accountId === player.accountId) message(statusTarget, text, success); };
     moderation.busy = true; notify('Saving…'); render();
@@ -227,7 +244,7 @@
       const data = await api(`moderation/players/${encodeURIComponent(player.accountId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
       if (moderation.identity !== identity || moderation.revision !== revision || !enabled()) return;
       moderation.players = moderation.players.map(item => item.accountId === data.player.accountId ? data.player : item);
-      refreshPlayer(data.player); notify(action === 'ban' ? 'Player banned.' : action === 'unban' ? 'Player unbanned.' : action === 'make-mod' ? 'Moderator added.' : 'Moderator removed.', true);
+      refreshPlayer(data.player); notify(action === 'ban' ? 'Player banned.' : action === 'unban' ? 'Player unbanned.' : nextRole === 'mod' ? 'Moderator added.' : nextRole === 'senior_mod' ? 'Senior moderator added.' : nextRole === 'admin' ? 'Admin added.' : 'Role removed.', true);
     } catch (error) { if (moderation.identity === identity && moderation.revision === revision) notify(error.message); }
     finally { if (moderation.identity === identity && moderation.revision === revision) { moderation.busy = false; render(); } }
   }

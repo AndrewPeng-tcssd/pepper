@@ -407,7 +407,7 @@ test('private session chat starts after joining, trims text, deduplicates retrie
   assert.equal(new Set(messages.map(result => result.data.message.id)).size, 1);
   const message = messages[0].data.message;
   assert.equal(message.body, 'Hello, trading partner!');
-  assert.deepEqual(message.sender, { username: sender.username, accountId: sender.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
+  assert.deepEqual(message.sender, { username: sender.username, accountId: sender.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
   assert.ok(Date.parse(message.createdAt));
   assert.equal((await api(`/api/trades/${trade.id}/messages`, { ...payload, body: 'Different body' }, sender.cookie)).status, 409);
   const answer = await api(`/api/trades/${trade.id}/messages`, { body: 'Hello back!', clientMessageId: payload.clientMessageId }, recipient.cookie);
@@ -505,11 +505,11 @@ test('session participants and private chat authors follow permanent identities 
     assert.equal((await api('/api/account/username', { username, currentPassword: 'trading-password' }, account.cookie, 'PATCH')).status, 200);
   }
   const saved = (await api(`/api/trades/${trade.id}`, undefined, sender.cookie)).data.trade;
-  assert.deepEqual(saved.sender, { username: 'renamed_sender', accountId: sender.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
-  assert.deepEqual(saved.recipient, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
+  assert.deepEqual(saved.sender, { username: 'renamed_sender', accountId: sender.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
+  assert.deepEqual(saved.recipient, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
   assert.equal((await api(`/api/trades/${trade.id}`, undefined, outsider.cookie)).status, 404);
   const current = (await api(`/api/trades/${trade.id}/messages`, undefined, sender.cookie)).data.messages[0];
-  assert.deepEqual(current.sender, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
+  assert.deepEqual(current.sender, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
   assert.equal(current.id, message.data.message.id);
 });
 

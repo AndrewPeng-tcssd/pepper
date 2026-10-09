@@ -117,6 +117,7 @@ async function connectMongo(options = {}) {
       games.createIndex({ senderUserId: 1, clientRequestId: 1 }, { unique: true }),
       games.createIndex({ senderUserId: 1, updatedAt: -1 }),
       games.createIndex({ recipientUserId: 1, updatedAt: -1 }),
+      games.createIndex({ participantUserIds: 1, updatedAt: -1 }),
       games.createIndex({ status: 1, expiresAt: 1 }),
       tradeMessages.createIndex({ tradeId: 1, createdAt: -1, _id: -1 }),
       tradeMessages.createIndex({ tradeId: 1, senderUserId: 1, clientMessageId: 1 }, { unique: true }),

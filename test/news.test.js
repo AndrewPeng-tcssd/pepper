@@ -7,7 +7,7 @@ const { createApp, connectMongo } = require('../server');
 
 let mongo;
 const password = 'news-test-password';
-const publicFields = ['accountId', 'avatarUrl', 'banned', 'role', 'username'];
+const publicFields = ['accountId', 'avatarUrl', 'banned', 'protectedAdmin', 'role', 'username'];
 before(async () => { mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } }); });
 after(async () => { await mongo?.stop(); });
 function apiFor(t, store, options = {}) {
@@ -56,7 +56,7 @@ test('news entries expose only current public author identities and safe legacy 
   assert.match(current.author.avatarUrl, /\?v=new$/);
   await store.changelog.insertOne({ title: 'Legacy', description: 'Old', version: '0.1.0', createdAt: new Date(0) });
   const legacy = (await api('/api/changelog')).data.entries.at(-1);
-  assert.deepEqual(legacy.author, { username: 'Unknown author', accountId: null, avatarUrl: '/favicon.svg', role: 'player', banned: false });
+  assert.deepEqual(legacy.author, { username: 'Unknown author', accountId: null, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
   assert.equal(legacy.commentCount, 0);
   assert.equal(legacy.version, '0.1.0-0');
   assert.equal((await api('/api/me', undefined, admin.cookie)).data.user.role, 'admin');
@@ -157,6 +157,31 @@ test('comment deletion permits owners and enforces the staff hierarchy for other
   assert.equal((await api('/api/changelog')).data.entries[0].commentCount, 0);
   assert.equal((await remove('changelog', entry.id, byMember.id, member)).status, 200);
   assert.equal((await api(`/api/changelog/${entry.id}/comments/${byMember.id}`, undefined, undefined, 'DELETE')).status, 401);
+});
+
+test('senior moderators delete comments by players and mods but preserve senior and admin comments', async t => {
+  const { api, store, admin, mod, member, player, publish, remove, advance } = await fixture(t);
+  advance(15 * 60 * 1000 + 1);
+  const senior = await player('comment_senior'), peer = await player('comment_senior_peer'), delegated = await player('comment_admin');
+  for (const [target, role] of [[senior, 'senior_mod'], [peer, 'senior_mod'], [delegated, 'admin']]) {
+    const assigned = await api(`/api/moderation/players/${target.accountId}`, { role }, admin.cookie, 'PATCH');
+    assert.equal(assigned.status, 200);
+  }
+  for (const kind of ['announcements', 'changelog']) {
+    const entry = await publish(kind);
+    const rows = new Map();
+    // Seed tied-time comments to keep this authorization matrix independent of send cooldowns.
+    for (const author of [member, mod, senior, peer, delegated, admin]) {
+      const row = { _id: new ObjectId(), kind, entryId: new ObjectId(entry.id), authorUserId: author.id, authorAccountId: author.accountId,
+        clientMessageId: crypto.randomUUID(), text: `${author.username} comment`, createdAt: new Date(), deleted: false };
+      await store.newsComments.insertOne(row); rows.set(author, row._id.toString());
+    }
+    assert.equal((await remove(kind, entry.id, rows.get(senior), mod)).status, 403);
+    for (const author of [peer, delegated, admin]) assert.equal((await remove(kind, entry.id, rows.get(author), senior)).status, 403);
+    for (const author of [member, mod, senior]) assert.equal((await remove(kind, entry.id, rows.get(author), senior)).status, 200);
+    for (const author of [peer, delegated, admin]) assert.equal((await remove(kind, entry.id, rows.get(author), delegated)).status, 200);
+    assert.equal((await api(`/api/${kind}`)).data.entries.find(item => item.id === entry.id).commentCount, 0);
+  }
 });
 
 test('comment identities use current names, pictures, roles and bans and banned authors cannot post', async t => {

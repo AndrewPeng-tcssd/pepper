@@ -50,17 +50,25 @@ const tradeNotification = { id: null, error: null, signature: null };
 function newTradeInventory(ownerId = null) {
   return { ownerId, cards: null, selected: [], loading: false, error: null, notice: '', signature: null, loadPromise: null, refreshQueued: false };
 }
-function accountRole(person) { return person?.role || (person?.canManageChangelog ? 'admin' : 'player'); }
+function accountRole(person) { return ['player', 'mod', 'senior_mod', 'admin'].includes(person?.role) ? person.role : (person?.canManageChangelog ? 'admin' : 'player'); }
 function playerRoleBadges(person) {
   const badges = document.createElement('span'); badges.className = 'role-badges';
   const role = accountRole(person);
-  for (const [label, kind] of [...(role === 'admin' ? [['Admin', 'admin']] : role === 'mod' ? [['Mod', 'mod']] : []), ...(person?.banned ? [['Banned', 'banned']] : [])]) {
+  for (const [label, kind] of [...(role === 'admin' ? [['Admin', 'admin']] : role === 'senior_mod' ? [['Senior mod', 'senior-mod']] : role === 'mod' ? [['Mod', 'mod']] : []), ...(person?.banned ? [['Banned', 'banned']] : [])]) {
     const badge = document.createElement('span'); badge.className = `role-badge role-badge-${kind}`; badge.textContent = label; badges.append(badge);
   }
   badges.hidden = !badges.children.length; return badges;
 }
 function moderationViewEnabled() { return window.PepperModeration?.enabled() === true; }
-function canDeleteAnnouncement(entry) { return accountRole(state.user) === 'admin' || (accountRole(state.user) === 'mod' && (entry?.authorAccountId || entry?.author?.accountId) === state.user?.accountId); }
+function canEditAnnouncement(entry) {
+  if (!entry || !state.user || state.user.banned) return false;
+  const role = accountRole(state.user), authorId = entry.authorAccountId || entry.author?.accountId;
+  if (role === 'admin') return true;
+  if (!['mod', 'senior_mod'].includes(role)) return false;
+  if (authorId === state.user.accountId) return true;
+  return role === 'senior_mod' && ['player', 'mod'].includes(accountRole(entry.author));
+}
+function canDeleteAnnouncement(entry) { return canEditAnnouncement(entry); }
 
 async function api(path, options = {}) {
   const requestIdentityRevision = userIdentityRevision;
@@ -942,10 +950,48 @@ $('changelogForm').addEventListener('submit', async event => {
   }
 });
 
+const announcementEditing = { identity: null, role: null, roleRevision: 0, id: null, newDraft: null, request: null, viewEnabled: null, viewRevision: 0 };
+
+function resetAnnouncementEdit(restoreDraft = true) {
+  const draft = restoreDraft && announcementEditing.newDraft;
+  announcementEditing.id = null;
+  announcementEditing.newDraft = null;
+  $('announcementForm').reset();
+  if (draft) {
+    $('announcementTitle').value = draft.title;
+    $('announcementDescription').value = draft.description;
+  }
+}
+
 function renderAnnouncementEditor() {
   const canManage = state.user?.canManageAnnouncements === true;
   const showControls = canManage && moderationViewEnabled();
+  const identity = state.user?.accountId || null, role = accountRole(state.user);
+  if (identity !== announcementEditing.identity) {
+    resetAnnouncementEdit(false);
+    announcementEditing.identity = identity;
+    message($('announcementFormMessage'), '');
+  }
+  if (announcementEditing.role !== role) {
+    announcementEditing.role = role;
+    announcementEditing.roleRevision++;
+  }
+  if (showControls !== announcementEditing.viewEnabled) {
+    announcementEditing.viewEnabled = showControls;
+    announcementEditing.viewRevision++;
+  }
+  if (announcementEditing.id) {
+    const entry = state.announcementEntries?.find(item => item.id === announcementEditing.id);
+    if (!canManage || !entry || !canEditAnnouncement(entry)) {
+      resetAnnouncementEdit(canManage);
+      message($('announcementFormMessage'), entry ? 'Editing unavailable.' : 'Announcement unavailable.');
+    }
+  }
   $('announcementEditor').hidden = !showControls;
+  $('announcementEditorTitle').textContent = announcementEditing.id ? 'Edit announcement' : 'Add an announcement';
+  $('announcementSubmit').textContent = state.announcementSubmitting ? (announcementEditing.id ? 'Saving…' : 'Publishing…') : announcementEditing.id ? 'Save' : 'Publish announcement';
+  $('announcementCancel').hidden = !announcementEditing.id;
+  $('announcementCancel').disabled = state.announcementSubmitting;
   $('announcementEntries').querySelectorAll('.changelog-entry-actions').forEach(actions => {
     const entry = state.announcementEntries?.find(item => item.id === actions.closest('.changelog-entry').dataset.entryId);
     actions.hidden = !showControls || !canDeleteAnnouncement(entry);
@@ -955,9 +1001,41 @@ function renderAnnouncementEditor() {
     }
   });
   if (!canManage) {
-    $('announcementForm').reset();
+    resetAnnouncementEdit(false);
     message($('announcementFormMessage'), '');
   }
+}
+
+function announcementContributors(entry) {
+  const people = [entry.author, ...(Array.isArray(entry.contributors) ? entry.contributors : [])];
+  const seen = new Set();
+  return people.filter(person => {
+    if (!person || (!person.username && !person.accountId)) return false;
+    const key = person.accountId || `name:${person.username}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+
+function announcementAttribution(entry) {
+  const authors = document.createElement('div'); authors.className = 'news-entry-authors';
+  const people = announcementContributors(entry);
+  if (!people.length) authors.append(newsEntryAuthor(entry));
+  for (const author of people) authors.append(newsEntryAuthor({ author }));
+  return authors;
+}
+
+function beginAnnouncementEdit(entryId) {
+  const entry = state.announcementEntries?.find(item => item.id === entryId);
+  if (state.announcementSubmitting || state.accountSubmitting || !moderationViewEnabled() || !state.user?.canManageAnnouncements || !canEditAnnouncement(entry)) return;
+  if (!announcementEditing.id) announcementEditing.newDraft = { title: $('announcementTitle').value, description: $('announcementDescription').value };
+  announcementEditing.id = entryId;
+  $('announcementTitle').value = entry.title;
+  $('announcementDescription').value = entry.description;
+  message($('announcementFormMessage'), '');
+  renderAnnouncementEditor();
+  $('announcementTitle').focus();
+  $('announcementEditor').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function announcementActionButton(label, action) {
@@ -1000,6 +1078,8 @@ function renderAnnouncements(entries) {
     const actions = document.createElement('div');
     actions.className = 'changelog-entry-actions';
     actions.hidden = true;
+    const editButton = announcementActionButton('Edit', 'edit');
+    editButton.setAttribute('aria-label', `Edit ${entry.title}`);
     const deleteButton = announcementActionButton('Delete', 'delete');
     deleteButton.classList.add('changelog-delete-button');
     deleteButton.setAttribute('aria-label', `Delete ${entry.title}`);
@@ -1009,9 +1089,9 @@ function renderAnnouncements(entries) {
     const prompt = document.createElement('span');
     prompt.textContent = 'Delete this announcement?';
     confirmation.append(prompt, announcementActionButton('Confirm delete', 'confirm'), announcementActionButton('Cancel', 'cancel'));
-    actions.append(deleteButton, confirmation);
+    actions.append(editButton, deleteButton, confirmation);
     const dates = document.createElement('div'); dates.className = 'news-entry-date'; dates.append(date);
-    meta.append(dates, newsEntryAuthor(entry));
+    meta.append(dates, announcementAttribution(entry));
     article.append(meta, title, description, actions);
     window.PepperNewsComments?.mount(article, 'announcements', entry);
     fragment.append(article);
@@ -1054,11 +1134,30 @@ async function loadAnnouncements(refresh = false) {
   finally { announcementLoadPromise = null; }
 }
 
-function setAnnouncementSubmitting(submitting) {
+function setAnnouncementSubmitting(submitting, operation = null) {
+  if (operation && announcementEditing.request !== operation) return;
   state.announcementSubmitting = submitting;
-  setAccountSubmitting(submitting);
+  const accountRevision = setAccountSubmitting(submitting, operation?.accountRevision ?? null);
   $('announcementSubmit').disabled = submitting;
+  $('announcementCancel').disabled = submitting;
+  $('announcementTitle').disabled = submitting;
+  $('announcementDescription').disabled = submitting;
   $('announcementEntries').querySelectorAll('.changelog-entry-actions button').forEach(button => { button.disabled = submitting; });
+  renderAnnouncementEditor();
+  return accountRevision;
+}
+
+function announcementOperation() {
+  const operation = { identity: state.user?.accountId, role: accountRole(state.user), roleRevision: announcementEditing.roleRevision, identityRevision: userIdentityRevision, navigation: routeRevision, viewRevision: announcementEditing.viewRevision };
+  announcementEditing.request = operation;
+  operation.accountRevision = setAnnouncementSubmitting(true);
+  return operation;
+}
+
+function currentAnnouncementOperation(operation) {
+  return announcementEditing.request === operation && operation.identity === state.user?.accountId && operation.role === accountRole(state.user) &&
+    operation.identityRevision === userIdentityRevision && operation.roleRevision === announcementEditing.roleRevision && operation.navigation === routeRevision && operation.viewRevision === announcementEditing.viewRevision &&
+    state.user?.canManageAnnouncements === true && moderationViewEnabled() && !accountBanned;
 }
 
 function focusAnnouncementMessage() {
@@ -1071,7 +1170,7 @@ function announcementPermissionError(error) {
   if (error.banned || accountBanned) return true;
   if (error.status === 401) setUser(null);
   else {
-    if (state.user) state.user.canManageAnnouncements = false;
+    if (error.user) setUser(error.user);
     renderAnnouncementEditor();
   }
   announcementLoadFailed = false;
@@ -1081,13 +1180,26 @@ function announcementPermissionError(error) {
   return true;
 }
 
+async function refreshAnnouncementAccess(operation) {
+  try {
+    const data = await api('me');
+    if (!currentAnnouncementOperation(operation)) return;
+    setUser(data.user);
+    void loadAnnouncements(true);
+  } catch { /* Keep the denied action visible until another account refresh succeeds. */ }
+}
+
 $('announcementEntries').addEventListener('click', event => {
   const button = event.target.closest('button[data-announcement-action]');
   if (!button || !state.user?.canManageAnnouncements || !moderationViewEnabled() || state.announcementSubmitting || state.accountSubmitting) return;
   const article = button.closest('.changelog-entry');
   const confirmation = article.querySelector('.changelog-delete-confirm');
   const deleteButton = article.querySelector('.changelog-delete-button');
-  if (button.dataset.announcementAction === 'delete') {
+  const entry = state.announcementEntries?.find(item => item.id === article.dataset.entryId);
+  if (!canEditAnnouncement(entry)) return;
+  if (button.dataset.announcementAction === 'edit') {
+    beginAnnouncementEdit(article.dataset.entryId);
+  } else if (button.dataset.announcementAction === 'delete') {
     deleteButton.hidden = true;
     confirmation.hidden = false;
     confirmation.querySelector('button').focus();
@@ -1102,10 +1214,11 @@ $('announcementEntries').addEventListener('click', event => {
 
 async function deleteAnnouncementEntry(entryId) {
   if (!state.user?.canManageAnnouncements || !moderationViewEnabled() || state.announcementSubmitting || state.accountSubmitting || !canDeleteAnnouncement(state.announcementEntries?.find(entry => entry.id === entryId))) return;
-  setAnnouncementSubmitting(true);
+  const operation = announcementOperation();
   let deleted = false;
   try {
     const data = await api(`announcements/${encodeURIComponent(entryId)}`, { method: 'DELETE' });
+    if (!currentAnnouncementOperation(operation)) return;
     announcementRevision++;
     state.announcementEntries = data.entries;
     renderAnnouncements(data.entries);
@@ -1113,43 +1226,74 @@ async function deleteAnnouncementEntry(entryId) {
     deleted = true;
     void loadAnnouncements(true);
   } catch (error) {
-    if (!announcementPermissionError(error)) {
+    if (!currentAnnouncementOperation(operation)) return;
+    if (announcementPermissionError(error)) {
+      if (error.status === 403) await refreshAnnouncementAccess(operation);
+    } else {
       if (error.status === 404) await loadAnnouncements(true);
       announcementLoadFailed = false;
       message($('announcementMessage'), error.message);
       if (error.status === 404) focusAnnouncementMessage();
     }
   } finally {
-    setAnnouncementSubmitting(false);
-    if (deleted) {
+    setAnnouncementSubmitting(false, operation);
+    if (announcementEditing.request === operation) announcementEditing.request = null;
+    if (deleted && operation.identity === state.user?.accountId && operation.navigation === routeRevision && moderationViewEnabled()) {
       const nextDelete = $('announcementEntries').querySelector('.changelog-delete-button');
       (nextDelete || $('announcementSubmit')).focus();
     }
   }
 }
 
-$('announcementForm').addEventListener('submit', async event => {
+$('announcementCancel').addEventListener('click', () => {
+  if (state.announcementSubmitting || !announcementEditing.id) return;
+  const entryId = announcementEditing.id;
+  resetAnnouncementEdit();
+  message($('announcementFormMessage'), '');
+  renderAnnouncementEditor();
+  const article = Array.from($('announcementEntries').querySelectorAll('.changelog-entry')).find(item => item.dataset.entryId === entryId);
+  (article?.querySelector('button[data-announcement-action="edit"]') || $('announcementTitle')).focus();
+});
+
+async function submitAnnouncement(event) {
   event.preventDefault();
   if (state.announcementSubmitting || state.accountSubmitting || !moderationViewEnabled() || !state.user?.canManageAnnouncements) return;
-  setAnnouncementSubmitting(true);
-  message($('announcementFormMessage'), 'Publishing announcement…');
+  const editId = announcementEditing.id;
+  if (editId && !canEditAnnouncement(state.announcementEntries?.find(entry => entry.id === editId))) return;
+  const title = $('announcementTitle').value.trim(), description = $('announcementDescription').value.trim();
+  if (!title || title.length > 120 || !description || description.length > 5000) {
+    message($('announcementFormMessage'), !title || title.length > 120 ? 'Title: 1–120 characters.' : 'Description: 1–5000 characters.');
+    (!title || title.length > 120 ? $('announcementTitle') : $('announcementDescription')).focus();
+    return;
+  }
+  const operation = announcementOperation();
+  message($('announcementFormMessage'), editId ? 'Saving…' : 'Publishing…');
   try {
-    const data = await api('announcements', { method: 'POST', body: JSON.stringify({
-      title: $('announcementTitle').value,
-      description: $('announcementDescription').value
-    }) });
+    const data = await api(editId ? `announcements/${encodeURIComponent(editId)}` : 'announcements', {
+      method: editId ? 'PATCH' : 'POST', body: JSON.stringify({ title, description })
+    });
+    if (!currentAnnouncementOperation(operation)) return;
     announcementRevision++;
-    state.announcementEntries = [data.entry, ...(state.announcementEntries || []).filter(entry => entry.id !== data.entry.id)];
+    state.announcementEntries = Array.isArray(data.entries) ? data.entries : [data.entry, ...(state.announcementEntries || []).filter(entry => entry.id !== data.entry.id)];
+    resetAnnouncementEdit(!!editId);
     renderAnnouncements(state.announcementEntries);
-    $('announcementForm').reset();
-    message($('announcementFormMessage'), 'Announcement published.', true);
+    message($('announcementFormMessage'), editId ? 'Announcement saved.' : 'Announcement published.', true);
     void loadAnnouncements(true);
   } catch (error) {
-    if (!announcementPermissionError(error)) message($('announcementFormMessage'), error.message);
+    if (!currentAnnouncementOperation(operation)) return;
+    if (announcementPermissionError(error)) {
+      if (error.status === 403) await refreshAnnouncementAccess(operation);
+    } else {
+      message($('announcementFormMessage'), error.message);
+      if (error.status === 404) void loadAnnouncements(true);
+    }
   } finally {
-    setAnnouncementSubmitting(false);
+    setAnnouncementSubmitting(false, operation);
+    if (announcementEditing.request === operation) announcementEditing.request = null;
   }
-});
+}
+
+$('announcementForm').addEventListener('submit', submitAnnouncement);
 
 function renderOnlinePlayers() {
   const players = presencePlayers;

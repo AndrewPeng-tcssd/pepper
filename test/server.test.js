@@ -631,11 +631,11 @@ test('leaderboard exposes public saved balances with tied ranks and reflects cla
       email: `${username.toLowerCase()}@example.test`, lastEmailAttemptAt: new Date()
     } });
   }
-  const row = (username, rank, balance) => ({ rank, username, accountId: players[username].data.user.accountId, balance, avatarUrl: '/favicon.svg', role: 'player', banned: false });
+  const row = (username, rank, balance) => ({ rank, username, accountId: players[username].data.user.accountId, balance, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
   const initial = await api('/api/leaderboard');
   assert.equal(initial.status, 200);
   assert.deepEqual(initial.data, { entries: [row('Alpha', 1, 20), row('bravo', 1, 20), row('claim_player', 3, 5), row('zero_player', 4, 0)], totalPlayers: 4 });
-  for (const entry of initial.data.entries) assert.deepEqual(Object.keys(entry).sort(), ['accountId', 'avatarUrl', 'balance', 'banned', 'rank', 'role', 'username']);
+  for (const entry of initial.data.entries) assert.deepEqual(Object.keys(entry).sort(), ['accountId', 'avatarUrl', 'balance', 'banned', 'protectedAdmin', 'rank', 'role', 'username']);
   const claim = await api('/api/claim', { turnstileToken: 'test-token' }, players.claim_player.cookie);
   assert.equal(claim.status, 200);
   assert.equal(claim.data.awarded, 20);
@@ -667,7 +667,7 @@ test('leaderboard retains deterministic competition ranks, limits results to 100
   const sorted = [...players].sort((first, second) => second.balance - first.balance || first.usernameKey.localeCompare(second.usernameKey));
   const expectedEntries = sorted.slice(0, 100).map((player, index) => ({
     rank: sorted.findIndex(candidate => candidate.balance === player.balance) + 1,
-    username: player.username, accountId: player.accountId, balance: player.balance, avatarUrl: '/favicon.svg', role: 'player', banned: false
+    username: player.username, accountId: player.accountId, balance: player.balance, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false
   }));
   const expected = { entries: expectedEntries, totalPlayers: 105 };
   const leaderboard = await api('/api/leaderboard');
@@ -704,7 +704,7 @@ test('public profiles can be read anonymously and only include public account de
   assert.match(result.data.profile.accountId, accountIdPattern);
   assert.equal(result.data.profile.accountId, (await store.users.findOne({ usernameKey: username.toLowerCase() })).accountId);
   assert.deepEqual(result.data, { profile: {
-    username, avatarUrl: '/favicon.svg', role: 'player', banned: false, accountId: result.data.profile.accountId, createdAt: createdAt.toISOString(), balance: 25,
+    username, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false, accountId: result.data.profile.accountId, createdAt: createdAt.toISOString(), balance: 25,
     lastClaimAt, nextClaimAt: lastClaimAt + CLAIM_INTERVAL_MS
   } });
 
@@ -714,7 +714,7 @@ test('public profiles can be read anonymously and only include public account de
   assert.equal(legacy.status, 200);
   assert.match(legacy.data.profile.accountId, accountIdPattern);
   assert.deepEqual(legacy.data, { profile: {
-    username: legacyUsername, avatarUrl: '/favicon.svg', role: 'player', banned: false, accountId: legacy.data.profile.accountId, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
+    username: legacyUsername, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false, accountId: legacy.data.profile.accountId, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
   } });
 
   const noClaimUsername = `NoClaim_${crypto.randomBytes(3).toString('hex')}`;
@@ -722,7 +722,7 @@ test('public profiles can be read anonymously and only include public account de
   const noClaim = await request(`/api/profiles/${noClaimUsername}`);
   assert.equal(noClaim.status, 200);
   assert.deepEqual(noClaim.data, { profile: {
-    username: noClaimUsername, avatarUrl: '/favicon.svg', role: 'player', banned: false, accountId: noClaim.data.profile.accountId, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
+    username: noClaimUsername, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false, accountId: noClaim.data.profile.accountId, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
   } });
 
   for (const name of [`missing_${crypto.randomBytes(3).toString('hex')}`, 'ab', 'a'.repeat(25), 'invalid-name', 'invalid%20name']) {
@@ -1316,7 +1316,7 @@ test('announcements are public, only the owner can publish, and their dates and 
   const first = await api('/api/announcements', payload, owner.cookie);
   assert.equal(first.status, 201);
   assert.deepEqual(Object.keys(first.data), ['entry']);
-  assert.deepEqual(Object.keys(first.data.entry).sort(), ['author', 'authorAccountId', 'commentCount', 'createdAt', 'description', 'id', 'title']);
+  assert.deepEqual(Object.keys(first.data.entry).sort(), ['author', 'authorAccountId', 'commentCount', 'contributors', 'createdAt', 'description', 'id', 'title', 'updatedAt']);
   assert.ok(Date.parse(first.data.entry.createdAt) >= beforePublish);
   assert.ok(Date.parse(first.data.entry.createdAt) <= Date.now());
   const storedFirst = await isolated.announcements.findOne({ _id: new ObjectId(first.data.entry.id) });
@@ -1358,6 +1358,7 @@ test('announcement permission stays with the original owner through renaming, re
   assert.equal(renamedOwner.data.user.canManageAnnouncements, true);
   assert.equal(renamedOwner.data.user.accountId, owner.data.user.accountId);
   original.entries[0].author.username = 'announcement_owner';
+  original.entries[0].contributors[0].username = 'announcement_owner';
   const renamedMember = await api('/api/account/username', { username: '675', currentPassword: password }, member.cookie, 'PATCH');
   assert.equal(renamedMember.status, 200);
   assert.equal(renamedMember.data.user.canManageAnnouncements, false);
@@ -1412,7 +1413,7 @@ function assertPresence(data, count) {
   assert.equal(data.count, count);
   assert.equal(data.players.length, count);
   assert.equal(new Set(data.players.map(player => player.accountId)).size, count);
-  for (const player of data.players) assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'banned', 'role', 'username']);
+  for (const player of data.players) assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'banned', 'protectedAdmin', 'role', 'username']);
 }
 
 test('presence counts signed-in players only after heartbeats and deduplicates their active sessions', async t => {

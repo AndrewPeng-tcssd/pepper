@@ -33,13 +33,22 @@
     if (!article) return;
     article.tabIndex = -1; article.focus({ preventScroll: true }); article.scrollIntoView({ block: 'center', behavior: 'smooth' }); popup.focusId = null;
   }
-  function renderAuthor(author) {
+  function renderAuthor(entry) {
     const container = el('announcementPopupAuthor'); container.replaceChildren();
-    if (!author?.username) { container.textContent = 'Unknown author'; return; }
-    const link = document.createElement(author.accountId ? 'a' : 'span'); link.className = 'player-identity';
-    if (author.accountId) link.href = profileHref(author.username);
-    const name = document.createElement('span'); name.textContent = author.username;
-    link.append(profileAvatar(author, 'player-avatar'), name, playerRoleBadges(author)); container.append(link);
+    const seen = new Set();
+    const authors = [entry.author, ...(Array.isArray(entry.contributors) ? entry.contributors : [])].filter(author => {
+      if (!author?.username) return false;
+      const key = author.accountId || `name:${author.username}`;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    if (!authors.length) { container.textContent = 'Unknown author'; return; }
+    for (const author of authors) {
+      const link = document.createElement(author.accountId ? 'a' : 'span'); link.className = 'player-identity';
+      if (author.accountId) link.href = profileHref(author.username);
+      const name = document.createElement('span'); name.textContent = author.username;
+      link.append(profileAvatar(author, 'player-avatar'), name, playerRoleBadges(author)); container.append(link);
+    }
   }
   function pump() {
     if (!available() || Array.from(document.querySelectorAll('dialog[open]')).some(other => other !== dialog) || popup.viewing && pageKind === 'announcements') { closeDialog(); return; }
@@ -50,7 +59,7 @@
     el('announcementPopupDescription').textContent = entry.description;
     const date = el('announcementPopupDate'); date.dateTime = entry.createdAt;
     date.textContent = new Date(entry.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-    renderAuthor(entry.author); el('announcementPopupMessage').textContent = '';
+    renderAuthor(entry); el('announcementPopupMessage').textContent = '';
     if (!dialog.open) { try { dialog.showModal(); el('announcementPopupDismiss').focus(); } catch { /* Retry once the current dialog finishes closing. */ } }
   }
   function filterEntries(entries) {

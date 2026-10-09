@@ -26,7 +26,8 @@
     if (comment.author?.accountId === viewer.identity) return true;
     if (!window.PepperModeration?.enabled()) return false;
     const role = accountRole(state.user);
-    return role === 'admin' || role === 'mod' && accountRole(comment.author) === 'player';
+    const targetRole = accountRole(comment.author);
+    return role === 'admin' || role === 'senior_mod' && ['player', 'mod'].includes(targetRole) || role === 'mod' && targetRole === 'player';
   }
   function invalidateRead(thread) {
     thread.readRevision++; thread.readRequest = null; thread.loading = false;

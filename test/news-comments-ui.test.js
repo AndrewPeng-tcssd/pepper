@@ -163,13 +163,14 @@ test('same-account role and management-view changes update deletion controls wit
 });
 
 test('comment deletion follows ownership, staff view, and role hierarchy', async () => {
-  for (const role of ['player', 'mod', 'admin']) for (const managementOpen of [false, true]) {
-    const local = player('local', role), own = comment(local, 'Own'), ordinary = comment(player('ordinary'), 'Ordinary'), mod = comment(player('other-mod', 'mod'), 'Mod'), admin = comment(player('other-admin', 'admin'), 'Admin');
-    const ui = harness(local, { managementOpen, network: () => ({ comments: [own, ordinary, mod, admin], nextCursor: null }) });
+  for (const role of ['player', 'mod', 'senior_mod', 'admin']) for (const managementOpen of [false, true]) {
+    const local = player('local', role), own = comment(local, 'Own'), ordinary = comment(player('ordinary'), 'Ordinary'), mod = comment(player('other-mod', 'mod'), 'Mod'), senior = comment(player('other-senior', 'senior_mod'), 'Senior mod'), admin = comment(player('other-admin', 'admin'), 'Admin');
+    const ui = harness(local, { managementOpen, network: () => ({ comments: [own, ordinary, mod, senior, admin], nextCursor: null }) });
     const { thread } = ui.mount(); open(thread); await tick();
     assert.equal(ui.api.canDelete(thread, own), true);
     assert.equal(ui.api.canDelete(thread, ordinary), managementOpen && role !== 'player');
-    assert.equal(ui.api.canDelete(thread, mod), managementOpen && role === 'admin');
+    assert.equal(ui.api.canDelete(thread, mod), managementOpen && ['senior_mod', 'admin'].includes(role));
+    assert.equal(ui.api.canDelete(thread, senior), managementOpen && role === 'admin');
     assert.equal(ui.api.canDelete(thread, admin), managementOpen && role === 'admin');
     assert.equal(ui.api.canDelete(thread, { ...own, deleted: true }), false);
     ui.setUser(null);

@@ -79,14 +79,16 @@ test('player search returns only public identity fields with current roles and a
   assert.equal(result.status, 200);
   assert.deepEqual(Object.keys(result.data), ['players']);
   for (const player of result.data.players) {
-    assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'banned', 'role', 'username']);
+    assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'banned', 'protectedAdmin', 'role', 'username']);
     assert.equal(player.banned, false);
     assert.equal(typeof player.accountId, 'string');
     assert.equal(typeof player.avatarUrl, 'string');
   }
   assert.equal(result.data.players.find(player => player.accountId === admin.accountId).role, 'admin');
   assert.equal(result.data.players.find(player => player.username === 'moderator').role, 'mod');
-  assert.equal(result.data.players.find(player => player.username === 'ordinary').role, 'player');
+  assert.equal(result.data.players.find(player => player.username === 'ordinary').role, 'admin');
+  assert.equal(result.data.players.find(player => player.username === 'ordinary').protectedAdmin, false);
+  assert.equal(result.data.players.find(player => player.accountId === admin.accountId).protectedAdmin, true);
   const serialized = JSON.stringify(result.data);
   for (const secret of ['private@example.test', 'secret-password', 'secret-session', 'balance', 'lastClaimAt', 'activityRevision', 'createdAt']) {
     assert.equal(serialized.includes(secret), false);

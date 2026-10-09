@@ -53,16 +53,18 @@ async function match(api, sender, recipient, active = true) {
 test('roles cannot be supplied at signup, staff lookup is private, and public identities include role tags', async t => {
   const { api, store } = await fixture(t);
   const { admin, mod } = await staff(api, store);
-  const ordinary = await player(api, store, 'ordinary', { role: 'admin', banned: false });
+  const ordinary = await player(api, store, 'ordinary', { role: 'admin', banned: false, protectedAdmin: true });
   assert.equal((await api('/api/me', undefined, admin.cookie)).data.user.role, 'admin');
   assert.equal((await api('/api/me', undefined, mod.cookie)).data.user.role, 'mod');
   assert.equal((await api('/api/me', undefined, ordinary.cookie)).data.user.role, 'player');
+  assert.equal((await api('/api/me', undefined, ordinary.cookie)).data.user.protectedAdmin, false);
+  assert.equal((await api('/api/me', undefined, admin.cookie)).data.user.protectedAdmin, true);
   assert.equal((await api('/api/moderation/players')).status, 401);
   assert.equal((await api('/api/moderation/players', undefined, ordinary.cookie)).status, 403);
   const lookup = await api('/api/moderation/players?username=ordi', undefined, mod.cookie);
   assert.equal(lookup.status, 200);
   assert.deepEqual(lookup.data.players.map(user => user.accountId), [ordinary.accountId]);
-  assert.deepEqual(Object.keys(lookup.data.players[0]).sort(), ['accountId', 'avatarUrl', 'banned', 'role', 'username']);
+  assert.deepEqual(Object.keys(lookup.data.players[0]).sort(), ['accountId', 'avatarUrl', 'banned', 'protectedAdmin', 'role', 'username']);
   assert.equal((await api(`/api/profiles/${mod.username}`)).data.profile.role, 'mod');
   assert.equal((await api('/api/leaderboard')).data.entries.find(entry => entry.accountId === admin.accountId).role, 'admin');
   await api('/api/presence', {}, mod.cookie);
@@ -71,7 +73,7 @@ test('roles cannot be supplied at signup, staff lookup is private, and public id
   assert.equal(game.sender.role, 'mod'); assert.equal(game.recipient.role, 'player');
 });
 
-test('only the permanent administrator assigns moderators and moderators cannot sanction staff', async t => {
+test('administrators assign staff roles while moderators cannot sanction staff', async t => {
   const { api, store } = await fixture(t);
   const { admin, mod } = await staff(api, store);
   const ordinary = await player(api, store, 'hierarchy_player');
@@ -79,7 +81,8 @@ test('only the permanent administrator assigns moderators and moderators cannot 
   assert.equal((await patch(api, admin, peer, { role: 'mod' })).status, 200);
   assert.equal((await patch(api, mod, ordinary, { role: 'mod' })).status, 403);
   assert.equal((await patch(api, ordinary, ordinary, { role: 'mod' })).status, 403);
-  assert.equal((await patch(api, admin, ordinary, { role: 'admin' })).status, 400);
+  assert.equal((await patch(api, admin, ordinary, { role: 'admin' })).status, 200);
+  assert.equal((await api('/api/me', undefined, ordinary.cookie)).data.user.role, 'admin');
   assert.equal((await patch(api, admin, ordinary, { role: 'mod', banned: true })).status, 400);
   for (const target of [admin, peer, mod]) assert.equal((await patch(api, mod, target, { banned: true })).status, 403);
   assert.equal((await patch(api, admin, admin, { banned: true })).status, 403);
@@ -93,11 +96,98 @@ test('administrator identity survives renames and cannot be reclaimed through th
   const { admin, mod } = await staff(api, store);
   const renamed = await api('/api/account/username', { username: 'renamed_admin', currentPassword: password }, admin.cookie, 'PATCH');
   assert.equal(renamed.status, 200); assert.equal(renamed.data.user.role, 'admin');
+  assert.equal(renamed.data.user.protectedAdmin, true);
   const replacement = await player(api, store, '675');
   assert.equal(replacement.role, 'player');
+  assert.equal(replacement.protectedAdmin, false);
   assert.equal((await patch(api, replacement, mod, { banned: true })).status, 403);
   assert.equal((await api('/api/me', undefined, admin.cookie)).data.user.role, 'admin');
   assert.equal((await patch(api, admin, mod, { role: 'player' })).status, 200);
+});
+
+test('delegated administrators grant every staff role and cannot change or ban the permanent owner', async t => {
+  const { api, store } = await fixture(t);
+  const { admin: owner, mod } = await staff(api, store);
+  const delegated = await player(api, store, 'delegated_admin');
+  const target = await player(api, store, 'staff_target');
+  assert.equal((await patch(api, owner, delegated, { role: 'admin' })).status, 200);
+  const identity = (await api('/api/me', undefined, delegated.cookie)).data.user;
+  assert.equal(identity.role, 'admin'); assert.equal(identity.protectedAdmin, false);
+  for (const role of ['mod', 'senior_mod', 'admin', 'player']) {
+    const result = await patch(api, delegated, target, { role });
+    assert.equal(result.status, 200); assert.equal(result.data.player.role, role);
+    assert.equal(result.data.player.protectedAdmin, false);
+    assert.equal((await store.users.findOne({ _id: target.id })).role, role);
+  }
+  for (const role of ['moderator', 'senior', 'owner', '', null]) assert.equal((await patch(api, delegated, target, { role })).status, 400);
+  for (const role of ['player', 'mod', 'senior_mod', 'admin']) {
+    assert.equal((await patch(api, delegated, owner, { role })).status, 403);
+    assert.equal((await patch(api, delegated, delegated, { role })).status, 403);
+  }
+  for (const banned of [true, false]) {
+    assert.equal((await patch(api, delegated, owner, { banned })).status, 403);
+    assert.equal((await patch(api, delegated, delegated, { banned })).status, 403);
+  }
+  const renamed = await api('/api/account/username', { username: 'protected_renamed', currentPassword: password }, owner.cookie, 'PATCH');
+  assert.equal(renamed.status, 200); assert.equal(renamed.data.user.protectedAdmin, true);
+  const replacement = await player(api, store, '675');
+  assert.equal((await patch(api, delegated, replacement, { role: 'mod' })).status, 200);
+  assert.equal((await patch(api, delegated, owner, { role: 'player' })).status, 403);
+  assert.equal((await patch(api, delegated, owner, { banned: true })).status, 403);
+  // A fresh moderation instance resolves only the saved immutable account binding.
+  const { createModeration } = require('../moderation');
+  const fresh = createModeration(store);
+  assert.deepEqual(await fresh.publicFields(await store.users.findOne({ _id: owner.id })), { role: 'admin', banned: false, protectedAdmin: true });
+  assert.deepEqual(await fresh.publicFields(await store.users.findOne({ _id: replacement.id })), { role: 'mod', banned: false, protectedAdmin: false });
+  assert.equal((await patch(api, delegated, mod, { role: 'player' })).status, 200);
+});
+
+test('senior moderators sanction players and mods and only revoke existing mod status', async t => {
+  const { api, store, advance } = await fixture(t);
+  const { admin, mod } = await staff(api, store);
+  const senior = await player(api, store, 'senior_staff');
+  const peer = await player(api, store, 'senior_peer');
+  const delegated = await player(api, store, 'senior_admin');
+  advance(15 * 60 * 1000 + 1);
+  const member = await player(api, store, 'senior_member');
+  for (const [target, role] of [[senior, 'senior_mod'], [peer, 'senior_mod'], [delegated, 'admin']]) assert.equal((await patch(api, admin, target, { role })).status, 200);
+  assert.equal((await api('/api/moderation/players?username=senior', undefined, senior.cookie)).status, 200);
+  assert.equal((await api('/api/me', undefined, senior.cookie)).data.user.role, 'senior_mod');
+  for (const target of [member, mod]) {
+    for (const banned of [true, false]) assert.equal((await patch(api, senior, target, { banned })).status, 200);
+  }
+  for (const target of [admin, delegated, peer, senior]) {
+    assert.equal((await patch(api, senior, target, { banned: true })).status, 403);
+    assert.equal((await patch(api, senior, target, { banned: false })).status, 403);
+    assert.equal((await patch(api, senior, target, { role: 'player' })).status, 403);
+  }
+  for (const target of [member, mod]) for (const role of ['mod', 'senior_mod', 'admin']) assert.equal((await patch(api, senior, target, { role })).status, 403);
+  assert.equal((await patch(api, senior, member, { role: 'player' })).status, 403);
+  assert.equal((await patch(api, mod, peer, { banned: true })).status, 403);
+  const revoked = await patch(api, senior, mod, { role: 'player' });
+  assert.equal(revoked.status, 200); assert.equal(revoked.data.player.role, 'player');
+  assert.equal((await api('/api/moderation/players', undefined, mod.cookie)).status, 403);
+  assert.equal((await patch(api, senior, mod, { role: 'player' })).status, 403);
+});
+
+test('delegated administrators publish changelogs and update versions while senior mods only publish announcements', async t => {
+  const { api, store } = await fixture(t);
+  const { admin } = await staff(api, store);
+  const delegated = await player(api, store, 'news_delegated');
+  const senior = await player(api, store, 'news_senior');
+  await patch(api, admin, delegated, { role: 'admin' });
+  await patch(api, admin, senior, { role: 'senior_mod' });
+  const announcement = await api('/api/announcements', { title: 'Senior notice', description: 'Details.' }, senior.cookie);
+  assert.equal(announcement.status, 201); assert.equal(announcement.data.entry.author.role, 'senior_mod');
+  assert.equal((await api('/api/changelog', { title: 'Not allowed', description: 'Details.', version: '0.8.1-1' }, senior.cookie)).status, 403);
+  assert.equal((await api('/api/version', { version: '0.8.1-1' }, senior.cookie, 'PATCH')).status, 403);
+  const changelog = await api('/api/changelog', { title: 'Delegated release', description: 'Details.', version: '0.8.1-1' }, delegated.cookie);
+  assert.equal(changelog.status, 201); assert.equal(changelog.data.entry.author.accountId, delegated.accountId);
+  assert.equal((await api('/api/version', { version: '0.8.1-2' }, delegated.cookie, 'PATCH')).status, 200);
+  assert.equal((await api(`/api/changelog/${changelog.data.entry.id}`, undefined, senior.cookie, 'DELETE')).status, 403);
+  assert.equal((await api(`/api/changelog/${changelog.data.entry.id}`, undefined, delegated.cookie, 'DELETE')).status, 200);
+  assert.equal((await patch(api, admin, delegated, { role: 'player' })).status, 200);
+  assert.equal((await api('/api/version', { version: '0.8.1-3' }, delegated.cookie, 'PATCH')).status, 403);
 });
 
 test('banning revokes sessions, closes trades, refunds active games, and preserves names and banned tags', async t => {
@@ -191,6 +281,29 @@ test('chat moderation follows role hierarchy and deleted receipts cannot resurre
   assert.equal(oldRetry.data.message.id, original.data.message.id);
 });
 
+test('senior moderators delete player and mod chat messages but cannot delete senior or admin messages', async t => {
+  const { api, store, advance } = await fixture(t);
+  const { admin, mod } = await staff(api, store);
+  const senior = await player(api, store, 'chat_senior');
+  const peer = await player(api, store, 'chat_senior_peer');
+  const delegated = await player(api, store, 'chat_delegated_admin');
+  advance(15 * 60 * 1000 + 1);
+  const member = await player(api, store, 'chat_member');
+  for (const [target, role] of [[senior, 'senior_mod'], [peer, 'senior_mod'], [delegated, 'admin']]) await patch(api, admin, target, { role });
+  const entries = new Map();
+  for (const author of [member, mod, senior, peer, delegated, admin]) {
+    const response = await api('/api/chat', { text: `${author.username} post`, clientMessageId: crypto.randomUUID() }, author.cookie);
+    assert.equal(response.status, 201);
+    entries.set(author, response.data.message);
+  }
+  const erase = (actor, author) => api(`/api/chat/${entries.get(author).id}`, undefined, actor.cookie, 'DELETE');
+  assert.equal((await erase(mod, senior)).status, 403);
+  for (const author of [peer, delegated, admin]) assert.equal((await erase(senior, author)).status, 403);
+  for (const author of [member, mod, senior]) assert.equal((await erase(senior, author)).status, 200);
+  // Any administrator may delete posts by any other administrator, including the owner.
+  for (const author of [peer, delegated, admin]) assert.equal((await erase(delegated, author)).status, 200);
+});
+
 test('moderators publish announcements and delete their own, while administrator can remove any', async t => {
   const { api, store } = await fixture(t);
   const { admin, mod } = await staff(api, store);
@@ -246,6 +359,20 @@ test('a moderator request paused during authentication cannot publish after demo
   gate.release();
   assert.equal((await publishing).status, 403);
   assert.equal(await store.announcements.countDocuments(), 0);
+});
+
+test('a senior moderation request paused during authentication cannot ban staff after demotion', async t => {
+  const { api, store } = await fixture(t);
+  const { admin, mod } = await staff(api, store);
+  const senior = await player(api, store, 'inflight_senior');
+  await patch(api, admin, senior, { role: 'senior_mod' });
+  const gate = await pauseFirstUserRead(t, store, senior);
+  const banning = patch(api, senior, mod, { banned: true });
+  await gate.waiting;
+  assert.equal((await patch(api, admin, senior, { role: 'mod' })).status, 200);
+  gate.release();
+  assert.equal((await banning).status, 403);
+  assert.notEqual((await store.users.findOne({ _id: mod.id })).banned, true);
 });
 
 test('ban and game acceptance serialize without retaining stakes or active matches', async t => {

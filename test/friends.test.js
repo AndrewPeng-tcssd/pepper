@@ -41,7 +41,7 @@ async function fixture(t, options = {}) {
   return { store, app, api, player, alice, bob, outsider, request, action, accepted, advance: ms => { now += ms; }, time: () => now };
 }
 const send = (api, id, actor, text = 'Hello', clientMessageId = crypto.randomUUID()) => api(`/api/friends/${id}/messages`, { text, clientMessageId }, actor.cookie);
-const publicFields = ['accountId', 'avatarUrl', 'banned', 'role', 'username'];
+const publicFields = ['accountId', 'avatarUrl', 'banned', 'protectedAdmin', 'role', 'username'];
 
 test('friend requests are private and recipient acceptance creates both alphabetical friend lists', async t => {
   const { api, alice, bob, outsider, request, action, player } = await fixture(t);
