@@ -7,8 +7,10 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=42">
-  <script src="/app.js?v=40" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=43">
+  <script src="/app.js?v=42" defer></script>
+  <script src="/games.js?v=1" defer></script>
+  <script src="/moderation.js?v=1" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -46,6 +48,7 @@
       <a href="/profile">Profile</a>
       <a href="/packs">Packs</a>
       <a href="/trading">Trading</a>
+      <a href="/games">Games</a>
       <a href="/changelog">Changelog</a>
       <a href="/announcements">Announcements</a>
       <a href="/leaderboard">Leaderboard</a>
@@ -57,9 +60,10 @@
       <details class="account-menu" id="accountMenu" hidden>
         <summary class="button"><span>Account</span><svg class="account-menu-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" /></svg></summary>
         <div class="account-dropdown">
-          <div class="account-menu-info"><div class="player-identity"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><strong id="menuUsername"></strong></div><span><span id="menuBalance">0</span> tokens</span></div>
+          <a class="account-menu-info" href="/profile" aria-label="View your profile"><span class="player-identity"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><strong id="menuUsername"></strong></span><span><span id="menuBalance">0</span> tokens</span></a>
           <a href="/profile">Profile</a>
           <a href="/trading">Trading</a>
+          <a href="/games">Games</a>
           <a href="/settings">Settings</a>
           <button id="headerLogoutButton" type="button">Sign out</button>
           <p class="form-message account-menu-message" id="headerAccountMessage" role="status" hidden></p>
@@ -122,7 +126,7 @@
       <a class="button profile-trade" id="profileTrade" href="/trading" hidden>Start a trade</a>
       <div class="profile-details" id="profileDetails" hidden>
         <div class="profile-info-card">
-          <div class="player-identity profile-account-heading"><img class="player-avatar profile-avatar" id="profileAvatar" src="/favicon.svg" alt="" width="56" height="56"><h2 id="profileAccountTitle">Account</h2></div>
+          <div class="player-identity profile-account-heading"><button class="profile-picture-edit" id="profilePictureEdit" type="button" aria-label="Change profile picture" title="Change picture"><img class="player-avatar profile-avatar" id="profileAvatar" src="/favicon.svg" alt="" width="56" height="56"></button><h2 id="profileAccountTitle">Account</h2></div>
           <dl>
             <dt>Username</dt><dd id="profileUsername"></dd>
             <dt>Account ID</dt><dd class="account-id-value" id="profileAccountId"></dd>
@@ -185,6 +189,37 @@
       <p>Coming soon</p>
     </section>
 
+    <section class="section-wrap games-overview" id="gamesPage" aria-labelledby="gamesTitle" hidden>
+      <div class="games-page-heading"><h1 id="gamesTitle">Games</h1><span class="games-balance" id="gamesBalance"></span></div>
+      <p id="gamesLoading" role="status">Loading games…</p>
+      <div id="gamesGuest" hidden><button class="button" id="gamesJoin" type="button">Sign up or log in</button></div>
+      <div id="gamesAccount" hidden>
+        <div class="games-lobby" id="gamesLobby">
+          <form class="games-request trading-card" id="gamesRequestForm">
+            <h2>Invite a player</h2>
+            <fieldset class="games-pick"><legend>Game</legend>
+              <label><input type="radio" name="gameType" value="tic-tac-toe" checked><span class="games-pick-icon" aria-hidden="true">× ○</span><span>Tic-Tac-Toe</span></label>
+              <label><input type="radio" name="gameType" value="rock-paper-scissors"><span class="games-pick-icon" aria-hidden="true">✊ ✋ ✌</span><span>Rock Paper Scissors</span></label>
+            </fieldset>
+            <label for="gamesUsername">Username</label><input id="gamesUsername" autocomplete="off" maxlength="24" required placeholder="Player username">
+            <label for="gamesStake">Tokens each</label><input id="gamesStake" type="number" min="0" max="9007199254740991" step="1" value="0" required inputmode="numeric">
+            <button class="button trading-primary" id="gamesSend" type="submit">Send request</button>
+          </form>
+          <div class="games-list-sections"><section aria-labelledby="gamesActiveTitle"><div class="games-list-heading"><h2 id="gamesActiveTitle">Active games</h2><button class="button" id="gamesRefresh" type="button">Refresh</button></div><p id="gamesActiveEmpty">No active games.</p><div class="games-list" id="gamesActive"></div></section><section aria-labelledby="gamesHistoryTitle"><h2 id="gamesHistoryTitle">History</h2><p id="gamesHistoryEmpty">No finished games.</p><div class="games-list" id="gamesHistory"></div></section></div>
+        </div>
+        <section class="games-session" id="gamesSession" hidden aria-labelledby="gamesSessionTitle">
+          <div class="games-session-heading"><button class="button" id="gamesBack" type="button">All games</button><span class="trading-status" id="gamesSessionStatus"></span></div>
+          <h2 id="gamesSessionTitle"></h2><div class="games-players" id="gamesPlayers"></div>
+          <div class="games-stakes"><span id="gamesStakeSummary"></span><strong id="gamesPot"></strong></div>
+          <p class="games-turn" id="gamesTurn" role="status"></p><p class="games-deadline" id="gamesDeadline"></p>
+          <div class="games-board" id="gamesBoard" aria-label="Tic-Tac-Toe board" hidden></div>
+          <div class="games-rps" id="gamesRps" hidden><div class="games-rps-choices" id="gamesChoices"></div><div class="games-reveal" id="gamesReveal"></div></div>
+          <div class="trading-actions games-session-actions" id="gamesSessionActions"></div>
+        </section>
+        <p class="form-message" id="gamesMessage" role="status"></p><button class="button" id="gamesRetry" type="button" hidden>Retry</button>
+      </div>
+    </section>
+
     <section class="section-wrap trading-overview" id="tradingPage" aria-labelledby="tradingTitle" hidden>
       <h1 id="tradingTitle">Trading</h1>
       <p id="tradingAuthLoading" role="status">Checking your account…</p>
@@ -241,10 +276,6 @@
     </section>
     <section class="section-wrap changelog-overview" id="changelogPage" aria-labelledby="changelogTitleHeading" hidden>
       <h1 id="changelogTitleHeading">Changelog</h1>
-      <div class="changelog-tools" id="changelogTools" hidden>
-        <button class="button" id="changelogPreviewToggle" type="button" aria-pressed="false">View as visitor</button>
-        <p class="changelog-preview-notice" id="changelogPreviewNotice" role="status" hidden>Visitor preview; editing hidden.</p>
-      </div>
       <section class="changelog-editor" id="changelogEditor" aria-labelledby="changelogEditorTitle" hidden>
         <h2 id="changelogEditorTitle">Add an update</h2>
         <form class="changelog-form" id="changelogForm">
@@ -262,10 +293,6 @@
 
     <section class="section-wrap changelog-overview" id="announcementsPage" aria-labelledby="announcementsTitle" hidden>
       <h1 id="announcementsTitle">Announcements</h1>
-      <div class="changelog-tools" id="announcementTools" hidden>
-        <button class="button" id="announcementPreviewToggle" type="button" aria-pressed="false">View as visitor</button>
-        <p class="changelog-preview-notice" id="announcementPreviewNotice" role="status" hidden>Visitor preview; editing hidden.</p>
-      </div>
       <section class="changelog-editor" id="announcementEditor" aria-labelledby="announcementEditorTitle" hidden>
         <h2 id="announcementEditorTitle">Add an announcement</h2>
         <form class="changelog-form" id="announcementForm">
@@ -297,6 +324,14 @@
     <section class="section-wrap settings-overview" id="settingsPage" aria-labelledby="settingsTitle" hidden>
       <h1 id="settingsTitle">Settings</h1>
       <div class="settings-grid">
+        <section class="settings-card moderation-settings" id="moderationSettings" hidden aria-labelledby="moderationTitle">
+          <h2 id="moderationTitle">Moderation</h2><button class="button" id="moderationViewToggle" type="button" aria-pressed="false">Open mod view</button>
+          <div id="moderationControls" hidden>
+            <div class="trading-actions moderation-links"><a class="button" href="/announcements">Announcements</a><a class="button" id="moderationChangelog" href="/changelog">Changelog</a></div>
+            <form class="settings-form moderation-search" id="moderationSearch"><label for="moderationUsername">Username</label><input id="moderationUsername" maxlength="24" autocomplete="off" placeholder="Find a player"><button class="button" id="moderationFind" type="submit">Find player</button></form>
+            <p class="form-message" id="moderationMessage" role="status"></p><div class="moderation-players" id="moderationPlayers"></div>
+          </div>
+        </section>
         <section class="settings-card" aria-labelledby="appearanceTitle">
           <h2 id="appearanceTitle">Appearance</h2>
           <fieldset class="theme-options">
@@ -367,10 +402,17 @@
 
   <footer><span>Pepper TCG · Build <a href="/changelog">v<span id="siteVersion"></span></a></span><span>© <span id="year"></span></span></footer>
 
+  <section class="banned-screen" id="bannedScreen" hidden aria-labelledby="bannedTitle"><img src="/favicon.svg" alt="" width="80" height="80"><h1 id="bannedTitle">You are banned</h1><button class="button" id="bannedSignOut" type="button">Sign out</button><p class="form-message" id="bannedMessage" role="status"></p></section>
+
+  <aside class="trade-notification game-notification" id="gameNotification" aria-labelledby="gameNotificationTitle" hidden>
+    <h2 id="gameNotificationTitle">Game request</h2><p><a id="gameNotificationSender"></a></p><p id="gameNotificationTerms"></p><p class="form-message" id="gameNotificationMessage" role="status"></p>
+    <div class="trading-actions"><button class="button trading-primary" id="gameNotificationAccept" type="button">Accept</button><button class="button" id="gameNotificationDecline" type="button">Decline</button></div>
+  </aside>
+
   <aside class="trade-notification" id="tradeNotification" aria-labelledby="tradeNotificationTitle" hidden>
     <div aria-live="polite" aria-atomic="true"><h2 id="tradeNotificationTitle">Trade request</h2><p><a id="tradeNotificationSender"></a> wants to trade.</p><p class="trading-help" id="tradeNotificationCount" hidden></p></div>
     <p class="form-message" id="tradeNotificationMessage" role="status"></p>
-    <div class="trading-actions"><button class="button trading-primary" id="tradeNotificationAccept" type="button">Accept</button><button class="button" id="tradeNotificationDismiss" type="button">Later</button></div>
+    <div class="trading-actions"><button class="button trading-primary" id="tradeNotificationAccept" type="button">Accept</button><button class="button" id="tradeNotificationDecline" type="button">Decline</button></div>
   </aside>
 
   <dialog id="onlinePlayersDialog" aria-labelledby="onlinePlayersTitle">

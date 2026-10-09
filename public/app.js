@@ -8,8 +8,12 @@ let profileLoadRevision = 0;
 let authRevision = 0;
 let userIdentityRevision = 0;
 let accountActionRevision = 0;
+let accountBanned = false;
 const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true, chatMessages: [], chatOutbox: [], chatReply: null, leaderboard: null, leaderboardSignature: null };
 const chatInFlight = new Set();
+let chatRetryTimer;
+let chatRetryAt = 0;
+const tradeChatRetryTimers = new Map();
 let turnstileScriptPromise;
 let chatLoadPromise;
 let chatRevision = 0;
@@ -40,13 +44,25 @@ let tradeSessionLoadPromise;
 let tradeSessionRefreshQueued = false;
 let tradeChatLoadPromise;
 let tradeChatRefreshQueued = false;
-const tradeNotification = { id: null, dismissed: new Set(), error: null, signature: null };
+const tradeNotification = { id: null, error: null, signature: null };
 
 function newTradeInventory(ownerId = null) {
   return { ownerId, cards: null, selected: [], loading: false, error: null, notice: '', signature: null, loadPromise: null, refreshQueued: false };
 }
+function accountRole(person) { return person?.role || (person?.canManageChangelog ? 'admin' : 'player'); }
+function playerRoleBadges(person) {
+  const badges = document.createElement('span'); badges.className = 'role-badges';
+  const role = accountRole(person);
+  for (const [label, kind] of [...(role === 'admin' ? [['Admin', 'admin']] : role === 'mod' ? [['Mod', 'mod']] : []), ...(person?.banned ? [['Banned', 'banned']] : [])]) {
+    const badge = document.createElement('span'); badge.className = `role-badge role-badge-${kind}`; badge.textContent = label; badges.append(badge);
+  }
+  badges.hidden = !badges.children.length; return badges;
+}
+function moderationViewEnabled() { return window.PepperModeration?.enabled() === true; }
+function canDeleteAnnouncement(entry) { return accountRole(state.user) === 'admin' || (accountRole(state.user) === 'mod' && (entry?.authorAccountId || entry?.author?.accountId) === state.user?.accountId); }
 
 async function api(path, options = {}) {
+  const requestIdentityRevision = userIdentityRevision;
   const response = await fetch(`/api/${path}`, {
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -57,9 +73,24 @@ async function api(path, options = {}) {
     const error = new Error(data.error || 'Something went wrong.');
     error.status = response.status;
     error.user = data.user;
+    error.banned = response.status === 403 && data.banned === true;
+    if (error.banned && requestIdentityRevision === userIdentityRevision) handleBannedAccount();
+    if (response.status === 429) {
+      const milliseconds = Number(data.retryAfterMs);
+      const header = response.headers.get('Retry-After');
+      const seconds = header ? Number(header) : NaN;
+      const headerDelay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+      error.retryAfterMs = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : headerDelay;
+    }
     throw error;
   }
   return data;
+}
+
+function handleBannedAccount() {
+  accountBanned = true;
+  setUser(null);
+  window.PepperModeration?.showBanned();
 }
 
 function message(element, text, success = false) {
@@ -109,7 +140,10 @@ function profileAvatar(person, className = 'player-avatar') {
 
 function renderProfileDetails(profile) {
   setProfileAvatar($('profileAvatar'), profile);
+  $('profilePictureEdit').disabled = !state.user || !isOwnProfile(profile.username);
+  $('profilePictureEdit').title = $('profilePictureEdit').disabled ? '' : 'Change picture';
   $('profileUsername').textContent = profile.username;
+  $('profileUsername').append(playerRoleBadges(profile));
   $('profileAccountId').textContent = profile.accountId || 'Not available';
   $('profileJoined').textContent = profile.createdAt ? formatProfileDate(profile.createdAt) : 'Not available';
   $('profileBalance').textContent = profile.balance.toLocaleString();
@@ -122,6 +156,7 @@ function renderOverviewProfile(user) {
   $('overviewProfileGuest').hidden = !!user;
   $('overviewProfileGuest').textContent = 'Log in to view profile.';
   $('overviewProfileName').textContent = user?.username || '';
+  $('overviewProfileName').append(playerRoleBadges(user));
   $('overviewProfileBalance').textContent = user ? user.balance.toLocaleString() : '0';
   $('overviewProfileJoined').textContent = user?.createdAt ? formatProfileDate(user.createdAt) : 'Not available';
   $('overviewProfileLastClaim').textContent = user ? formatProfileDate(user.lastClaimAt, true) : 'No claims yet';
@@ -132,6 +167,7 @@ function setUser(user) {
   const previousPresenceIdentity = state.user?.accountId || state.user?.username || null;
   const previousUsername = state.user?.username;
   state.user = user;
+  if (user) accountBanned = false;
   syncPictureSettings();
   renderOverviewProfile(user);
   authRevision++;
@@ -139,6 +175,7 @@ function setUser(user) {
   renderAnnouncementEditor();
   if (previousPresenceIdentity !== (user?.accountId || user?.username || null)) {
     userIdentityRevision++;
+    resetChatSending();
     clearChatReply();
     if (state.chatOutbox.length) {
       state.chatOutbox = [];
@@ -176,6 +213,7 @@ function setUser(user) {
   if (user) {
     if (previousPresenceIdentity !== (user.accountId || user.username) || $('newUsername').value === previousUsername) $('newUsername').value = user.username;
     $('menuUsername').textContent = user.username;
+    $('menuUsername').append(playerRoleBadges(user));
     $('menuBalance').textContent = user.balance.toLocaleString();
     $('panelBalance').textContent = user.balance.toLocaleString();
     $('accountBalance').textContent = user.balance.toLocaleString();
@@ -205,12 +243,14 @@ function setUser(user) {
   if (state.chatReply && isOwnChatMessage(state.chatReply)) clearChatReply();
   $('chatMessages').querySelectorAll('.chat-reply-button').forEach(button => {
     const item = state.chatMessages.find(item => item.id === button.dataset.replyId);
-    button.hidden = !user || !item || isOwnChatMessage(item);
+    button.hidden = !user || !item || item.deleted || isOwnChatMessage(item);
     if (button.hidden && document.activeElement === button) button.closest('.chat-row').querySelector('.chat-author').focus({ preventScroll: true });
   });
   if (state.leaderboard) renderLeaderboard(state.leaderboard);
   document.body.classList.remove('auth-loading');
   syncTradingUser();
+  window.PepperGames?.syncUser();
+  window.PepperModeration?.syncUser();
   if (state.chatFollowLatest) scrollChatToLatest();
   if (viewingPublicProfile && (isOwnProfile(state.profile?.username || '') || isOwnProfile(routeProfileUsername()))) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
@@ -412,7 +452,7 @@ function routeProfileUsername() {
 
 function isAppPath(pathname) {
   const path = pathname.replace(/\/+$/, '') || '/';
-  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading'].includes(path) || /^\/profile\/[^/]+$/.test(path);
+  return ['/', '/profile', '/packs', '/packs/test', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/games'].includes(path) || /^\/profile\/[^/]+$/.test(path);
 }
 
 function renderRoute() {
@@ -425,22 +465,22 @@ function renderRoute() {
   }
   profileRoute = routePath.match(/^\/profile\/([^/]+)$/);
   viewingPublicProfile = !!profileRoute;
-  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : routePath === '/trading' ? 'trading' : 'home';
+  pageKind = routePath === '/profile' || viewingPublicProfile ? 'profile' : routePath === '/packs' ? 'pack' : routePath === '/settings' ? 'settings' : routePath === '/changelog' ? 'changelog' : routePath === '/announcements' ? 'announcements' : routePath === '/leaderboard' ? 'leaderboard' : routePath === '/trading' ? 'trading' : routePath === '/games' ? 'games' : 'home';
   if (viewingPublicProfile && isOwnProfile(routeProfileUsername())) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
     return;
   }
-  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard', trading: '/trading' }[pageKind];
+  const navigationPath = { home: '/', profile: '/profile', pack: '/packs', settings: '/settings', changelog: '/changelog', announcements: '/announcements', leaderboard: '/leaderboard', trading: '/trading', games: '/games' }[pageKind];
   document.querySelectorAll('.main-nav a[aria-current], .account-dropdown a[aria-current]').forEach(link => link.removeAttribute('aria-current'));
   const navigationSelector = pageKind === 'settings' ? '.account-dropdown' : '.main-nav';
   document.querySelector(`${navigationSelector} a[href="${navigationPath}"]`)?.setAttribute('aria-current', 'page');
-  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route', 'trading-route');
+  document.body.classList.remove('profile-route', 'public-profile-route', 'pack-route', 'settings-route', 'changelog-route', 'announcements-route', 'leaderboard-route', 'trading-route', 'games-route');
   if (pageKind !== 'home') document.body.classList.add(`${pageKind}-route`);
   document.body.classList.toggle('public-profile-route', viewingPublicProfile);
-  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage', 'tradingPage'].forEach(id => { $(id).hidden = true; });
-  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage', trading: 'tradingPage' }[pageKind];
+  ['home', 'profileIntro', 'tokens', 'packsPage', 'settingsPage', 'changelogPage', 'announcementsPage', 'leaderboardPage', 'tradingPage', 'gamesPage'].forEach(id => { $(id).hidden = true; });
+  const sectionId = { home: 'home', profile: 'profileIntro', pack: 'packsPage', settings: 'settingsPage', changelog: 'changelogPage', announcements: 'announcementsPage', leaderboard: 'leaderboardPage', trading: 'tradingPage', games: 'gamesPage' }[pageKind];
   $(sectionId).hidden = false;
-  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG' }[pageKind];
+  document.title = { home: 'Pepper TCG — Development', profile: 'Profile — Pepper TCG', pack: 'Packs — Pepper TCG', settings: 'Settings — Pepper TCG', changelog: 'Changelog — Pepper TCG', announcements: 'Announcements — Pepper TCG', leaderboard: 'Leaderboard — Pepper TCG', trading: 'Trading — Pepper TCG', games: 'Games — Pepper TCG' }[pageKind];
   state.profile = null;
   $('profileRetry').hidden = true;
   $('profileTrade').hidden = true;
@@ -467,11 +507,12 @@ function renderRoute() {
     renderTradingState();
     if (state.user) { void loadTrades(true); void loadTradeSession(true); void loadTradeChat(true); refreshTradeInventories(); }
   }
+  window.PepperGames?.onRoute();
 }
 
 function focusRouteHeading() {
   if ($('chat').classList.contains('open')) return;
-  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle', trading: 'tradingTitle' }[pageKind];
+  const headingId = { home: 'overviewTitle', profile: 'profileTitle', pack: 'packsTitle', settings: 'settingsTitle', changelog: 'changelogTitleHeading', announcements: 'announcementsTitle', leaderboard: 'leaderboardTitle', trading: 'tradingTitle', games: 'gamesTitle' }[pageKind];
   $(headingId).tabIndex = -1;
   $(headingId).focus({ preventScroll: true });
 }
@@ -536,6 +577,7 @@ $('authForm').addEventListener('submit', async (event) => {
     else if (pageKind === 'changelog') $('changelogPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'announcements') $('announcementsPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind === 'trading') $('tradingPage').scrollIntoView({ behavior: 'smooth' });
+    else if (pageKind === 'games') $('gamesPage').scrollIntoView({ behavior: 'smooth' });
     else if (pageKind !== 'leaderboard') navigateTo('/profile');
   } catch (error) {
     message($('authMessage'), error.message);
@@ -624,12 +666,7 @@ function setAccountSubmitting(submitting, expectedRevision = null) {
 
 function renderChangelogEditor() {
   const canManage = state.user?.canManageChangelog === true;
-  if (!canManage) state.changelogVisitorPreview = false;
-  const showControls = canManage && !state.changelogVisitorPreview;
-  $('changelogTools').hidden = !canManage;
-  $('changelogPreviewNotice').hidden = !state.changelogVisitorPreview;
-  $('changelogPreviewToggle').textContent = state.changelogVisitorPreview ? 'Back to editing' : 'View as visitor';
-  $('changelogPreviewToggle').setAttribute('aria-pressed', String(state.changelogVisitorPreview));
+  const showControls = canManage && moderationViewEnabled();
   $('changelogEditor').hidden = !showControls;
   $('changelogEntries').querySelectorAll('.changelog-entry-actions').forEach(actions => {
     actions.hidden = !showControls;
@@ -643,12 +680,6 @@ function renderChangelogEditor() {
     message($('changelogFormMessage'), '');
   }
 }
-
-$('changelogPreviewToggle').addEventListener('click', () => {
-  if (!state.user?.canManageChangelog || state.changelogSubmitting || state.accountSubmitting) return;
-  state.changelogVisitorPreview = !state.changelogVisitorPreview;
-  renderChangelogEditor();
-});
 
 function changelogActionButton(label, action) {
   const button = document.createElement('button');
@@ -748,14 +779,14 @@ function setChangelogSubmitting(submitting) {
   state.changelogSubmitting = submitting;
   setAccountSubmitting(submitting);
   $('changelogSubmit').disabled = submitting;
-  $('changelogPreviewToggle').disabled = submitting;
   $('changelogEntries').querySelectorAll('.changelog-entry-actions button').forEach(button => { button.disabled = submitting; });
 }
 
 function changelogPermissionError(error) {
   if (error.status !== 401 && error.status !== 403) return false;
+  if (error.banned || accountBanned) return true;
   if (error.status === 401) setUser(null);
-  else { state.user.canManageChangelog = false; renderChangelogEditor(); }
+  else { if (state.user) state.user.canManageChangelog = false; renderChangelogEditor(); }
   changelogLoadFailed = false;
   message($('changelogMessage'), error.message);
   if (error.status === 401) $('accountButton').focus();
@@ -770,7 +801,7 @@ function focusChangelogMessage() {
 
 $('changelogEntries').addEventListener('click', event => {
   const button = event.target.closest('button[data-changelog-action]');
-  if (!button || !state.user?.canManageChangelog || state.changelogVisitorPreview || state.changelogSubmitting || state.accountSubmitting) return;
+  if (!button || !state.user?.canManageChangelog || !moderationViewEnabled() || state.changelogSubmitting || state.accountSubmitting) return;
   const article = button.closest('.changelog-entry');
   const confirmation = article.querySelector('.changelog-delete-confirm');
   const deleteButton = article.querySelector('.changelog-delete-button');
@@ -788,7 +819,7 @@ $('changelogEntries').addEventListener('click', event => {
 });
 
 async function deleteChangelogEntry(entryId) {
-  if (!state.user?.canManageChangelog || state.changelogVisitorPreview || state.changelogSubmitting || state.accountSubmitting) return;
+  if (!state.user?.canManageChangelog || !moderationViewEnabled() || state.changelogSubmitting || state.accountSubmitting) return;
   setChangelogSubmitting(true);
   let deleted = false;
   try {
@@ -810,14 +841,14 @@ async function deleteChangelogEntry(entryId) {
     setChangelogSubmitting(false);
     if (deleted) {
       const nextDelete = $('changelogEntries').querySelector('.changelog-delete-button');
-      (nextDelete || $('changelogPreviewToggle')).focus();
+      (nextDelete || $('changelogSubmit')).focus();
     }
   }
 }
 
 $('changelogForm').addEventListener('submit', async event => {
   event.preventDefault();
-  if (state.changelogSubmitting || state.accountSubmitting || state.changelogVisitorPreview || !state.user?.canManageChangelog) return;
+  if (state.changelogSubmitting || state.accountSubmitting || !moderationViewEnabled() || !state.user?.canManageChangelog) return;
   setChangelogSubmitting(true);
   message($('changelogFormMessage'), 'Adding entry…');
   try {
@@ -841,16 +872,12 @@ $('changelogForm').addEventListener('submit', async event => {
 
 function renderAnnouncementEditor() {
   const canManage = state.user?.canManageAnnouncements === true;
-  if (!canManage) state.announcementVisitorPreview = false;
-  const showControls = canManage && !state.announcementVisitorPreview;
-  $('announcementTools').hidden = !canManage;
-  $('announcementPreviewNotice').hidden = !state.announcementVisitorPreview;
-  $('announcementPreviewToggle').textContent = state.announcementVisitorPreview ? 'Back to editing' : 'View as visitor';
-  $('announcementPreviewToggle').setAttribute('aria-pressed', String(state.announcementVisitorPreview));
+  const showControls = canManage && moderationViewEnabled();
   $('announcementEditor').hidden = !showControls;
   $('announcementEntries').querySelectorAll('.changelog-entry-actions').forEach(actions => {
-    actions.hidden = !showControls;
-    if (!showControls) {
+    const entry = state.announcementEntries?.find(item => item.id === actions.closest('.changelog-entry').dataset.entryId);
+    actions.hidden = !showControls || !canDeleteAnnouncement(entry);
+    if (actions.hidden) {
       actions.querySelector('.changelog-delete-confirm').hidden = true;
       actions.querySelector('.changelog-delete-button').hidden = false;
     }
@@ -860,12 +887,6 @@ function renderAnnouncementEditor() {
     message($('announcementFormMessage'), '');
   }
 }
-
-$('announcementPreviewToggle').addEventListener('click', () => {
-  if (!state.user?.canManageAnnouncements || state.announcementSubmitting || state.accountSubmitting) return;
-  state.announcementVisitorPreview = !state.announcementVisitorPreview;
-  renderAnnouncementEditor();
-});
 
 function announcementActionButton(label, action) {
   const button = document.createElement('button');
@@ -960,7 +981,6 @@ function setAnnouncementSubmitting(submitting) {
   state.announcementSubmitting = submitting;
   setAccountSubmitting(submitting);
   $('announcementSubmit').disabled = submitting;
-  $('announcementPreviewToggle').disabled = submitting;
   $('announcementEntries').querySelectorAll('.changelog-entry-actions button').forEach(button => { button.disabled = submitting; });
 }
 
@@ -971,6 +991,7 @@ function focusAnnouncementMessage() {
 
 function announcementPermissionError(error) {
   if (error.status !== 401 && error.status !== 403) return false;
+  if (error.banned || accountBanned) return true;
   if (error.status === 401) setUser(null);
   else {
     if (state.user) state.user.canManageAnnouncements = false;
@@ -985,7 +1006,7 @@ function announcementPermissionError(error) {
 
 $('announcementEntries').addEventListener('click', event => {
   const button = event.target.closest('button[data-announcement-action]');
-  if (!button || !state.user?.canManageAnnouncements || state.announcementVisitorPreview || state.announcementSubmitting || state.accountSubmitting) return;
+  if (!button || !state.user?.canManageAnnouncements || !moderationViewEnabled() || state.announcementSubmitting || state.accountSubmitting) return;
   const article = button.closest('.changelog-entry');
   const confirmation = article.querySelector('.changelog-delete-confirm');
   const deleteButton = article.querySelector('.changelog-delete-button');
@@ -1003,7 +1024,7 @@ $('announcementEntries').addEventListener('click', event => {
 });
 
 async function deleteAnnouncementEntry(entryId) {
-  if (!state.user?.canManageAnnouncements || state.announcementVisitorPreview || state.announcementSubmitting || state.accountSubmitting) return;
+  if (!state.user?.canManageAnnouncements || !moderationViewEnabled() || state.announcementSubmitting || state.accountSubmitting || !canDeleteAnnouncement(state.announcementEntries?.find(entry => entry.id === entryId))) return;
   setAnnouncementSubmitting(true);
   let deleted = false;
   try {
@@ -1025,14 +1046,14 @@ async function deleteAnnouncementEntry(entryId) {
     setAnnouncementSubmitting(false);
     if (deleted) {
       const nextDelete = $('announcementEntries').querySelector('.changelog-delete-button');
-      (nextDelete || $('announcementPreviewToggle')).focus();
+      (nextDelete || $('announcementSubmit')).focus();
     }
   }
 }
 
 $('announcementForm').addEventListener('submit', async event => {
   event.preventDefault();
-  if (state.announcementSubmitting || state.accountSubmitting || state.announcementVisitorPreview || !state.user?.canManageAnnouncements) return;
+  if (state.announcementSubmitting || state.accountSubmitting || !moderationViewEnabled() || !state.user?.canManageAnnouncements) return;
   setAnnouncementSubmitting(true);
   message($('announcementFormMessage'), 'Publishing announcement…');
   try {
@@ -1241,6 +1262,11 @@ async function saveProfilePicture(reset = false) {
 
 $('pictureForm').addEventListener('submit', event => { event.preventDefault(); void saveProfilePicture(); });
 $('pictureReset').addEventListener('click', () => { void saveProfilePicture(true); });
+$('profilePictureEdit').addEventListener('click', () => {
+  if (!state.user || state.accountSubmitting || viewingPublicProfile) return;
+  navigateTo('/settings');
+  $('pictureFile').click();
+});
 
 $('deleteAccountOpen').addEventListener('click', () => {
   if (!state.user || state.accountSubmitting) return;
@@ -1489,7 +1515,7 @@ function syncTradingUser() {
   if (changed) {
     tradeRevision++; trading.lookupRevision++; trading.sessionRevision++; trading.chatRevision++;
     Object.assign(trading, { identity, trades: null, signature: null, recipient: null, lookupLoading: false, review: null, submitting: false, sendUncertain: false, action: null, actionRetry: null, sessionId: null, session: null, sessionDraft: null, confirmReviewVersion: null, chatMessages: [], chatSignature: null, chatOutbox: [] });
-    tradeNotification.id = null; tradeNotification.dismissed.clear(); tradeNotification.error = null; tradeNotification.signature = null;
+    tradeNotification.id = null; tradeNotification.error = null; tradeNotification.signature = null;
     tradeInventories.offered = newTradeInventory(identity); $('tradingForm').reset(); $('tradingChatForm').reset();
     ['tradingFormMessage', 'tradingMessage', 'tradingActionMessage', 'tradingSessionMessage', 'tradingChatMessage'].forEach(id => message($(id), ''));
     $('tradingRetry').hidden = true; ['tradingReceived', 'tradingSent', 'tradingHistory', 'tradingChatMessages', 'tradingSessionCards', 'tradingOwnReadonly', 'tradingPartnerAssets'].forEach(id => $(id).replaceChildren());
@@ -1502,26 +1528,29 @@ function syncTradingUser() {
   if (pageKind === 'trading') { prefillTradingRecipient(); if (changed && identity) refreshTradeInventories(); }
 }
 function renderTradeNotification() {
-  const requests = state.user ? (trading.trades || []).filter(trade => trade.status === 'pending' && trade.recipient.accountId === state.user.accountId && !tradeNotification.dismissed.has(trade.id)).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)) : [];
+  const requests = state.user ? (trading.trades || []).filter(trade => trade.status === 'pending' && trade.recipient.accountId === state.user.accountId).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)) : [];
   const request = requests.find(trade => trade.id === tradeNotification.id) || requests[0];
   tradeNotification.id = request?.id || null;
   const popup = $('tradeNotification'), wasFocused = popup.contains(document.activeElement); popup.hidden = !request;
+  window.PepperGames?.renderNotification();
   if (!request) {
     tradeNotification.signature = null; tradeNotification.error = null;
     if (wasFocused) { if ($('chat').classList.contains('open')) $('chatClose').focus({ preventScroll: true }); else focusRouteHeading(); }
     return;
   }
   const accepting = trading.action?.id === request.id && trading.action.action === 'join';
-  const retrying = trading.actionRetry?.id === request.id && trading.actionRetry.action === 'join';
-  const busy = tradingBusy() || (!!trading.actionRetry && !retrying);
+  const declining = trading.action?.id === request.id && trading.action.action === 'decline';
+  const retryAccept = trading.actionRetry?.id === request.id && trading.actionRetry.action === 'join';
+  const retryDecline = trading.actionRetry?.id === request.id && trading.actionRetry.action === 'decline';
+  const busy = tradingBusy();
   const error = tradeNotification.error?.id === request.id ? tradeNotification.error.text : '';
-  const signature = JSON.stringify([request.id, request.sender.username, requests.length, accepting, retrying, busy, error]);
+  const signature = JSON.stringify([request.id, request.sender.username, requests.length, accepting, declining, retryAccept, retryDecline, !!trading.actionRetry, busy, error]);
   if (signature === tradeNotification.signature) return; tradeNotification.signature = signature;
   $('tradeNotificationSender').textContent = request.sender.username; $('tradeNotificationSender').href = profileHref(request.sender.username);
   $('tradeNotificationCount').textContent = requests.length > 1 ? `${requests.length} requests waiting` : ''; $('tradeNotificationCount').hidden = requests.length < 2;
-  $('tradeNotificationAccept').disabled = busy; $('tradeNotificationAccept').textContent = accepting ? 'Accepting…' : retrying ? 'Retry acceptance' : 'Accept';
-  $('tradeNotificationDismiss').disabled = accepting;
-  message($('tradeNotificationMessage'), retrying ? 'Connection lost. Retry acceptance.' : error);
+  $('tradeNotificationAccept').disabled = busy || (!!trading.actionRetry && !retryAccept); $('tradeNotificationAccept').textContent = accepting ? 'Accepting…' : retryAccept ? 'Retry acceptance' : 'Accept';
+  $('tradeNotificationDecline').disabled = busy || (!!trading.actionRetry && !retryDecline); $('tradeNotificationDecline').textContent = declining ? 'Declining…' : retryDecline ? 'Retry decline' : 'Decline';
+  message($('tradeNotificationMessage'), retryAccept ? 'Connection lost. Retry acceptance.' : retryDecline ? 'Connection lost. Retry decline.' : error);
 }
 async function acceptTradeNotification() {
   const id = tradeNotification.id, request = trading.trades?.find(trade => trade.id === id);
@@ -1531,14 +1560,21 @@ async function acceptTradeNotification() {
   setChatOpen(false); navigateTo('/trading', { focus: false }); openTradeSession(id, request);
   await actOnTrade(id, 'join');
   if (!tradingIdentityIsCurrent(identity, identityRevision)) return;
-  if (trading.trades?.find(trade => trade.id === id)?.status === 'pending') tradeNotification.error = { id, text: 'Could not accept. Try again.' };
+  if (trading.trades?.find(trade => trade.id === id)?.status === 'pending') tradeNotification.error = { id, text: 'Accept failed. Try again.' };
+  renderTradeNotification();
+}
+async function declineTradeNotification() {
+  const id = tradeNotification.id, request = trading.trades?.find(trade => trade.id === id);
+  if (!state.user || tradingBusy() || !request || request.status !== 'pending' || request.recipient.accountId !== state.user.accountId || (trading.actionRetry && (trading.actionRetry.id !== id || trading.actionRetry.action !== 'decline'))) return;
+  const identity = state.user.accountId, identityRevision = userIdentityRevision;
+  tradeNotification.error = null;
+  await actOnTrade(id, 'decline');
+  if (!tradingIdentityIsCurrent(identity, identityRevision)) return;
+  if (trading.trades?.find(trade => trade.id === id)?.status === 'pending') tradeNotification.error = { id, text: 'Decline failed. Try again.' };
   renderTradeNotification();
 }
 $('tradeNotificationAccept').addEventListener('click', () => void acceptTradeNotification());
-$('tradeNotificationDismiss').addEventListener('click', () => {
-  if (!tradeNotification.id || (trading.action?.id === tradeNotification.id && trading.action.action === 'join')) return;
-  tradeNotification.dismissed.add(tradeNotification.id); tradeNotification.id = null; tradeNotification.error = null; renderTradeNotification();
-});
+$('tradeNotificationDecline').addEventListener('click', () => void declineTradeNotification());
 function renderOwnCardPicker(containerId, countId, messageId, selected, disabled) {
   const inventory = tradeInventories.offered, container = $(containerId), missing = unavailableTradeCards(selected);
   $(countId).textContent = `${selected.length} / 50 selected`; container.setAttribute('aria-busy', String(inventory.loading));
@@ -1787,7 +1823,7 @@ function renderTradeSession() {
   $('tradingConfirmReview').hidden = trading.confirmReviewVersion !== trade.version || trade.status !== 'negotiating' || !!draft?.dirty || !!own.confirmed;
   $('tradingConfirmFinal').disabled = busy || trading.confirmReviewVersion !== trade.version || !!draft?.dirty; $('tradingConfirmBack').disabled = busy;
   const chatVisible = requestAccepted; $('tradingPrivateChat').hidden = !chatVisible; $('tradingChatForm').hidden = trade.status !== 'negotiating'; $('tradingChatClosed').hidden = !chatVisible || trade.status === 'negotiating';
-  $('tradingChatSend').disabled = trading.chatOutbox.some(entry => entry.tradeId === trade.id && entry.status === 'sending'); renderTradeChat();
+  $('tradingChatSend').disabled = trading.chatOutbox.some(entry => entry.tradeId === trade.id && ['sending', 'waiting'].includes(entry.status)); renderTradeChat();
 }
 function loadTradeSession(refresh = false) {
   if (pageKind !== 'trading' || !state.user || !trading.sessionId) return Promise.resolve();
@@ -1864,10 +1900,10 @@ function renderTradeChat() {
   const receivedIds = new Set(trading.chatMessages.map(item => `${item.sender.accountId}:${item.clientMessageId}`)), entries = [...trading.chatMessages, ...outbox.filter(item => !receivedIds.has(`${item.sender.accountId}:${item.clientMessageId}`))];
   container.replaceChildren(...entries.map(entry => {
     const row = document.createElement('article'); row.className = 'trading-chat-row';
-    const header = document.createElement('div'); header.className = 'trading-chat-meta'; header.append(profileAvatar(entry.sender, 'player-avatar chat-avatar'), tradeProfileLink(entry.sender));
+    const header = document.createElement('div'); header.className = 'trading-chat-meta'; header.append(profileAvatar(entry.sender, 'player-avatar chat-avatar'), tradeProfileLink(entry.sender), playerRoleBadges(entry.sender));
     const time = document.createElement('time'); time.dateTime = entry.createdAt; time.textContent = formatProfileDate(entry.createdAt, true); header.append(time);
     const body = document.createElement('p'); body.textContent = entry.body; row.append(header, body);
-    if (entry.status) { const status = document.createElement('span'); status.className = 'trading-chat-send-status'; status.textContent = entry.status === 'sending' ? 'Sending…' : entry.error || 'Could not send.'; row.append(status); }
+    if (entry.status) { const status = document.createElement('span'); status.className = 'trading-chat-send-status'; status.textContent = ['sending', 'waiting'].includes(entry.status) ? 'Sending…' : entry.error || 'Could not send.'; row.append(status); }
     if (entry.status === 'failed') { const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'button'; retry.textContent = trade.status === 'negotiating' ? 'Retry message' : 'Check message result'; retry.dataset.tradeChatRetry = entry.clientMessageId; row.append(retry); }
     return row;
   })); if (follow) container.scrollTop = container.scrollHeight;
@@ -1886,23 +1922,29 @@ function loadTradeChat(refresh = false) {
   })().finally(() => { tradeChatLoadPromise = null; if (tradeChatRefreshQueued) { tradeChatRefreshQueued = false; void loadTradeChat(); } }); return tradeChatLoadPromise;
 }
 async function sendTradeChatEntry(entry) {
-  if (entry.identity !== state.user?.accountId || entry.status === 'sending' || entry.tradeId !== trading.sessionId || !trading.chatOutbox.includes(entry)) return;
-  if (!trading.session || !acceptedTradeRequest(trading.session) || (trading.session.status !== 'negotiating' && entry.status !== 'failed')) return;
+  if (entry.identity !== state.user?.accountId || entry.status === 'sending' || tradeChatRetryTimers.has(entry.clientMessageId) || !trading.chatOutbox.includes(entry)) return;
+  const trade = entry.tradeId === trading.sessionId ? trading.session : trading.trades?.find(item => item.id === entry.tradeId);
+  if (trade && (!acceptedTradeRequest(trade) || (trade.status !== 'negotiating' && entry.status !== 'failed'))) {
+    entry.status = 'failed'; entry.error = 'Chat closed.'; renderTradeChat(); return;
+  }
   const identityRevision = userIdentityRevision; entry.status = 'sending'; entry.error = null; renderTradeSession();
   try {
     const data = await api(`trades/${encodeURIComponent(entry.tradeId)}/messages`, { method: 'POST', body: JSON.stringify({ body: entry.body, clientMessageId: entry.clientMessageId }) });
     if (!tradingIdentityIsCurrent(entry.identity, identityRevision)) return; trading.chatRevision++; trading.chatOutbox = trading.chatOutbox.filter(item => item !== entry);
     if (entry.tradeId === trading.sessionId) { trading.chatMessages = [...trading.chatMessages.filter(item => item.id !== data.message.id), data.message].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt) || a.id.localeCompare(b.id)).slice(-100); message($('tradingChatMessage'), trading.session?.status === 'negotiating' ? '' : 'Message was sent.', true); }
   } catch (error) {
-    if (!tradingIdentityIsCurrent(entry.identity, identityRevision)) return; if (error.status === 401) { setUser(null); return; } entry.status = 'failed'; entry.error = error.message;
+    if (!tradingIdentityIsCurrent(entry.identity, identityRevision)) return; if (error.status === 401) { setUser(null); return; }
+    if (!trading.chatOutbox.includes(entry)) return;
+    if (error.status === 429) { entry.status = 'waiting'; entry.error = null; queueTradeChatRetry(entry, error); }
+    else { entry.status = 'failed'; entry.error = error.message; }
     if (error.status === 409) void loadTradeSession(true);
   } finally { if (tradingIdentityIsCurrent(entry.identity, identityRevision) && entry.tradeId === trading.sessionId) { renderTradeSession(); void loadTradeChat(true); } }
 }
 $('tradingChatForm').addEventListener('submit', event => {
   event.preventDefault(); const trade = trading.session, body = $('tradingChatInput').value.trim();
-  if (!state.user || !trade || trade.status !== 'negotiating' || !body || trading.chatOutbox.some(entry => entry.tradeId === trade.id && entry.status === 'sending')) return;
+  if (!state.user || !trade || trade.status !== 'negotiating' || !body || trading.chatOutbox.some(entry => entry.tradeId === trade.id && ['sending', 'waiting'].includes(entry.status))) return;
   if (body.length > 1000) { message($('tradingChatMessage'), 'Use 1,000 characters or fewer.'); return; }
-  const entry = { tradeId: trade.id, identity: state.user.accountId, clientMessageId: crypto.randomUUID(), sender: { username: state.user.username, accountId: state.user.accountId, avatarUrl: state.user.avatarUrl }, body, createdAt: new Date().toISOString(), status: 'new' };
+  const entry = { tradeId: trade.id, identity: state.user.accountId, clientMessageId: crypto.randomUUID(), sender: { username: state.user.username, accountId: state.user.accountId, avatarUrl: state.user.avatarUrl, role: accountRole(state.user), banned: !!state.user.banned }, body, createdAt: new Date().toISOString(), status: 'new' };
   trading.chatOutbox.push(entry); $('tradingChatInput').value = ''; message($('tradingChatMessage'), ''); void sendTradeChatEntry(entry);
 });
 $('tradingChatMessages').addEventListener('click', event => { const button = event.target.closest('button[data-trade-chat-retry]'); if (button) { const entry = trading.chatOutbox.find(item => item.clientMessageId === button.dataset.tradeChatRetry && item.tradeId === trading.sessionId); if (entry) void sendTradeChatEntry(entry); } });
@@ -1959,7 +2001,8 @@ function renderLeaderboard(data) {
     const profile = document.createElement('a');
     profile.className = 'leaderboard-profile';
     profile.href = profileHref(entry.username);
-    profile.textContent = entry.username;
+    const name = document.createElement('span'); name.textContent = entry.username;
+    profile.append(profileAvatar(entry), name, playerRoleBadges(entry));
     profile.setAttribute('aria-label', `View ${entry.username}'s profile`);
     player.append(profile);
     if (own) {
@@ -2024,9 +2067,10 @@ function clearChatReply() {
 function chooseChatReply(messageId) {
   if (!state.user) return;
   const item = state.chatMessages.find(item => item.id === messageId);
-  if (!item || isOwnChatMessage(item)) return;
-  state.chatReply = { id: item.id, accountId: item.accountId, username: item.username, text: item.text };
+  if (!item || item.deleted || isOwnChatMessage(item)) return;
+  state.chatReply = { id: item.id, accountId: item.accountId, username: item.username, text: item.text, role: item.role, banned: item.banned };
   $('chatReplyAuthor').textContent = item.username;
+  $('chatReplyAuthor').append(playerRoleBadges(item));
   $('chatReplyText').textContent = item.text;
   $('chatReplyPreview').hidden = false;
   message($('chatMessage'), '');
@@ -2100,7 +2144,8 @@ function createChatRow(item) {
   const time = document.createElement('time');
   time.dateTime = item.createdAt;
   time.textContent = new Date(item.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-  head.append(profileAvatar(item, 'player-avatar chat-avatar'), author, time);
+  const identity = document.createElement('span'); identity.className = 'chat-author-identity'; identity.append(author, playerRoleBadges(item));
+  head.append(profileAvatar(item, 'player-avatar chat-avatar'), identity, time);
   row.append(head);
   if (item.replyTo) {
     const quote = document.createElement(item.replyTo.available ? 'button' : 'div');
@@ -2113,6 +2158,7 @@ function createChatRow(item) {
     const quoteAuthor = document.createElement('span');
     quoteAuthor.className = 'chat-reply-quote-author';
     quoteAuthor.textContent = `Reply to ${item.replyTo.username}`;
+    quoteAuthor.append(playerRoleBadges(item.replyTo));
     const quoteText = document.createElement('span');
     quoteText.className = 'chat-reply-quote-text';
     quoteText.textContent = item.replyTo.text;
@@ -2132,9 +2178,10 @@ function createChatRow(item) {
   reply.className = 'chat-reply-button';
   reply.dataset.replyId = item.id;
   reply.textContent = 'Reply';
-  reply.hidden = !state.user || !!item.status || isOwnChatMessage(item);
+  reply.hidden = !state.user || !!item.status || item.deleted || isOwnChatMessage(item);
   reply.setAttribute('aria-label', `Reply to ${item.username}: ${item.text}`);
   row.append(body, reply);
+  const deletion = window.PepperModeration?.chatDeleteButton(item); if (deletion) row.append(deletion);
   if (item.status) {
     const status = document.createElement('span');
     status.className = 'chat-message-status';
@@ -2226,11 +2273,12 @@ function renderChat(messages) {
   }
   if (state.chatReply) {
     const target = latest.find(item => item.id === state.chatReply.id);
-    if (target && isOwnChatMessage(target)) {
+    if (target && (target.deleted || isOwnChatMessage(target))) {
       clearChatReply();
     } else if (target && (target.accountId !== state.chatReply.accountId || target.username !== state.chatReply.username || target.text !== state.chatReply.text)) {
-      state.chatReply = { id: target.id, accountId: target.accountId, username: target.username, text: target.text };
+      state.chatReply = { id: target.id, accountId: target.accountId, username: target.username, text: target.text, role: target.role, banned: target.banned };
       $('chatReplyAuthor').textContent = target.username;
+      $('chatReplyAuthor').append(playerRoleBadges(target));
       $('chatReplyText').textContent = target.text;
     }
   }
@@ -2256,11 +2304,42 @@ async function loadChat(refresh = false) {
   finally { chatLoadPromise = null; }
 }
 
+function chatRetryDelay(error) {
+  const delay = Number(error.retryAfterMs);
+  return Math.max(100, Number.isFinite(delay) && delay > 0 ? delay : 3000) + 100;
+}
+
+function resetChatSending() {
+  window.clearTimeout(chatRetryTimer); chatRetryTimer = undefined; chatRetryAt = 0; chatInFlight.clear();
+  tradeChatRetryTimers.forEach(timer => window.clearTimeout(timer)); tradeChatRetryTimers.clear();
+}
+
+function scheduleChatSend() {
+  window.clearTimeout(chatRetryTimer); chatRetryTimer = undefined;
+  const identity = state.user?.accountId || state.user?.username;
+  if (!identity || chatInFlight.size) return;
+  const entry = state.chatOutbox.find(item => item.identity === identity && item.status === 'pending');
+  if (!entry) return;
+  chatRetryTimer = window.setTimeout(() => { chatRetryTimer = undefined; void sendChatEntry(entry); }, Math.max(0, chatRetryAt - Date.now()));
+}
+
+function queueTradeChatRetry(entry, error) {
+  window.clearTimeout(tradeChatRetryTimers.get(entry.clientMessageId));
+  const revision = userIdentityRevision;
+  const timer = window.setTimeout(() => {
+    tradeChatRetryTimers.delete(entry.clientMessageId);
+    if (tradingIdentityIsCurrent(entry.identity, revision) && trading.chatOutbox.includes(entry)) void sendTradeChatEntry(entry);
+  }, chatRetryDelay(error));
+  tradeChatRetryTimers.set(entry.clientMessageId, timer);
+}
+
 async function sendChatEntry(entry) {
   const identity = state.user?.accountId || state.user?.username;
   if (chatInFlight.has(entry.clientMessageId) || !identity || identity !== entry.identity || !state.chatOutbox.includes(entry)) return;
   const sendingRevision = userIdentityRevision;
   const sendingIsCurrent = () => userIdentityRevision === sendingRevision && identity === (state.user?.accountId || state.user?.username);
+  entry.status = 'pending'; entry.error = null;
+  if (chatInFlight.size || Date.now() < chatRetryAt || state.chatOutbox.find(item => item.identity === identity && item.status === 'pending') !== entry) { renderChat(state.chatMessages); scheduleChatSend(); return; }
   chatInFlight.add(entry.clientMessageId);
   message($('chatMessage'), '');
   entry.status = 'pending';
@@ -2287,13 +2366,14 @@ async function sendChatEntry(entry) {
       setUser(null);
       message($('chatMessage'), error.message);
     } else if (state.chatOutbox.includes(entry)) {
-      entry.status = 'failed';
-      entry.error = error.name === 'AbortError' ? 'Sending timed out. Try again.' : error.message;
+      if (error.status === 429) { chatRetryAt = Date.now() + chatRetryDelay(error); }
+      else { entry.status = 'failed'; entry.error = error.name === 'AbortError' ? 'Sending timed out. Try again.' : error.message; }
       renderChat(state.chatMessages);
     }
   } finally {
     window.clearTimeout(timeout);
     chatInFlight.delete(entry.clientMessageId);
+    scheduleChatSend();
     $('chatMessages').querySelectorAll('.chat-retry-button').forEach(button => {
       if (button.dataset.retryClientId === entry.clientMessageId) button.disabled = false;
     });
@@ -2323,6 +2403,7 @@ $('chatForm').addEventListener('submit', event => {
     accountId: state.user.accountId ?? null,
     username: state.user.username,
     avatarUrl: state.user.avatarUrl,
+    role: accountRole(state.user), banned: !!state.user.banned,
     text,
     createdAt: new Date().toISOString(),
     replyTo: reply ? { ...reply, available: true } : null,
@@ -2340,7 +2421,7 @@ renderRoute();
 const initialAuthRevision = authRevision;
 fetch('/api/me', { credentials: 'same-origin' })
   .then(response => response.json())
-  .then(data => { if (authRevision === initialAuthRevision) setUser(data.user); })
+  .then(data => { if (authRevision === initialAuthRevision) { if (data.banned) handleBannedAccount(); else setUser(data.user); } })
   .catch(() => { if (authRevision === initialAuthRevision) setUser(null); });
 setInterval(renderClaim, 1000);
 loadChat();
@@ -2349,7 +2430,7 @@ loadChangelog();
 loadAnnouncements();
 setInterval(() => { if (!document.hidden) { loadChangelog(); loadAnnouncements(); } }, 60000);
 setInterval(() => { if (!document.hidden && pageKind === 'leaderboard') void loadLeaderboard(); }, 15000);
-setInterval(() => { if (!document.hidden && state.user) { void loadTrades(); if (pageKind === 'trading') refreshTradeInventories(); } }, 5000);
+setInterval(() => { if (!document.hidden && state.user) { void loadTrades(); void window.PepperGames?.load(); if (pageKind === 'trading') refreshTradeInventories(); } }, 5000);
 setInterval(() => { if (!document.hidden && pageKind === 'trading' && trading.sessionId) { void loadTradeSession(); void loadTradeChat(); } }, 4000);
 loadPresence();
 setInterval(() => loadPresence(), 20000);
@@ -2358,7 +2439,7 @@ document.addEventListener('visibilitychange', () => {
     loadChangelog();
     loadAnnouncements();
     if (pageKind === 'leaderboard') void loadLeaderboard(true);
-    if (state.user) void loadTrades(true);
+    if (state.user) { void loadTrades(true); void window.PepperGames?.load(); }
     if (pageKind === 'trading') { void loadTradeSession(true); void loadTradeChat(true); refreshTradeInventories(); }
     void loadPresence(true);
   }

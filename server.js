@@ -5,7 +5,9 @@ const { ObjectId } = require('mongodb');
 const { connectMongo, CHAT_HISTORY_LIMIT, trimChatHistory, resolveChangelogOwner, createAccountId, ensureAccountId } = require('./mongo');
 const { createMailer } = require('./mailer');
 const { registerTrading } = require('./trading');
+const { registerGames } = require('./games');
 const { avatarUrl, AccountError, withAccountActivity, registerAccountFeatures } = require('./accounts');
+const { createModeration, ModerationError } = require('./moderation');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOURLY_TOKEN_MIN = 10;
@@ -33,7 +35,7 @@ const passwordMatches = (password, stored) => {
   const expected = Buffer.from(hex, 'hex');
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 };
-const publicUser = (user, canManageChangelog = false) => ({
+const publicUser = (user, fields = { role: 'player', banned: false }) => ({
   username: user.username,
   accountId: user.accountId,
   avatarUrl: avatarUrl(user),
@@ -44,16 +46,24 @@ const publicUser = (user, canManageChangelog = false) => ({
   nextClaimAt: user.lastClaimAt ? user.lastClaimAt + CLAIM_INTERVAL_MS : null,
   hourlyTokenMin: HOURLY_TOKEN_MIN,
   hourlyTokenMax: HOURLY_TOKEN_MAX,
-  canManageChangelog,
-  canManageAnnouncements: canManageChangelog
+  ...fields,
+  canManageChangelog: fields.role === 'admin',
+  canManageAnnouncements: ['admin', 'mod'].includes(fields.role)
 });
 const sendError = (res, status, message) => res.status(status).json({ error: message });
+const sendRateLimit = (res, message, remainingMs) => {
+  const retryAfterMs = Math.max(1, Math.ceil(remainingMs));
+  res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+  return res.status(429).json({ error: message, retryAfterMs });
+};
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
 
-function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, tradeMessages, cardDefinitions, cardInstances, siteSettings }, options = {}) {
+function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, cardDefinitions, cardInstances, siteSettings }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
+  const currentTime = options.now || Date.now;
+  const moderation = createModeration({ client, users, sessions, messages, verificationTokens, trades, games, siteSettings }, { now: currentTime });
   const randomInt = options.randomInt || crypto.randomInt;
   const emailSendingPaused = options.emailSendingPaused === undefined
     ? process.env.EMAIL_SENDING_PAUSED === 'true' : options.emailSendingPaused;
@@ -100,12 +110,12 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   function rateLimit(max, windowMs) {
     return (req, res, next) => {
       const key = `${req.ip}:${req.path}`;
-      const now = Date.now();
+      const now = currentTime();
       const bucket = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
       if (now >= bucket.resetAt) { bucket.count = 0; bucket.resetAt = now + windowMs; }
       bucket.count += 1;
       rateBuckets.set(key, bucket);
-      if (bucket.count > max) return sendError(res, 429, 'Too many attempts. Please try again later.');
+      if (bucket.count > max) return sendRateLimit(res, 'Too many attempts. Please try again later.', bucket.resetAt - now);
       next();
     };
   }
@@ -115,6 +125,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
     const session = await sessions.findOne({ _id: sha256(token), expiresAt: { $gt: new Date() } });
     if (!session) return null;
+    if (session.banned) req.bannedSession = true;
     const user = await users.findOne({ _id: session.userId });
     if (user) await ensureAccountId(users, user);
     return user;
@@ -122,17 +133,18 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   async function requireUser(req, res, next) {
     try {
       req.user = await currentUser(req);
+      if (req.bannedSession || req.user?.banned) return res.status(403).json({ error: 'Account banned.', banned: true });
       if (!req.user) return sendError(res, 401, 'Please log in first.');
       next();
     } catch (error) { next(error); }
   }
   async function canManageChangelog(user) {
-    const ownerAccountId = await resolveChangelogOwner(users, siteSettings);
-    return Boolean(ownerAccountId && user.accountId === ownerAccountId);
+    return (await moderation.publicFields(user)).role === 'admin' && !user.banned;
   }
   async function signedInUser(user) {
+    if (user.banned) throw new ModerationError(403, 'Account banned.', true);
     await ensureAccountId(users, user);
-    return publicUser(user, await canManageChangelog(user));
+    return publicUser(user, await moderation.publicFields(user));
   }
   async function startSession(res, userId) {
     const token = crypto.randomBytes(32).toString('hex');
@@ -146,12 +158,12 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     const now = new Date();
     const activeUserIds = await sessions.distinct('userId', {
       expiresAt: { $gt: now },
-      lastSeenAt: { $gt: new Date(now.getTime() - PRESENCE_TIMEOUT_MS) }
+      lastSeenAt: { $gt: new Date(now.getTime() - PRESENCE_TIMEOUT_MS) }, banned: { $ne: true }
     });
-    const activeUsers = activeUserIds.length ? await users.find({ _id: { $in: activeUserIds } }, {
-      projection: { accountId: 1, username: 1, avatarVersion: 1 }
+    const activeUsers = activeUserIds.length ? await users.find({ _id: { $in: activeUserIds }, banned: { $ne: true } }, {
+      projection: { accountId: 1, username: 1, avatarVersion: 1, role: 1, banned: 1 }
     }).sort({ usernameKey: 1, _id: 1 }).toArray() : [];
-    const players = activeUsers.map(user => ({ accountId: user.accountId, username: user.username, avatarUrl: avatarUrl(user) }));
+    const players = await Promise.all(activeUsers.map(user => moderation.publicPlayer(user)));
     return { count: players.length, players };
   }
   app.get('/api/presence', async (req, res) => {
@@ -159,7 +171,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
   app.post('/api/presence', async (req, res) => {
     const user = await currentUser(req);
-    if (user) {
+    if (user && !user.banned && !req.bannedSession) {
       const now = new Date();
       await sessions.updateOne(
         { _id: sha256(cookieToken(req)), userId: user._id, expiresAt: { $gt: now } },
@@ -241,6 +253,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     const password = String(req.body?.password || '');
     const user = await users.findOne({ $or: [{ usernameKey: identifier }, { email: identifier }] });
     if (!user || !passwordMatches(password, user.passwordHash)) return sendError(res, 401, 'Incorrect username, email, or password.');
+    if (user.banned) return res.status(403).json({ error: 'Account banned.', banned: true });
     if (identifier.includes('@')) {
       if (mailer?.canSendTo && !mailer.canSendTo(user.email)) return sendError(res, 503, 'Email sign-in is unavailable for this address during private testing. You can log in with your username.');
       const sendStatus = await sendVerification(user, 'login');
@@ -266,6 +279,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       await users.updateOne({ _id: record.userId, emailVerifiedAt: null }, { $set: { emailVerifiedAt: new Date() } });
     }
     const user = await users.findOne({ _id: record.userId });
+    if (user?.banned) return res.status(403).json({ error: 'Account banned.', banned: true });
     if (!user || user.emailVerifiedAt === null) return sendError(res, 400, 'This account is not ready to sign in.');
     await startSession(res, user._id);
     res.json({ user: await signedInUser(user) });
@@ -280,6 +294,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
 
   app.get('/api/me', async (req, res) => {
     const user = await currentUser(req);
+    if (req.bannedSession || user?.banned) return res.json({ user: null, banned: true });
     res.json({ user: user ? await signedInUser(user) : null });
   });
 
@@ -292,7 +307,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     if (username === '675' && !ownerId) return sendError(res, 403, 'That username is reserved for the changelog owner.');
     try {
       const user = await users.findOneAndUpdate(
-        { _id: req.user._id, passwordHash: req.user.passwordHash },
+        { _id: req.user._id, passwordHash: req.user.passwordHash, banned: { $ne: true } },
         { $set: { username, usernameKey: username.toLowerCase() } },
         { returnDocument: 'after' }
       );
@@ -310,7 +325,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     if (newPassword.length < 8 || newPassword.length > 128) return sendError(res, 400, 'Password must be 8–128 characters.');
     if (!passwordMatches(currentPassword, req.user.passwordHash)) return sendError(res, 403, 'Incorrect current password.');
     const user = await users.findOneAndUpdate(
-      { _id: req.user._id, passwordHash: req.user.passwordHash },
+      { _id: req.user._id, passwordHash: req.user.passwordHash, banned: { $ne: true } },
       { $set: { passwordHash: passwordHash(newPassword) } },
       { returnDocument: 'after' }
     );
@@ -325,16 +340,17 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json({ ok: true });
   });
 
-  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, tradeMessages, cardInstances }, {
-    requireUser, rateLimit, signedInUser, passwordMatches, cookieName
+  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, games, tradeMessages, cardInstances }, {
+    requireUser, rateLimit, signedInUser, passwordMatches, cookieName, now: currentTime
   });
+  moderation.register(app, { requireUser, rateLimit });
 
   app.get('/api/profiles/:username', async (req, res) => {
     const username = req.params.username;
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 404, 'Profile not found.');
     const user = await users.findOne(
       { usernameKey: username.toLowerCase() },
-      { projection: { username: 1, accountId: 1, createdAt: 1, balance: 1, lastClaimAt: 1, avatarVersion: 1 } }
+      { projection: { username: 1, accountId: 1, createdAt: 1, balance: 1, lastClaimAt: 1, avatarVersion: 1, role: 1, banned: 1 } }
     );
     if (!user) return sendError(res, 404, 'Profile not found.');
     await ensureAccountId(users, user);
@@ -342,6 +358,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       username: user.username,
       accountId: user.accountId,
       avatarUrl: avatarUrl(user),
+      ...await moderation.publicFields(user),
       createdAt: user.createdAt ?? null,
       balance: user.balance ?? 0,
       lastClaimAt: user.lastClaimAt ?? null,
@@ -370,19 +387,24 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     const now = Date.now();
     const awarded = randomInt(HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX + 1);
     const user = await users.findOneAndUpdate(
-      { _id: req.user._id, $or: [{ lastClaimAt: null }, { lastClaimAt: { $lte: now - CLAIM_INTERVAL_MS } }] },
+      { _id: req.user._id, banned: { $ne: true }, $or: [{ lastClaimAt: null }, { lastClaimAt: { $lte: now - CLAIM_INTERVAL_MS } }],
+        $expr: { $lte: [{ $add: ['$balance', { $ifNull: ['$gamePayoutReserve', 0] }, awarded] }, Number.MAX_SAFE_INTEGER] } },
       { $inc: { balance: awarded }, $set: { lastClaimAt: now } },
       { returnDocument: 'after' }
     );
     if (!user) {
       const latest = await users.findOne({ _id: req.user._id });
       if (!latest) return sendError(res, 401, 'Please log in first.');
+      if (latest.balance > Number.MAX_SAFE_INTEGER - awarded - (latest.gamePayoutReserve ?? 0)) {
+        return res.status(409).json({ error: 'Token balance limit reached.', user: await signedInUser(latest) });
+      }
       return res.status(429).json({ error: 'Your next claim is not ready yet.', user: await signedInUser(latest) });
     }
     res.json({ user: await signedInUser(user), awarded });
   });
 
-  registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser });
+  registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
+  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields });
 
   const publicChangelogEntry = (entry) => ({
     id: entry._id.toString(),
@@ -409,14 +431,20 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       return sendError(res, 400, 'Version must use numbers in major.minor.patch format, such as 0.5.0.');
     }
     const entry = { title, description, version, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
-    await changelog.insertOne(entry);
+    await moderation.runAs(req.user._id, async ({ session, role }) => {
+      if (role !== 'admin') throw new ModerationError(403, 'Admin access required.');
+      await changelog.insertOne(entry, { session });
+    });
     const latest = await changelog.findOne({}, { sort: { createdAt: -1, _id: -1 }, projection: { version: 1 } });
     res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: latest?.version ?? DEFAULT_BUILD_VERSION });
   });
   app.delete('/api/changelog/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can delete updates.');
     if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This changelog entry ID is invalid.');
-    const result = await changelog.deleteOne({ _id: new ObjectId(req.params.id) });
+    const result = await moderation.runAs(req.user._id, async ({ session, role }) => {
+      if (role !== 'admin') throw new ModerationError(403, 'Admin access required.');
+      return changelog.deleteOne({ _id: new ObjectId(req.params.id) }, { session });
+    });
     if (!result.deletedCount) return sendError(res, 404, 'Changelog entry not found.');
     res.json(await changelogSnapshot());
   });
@@ -425,6 +453,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     id: entry._id.toString(),
     title: entry.title,
     description: entry.description,
+    authorAccountId: entry.authorAccountId ?? null,
     createdAt: entry.createdAt.toISOString()
   });
   async function announcementsSnapshot() {
@@ -435,28 +464,35 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json(await announcementsSnapshot());
   });
   app.post('/api/announcements', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
-    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the site owner can publish announcements.');
+    if (!['admin', 'mod'].includes((await moderation.publicFields(req.user)).role)) return sendError(res, 403, 'Moderator access required.');
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     if (!title || title.length > 120) return sendError(res, 400, 'Title must be 1–120 characters.');
     if (!description || description.length > 5000) return sendError(res, 400, 'Description must be 1–5,000 characters.');
     const entry = { title, description, createdAt: new Date(), authorId: req.user._id, authorAccountId: req.user.accountId };
-    await announcements.insertOne(entry);
+    await moderation.runAs(req.user._id, async ({ session, role }) => {
+      if (!['admin', 'mod'].includes(role)) throw new ModerationError(403, 'Moderator access required.');
+      await announcements.insertOne(entry, { session });
+    });
     res.status(201).json({ entry: publicAnnouncementEntry(entry) });
   });
   app.delete('/api/announcements/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
-    if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the site owner can delete announcements.');
     if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This announcement entry ID is invalid.');
-    const result = await announcements.deleteOne({ _id: new ObjectId(req.params.id) });
+    const result = await moderation.runAs(req.user._id, async ({ session, actor, role }) => {
+      const entry = await announcements.findOne({ _id: new ObjectId(req.params.id) }, { session });
+      if (!entry) throw new ModerationError(404, 'Announcement not found.');
+      if (role !== 'admin' && !(role === 'mod' && (entry.authorAccountId === actor.accountId || entry.authorId?.equals(actor._id)))) throw new ModerationError(403, 'Action unavailable.');
+      return announcements.deleteOne({ _id: entry._id }, { session });
+    });
     if (!result.deletedCount) return sendError(res, 404, 'Announcement entry not found.');
     res.json(await announcementsSnapshot());
   });
 
   app.get('/api/leaderboard', async (req, res) => {
     const [leaders, totalPlayers] = await Promise.all([
-      users.find({}, { projection: { username: 1, accountId: 1, balance: 1 } })
+      users.find({ banned: { $ne: true } }, { projection: { username: 1, accountId: 1, balance: 1, avatarVersion: 1, role: 1, banned: 1 } })
         .sort({ balance: -1, usernameKey: 1, _id: 1 }).limit(100).toArray(),
-      users.countDocuments()
+      users.countDocuments({ banned: { $ne: true } })
     ]);
     let rank = 0;
     let previousBalance;
@@ -466,7 +502,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       const balance = user.balance ?? 0;
       if (index === 0 || balance !== previousBalance) rank = index + 1;
       previousBalance = balance;
-      entries.push({ rank, username: user.username, accountId: user.accountId, balance });
+      entries.push({ rank, username: user.username, accountId: user.accountId, balance, avatarUrl: avatarUrl(user), ...await moderation.publicFields(user) });
     }
     res.json({ entries, totalPlayers });
   });
@@ -476,36 +512,42 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     username: authors.get(message.userId?.toString())?.username ?? message.username,
     accountId: authors.get(message.userId?.toString())?.accountId ?? null,
     avatarUrl: authors.get(message.userId?.toString())?.avatarUrl ?? avatarUrl(null),
-    text: message.text,
+    role: authors.get(message.userId?.toString())?.role ?? 'player',
+    banned: authors.get(message.userId?.toString())?.banned ?? false,
+    text: message.deleted ? 'Message deleted.' : message.text,
+    ...(message.deleted ? { deleted: true } : {}),
     createdAt: message.createdAt.toISOString(),
     clientMessageId: message.clientMessageId ?? null,
     replyTo: message.replyTo ? {
       id: message.replyTo.id.toString(),
       username: authors.get(message.replyTo.userId?.toString())?.username ?? message.replyTo.username,
+      accountId: authors.get(message.replyTo.userId?.toString())?.accountId ?? null,
       avatarUrl: authors.get(message.replyTo.userId?.toString())?.avatarUrl ?? avatarUrl(null),
-      text: message.replyTo.text,
-      available: availableMessageIds.has(message.replyTo.id.toString())
+      role: authors.get(message.replyTo.userId?.toString())?.role ?? 'player',
+      banned: authors.get(message.replyTo.userId?.toString())?.banned ?? false,
+      text: message.replyTo.deleted ? 'Message deleted.' : message.replyTo.text,
+      available: !message.replyTo.deleted && availableMessageIds.has(message.replyTo.id.toString())
     } : null
   });
   async function messageAuthors(chatMessages) {
     const authorIds = [...new Map(chatMessages.flatMap(message => [message.userId, message.replyTo?.userId])
       .filter(Boolean).map(userId => [userId.toString(), userId])).values()];
     const authors = authorIds.length ? await users.find(
-      { _id: { $in: authorIds } }, { projection: { username: 1, accountId: 1, avatarVersion: 1 } }
+      { _id: { $in: authorIds } }, { projection: { username: 1, accountId: 1, avatarVersion: 1, role: 1, banned: 1 } }
     ).toArray() : [];
-    return new Map(authors.map(author => [author._id.toString(), { username: author.username, accountId: author.accountId ?? null, avatarUrl: avatarUrl(author) }]));
+    return new Map(await Promise.all(authors.map(async author => [author._id.toString(), { username: author.username, accountId: author.accountId ?? null, avatarUrl: avatarUrl(author), ...await moderation.publicFields(author) }])));
   }
   app.get('/api/chat', async (req, res) => {
     const latest = await messages.find().sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray();
     const authors = await messageAuthors(latest);
-    const availableMessageIds = new Set(latest.map(message => message._id.toString()));
+    const availableMessageIds = new Set(latest.filter(message => !message.deleted).map(message => message._id.toString()));
     res.json({ messages: latest.reverse().map(message => publicMessage(
       message, authors, availableMessageIds
     )) });
   });
   async function sendPublicChatMessage(res, message) {
     const [retained, authors] = await Promise.all([
-      messages.find({}, { projection: { _id: 1 } }).sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray(),
+      messages.find({ deleted: { $ne: true } }, { projection: { _id: 1 } }).sort({ createdAt: -1, _id: -1 }).limit(CHAT_HISTORY_LIMIT).toArray(),
       messageAuthors([message])
     ]);
     const availableMessageIds = new Set(retained.map(entry => entry._id.toString()));
@@ -538,7 +580,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
         return sendError(res, 400, 'The message you are replying to is invalid.');
       }
       const parent = await messages.findOne({ _id: new ObjectId(replyToId) });
-      if (!parent) {
+      if (!parent || parent.deleted) {
         if (await replayIfSaved()) return;
         return sendError(res, 404, 'The message you are replying to is no longer in chat.');
       }
@@ -555,13 +597,22 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       replyTo = { id: parent._id, userId: parent.userId ?? null, username: parentAuthor?.username ?? parent.username, text: parent.text };
     }
     const last = await messages.findOne({ userId: req.user._id }, { sort: { createdAt: -1, _id: -1 } });
-    if (last && Date.now() - last.createdAt.getTime() < 3000) {
+    const cooldownRemaining = last ? last.createdAt.getTime() + 3000 - currentTime() : 0;
+    if (cooldownRemaining > 0) {
       if (await replayIfSaved()) return;
-      return sendError(res, 429, 'Please wait a few seconds before sending another message.');
+      return sendRateLimit(res, 'Please wait a few seconds before sending another message.', cooldownRemaining);
     }
-    const message = { userId: req.user._id, username: req.user.username, text: messageText, createdAt: new Date(), replyTo };
+    const message = { userId: req.user._id, accountId: req.user.accountId, username: req.user.username, text: messageText, createdAt: new Date(currentTime()), replyTo };
     if (clientMessageId) message.clientMessageId = clientMessageId;
-    try { await withAccountActivity({ client, users }, [req.user._id, ...(replyTo?.userId ? [replyTo.userId] : [])], session => messages.insertOne(message, session ? { session } : {})); }
+    try { await withAccountActivity({ client, users }, [req.user._id, ...(replyTo?.userId ? [replyTo.userId] : [])], async session => {
+      const options = session ? { session } : {};
+      if (replyTo) {
+        const parent = await messages.findOne({ _id: replyTo.id }, options);
+        if (!parent || parent.deleted) throw new ModerationError(409, 'Original message unavailable.');
+        message.replyTo.text = parent.text;
+      }
+      return messages.insertOne(message, options);
+    }); }
     catch (error) {
       if (error.code !== 11000 || !clientMessageId || (error.keyPattern && !error.keyPattern.clientMessageId)) throw error;
       if (await replayIfSaved()) return;
@@ -571,12 +622,13 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     await sendPublicChatMessage(res, message);
   });
 
-  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/packs'], (req, res) => {
+  app.get(['/profile', '/profile/:username', '/settings', '/changelog', '/announcements', '/leaderboard', '/trading', '/games', '/packs'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
   app.get('/packs/test', (req, res) => res.redirect(302, '/#cards'));
   app.use(express.static(path.join(__dirname, 'public')));
   app.use((error, req, res, next) => {
+    if (error instanceof ModerationError || error?.banned) return res.status(error.status || 403).json({ error: error.message, ...(error.banned ? { banned: true } : {}) });
     if (error instanceof AccountError) return sendError(res, error.status, error.message);
     console.error(error);
     if (error instanceof SyntaxError && 'body' in error) return sendError(res, 400, 'Invalid request.');
@@ -585,7 +637,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
 
   setInterval(() => {
-    const now = Date.now();
+    const now = currentTime();
     for (const [key, bucket] of rateBuckets) if (bucket.resetAt <= now) rateBuckets.delete(key);
   }, 60 * 60 * 1000).unref();
   return app;
@@ -593,7 +645,19 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
 
 async function start() {
   const store = await connectMongo();
-  createApp(store).listen(PORT, () => console.log(`Pepper TCG running at http://localhost:${PORT}`));
+  const app = createApp(store);
+  const server = app.listen(PORT, () => console.log(`Pepper TCG running at http://localhost:${PORT}`));
+  let sweeping = false;
+  const expireGames = async () => {
+    if (sweeping) return;
+    sweeping = true;
+    try { await app.locals.games.expireGames(); }
+    catch (error) { console.error('Game expiry failed:', error.message); }
+    finally { sweeping = false; }
+  };
+  const gameTimer = setInterval(expireGames, 15 * 1000).unref();
+  server.once('close', () => clearInterval(gameTimer));
+  await expireGames();
 }
 if (require.main === module) start().catch(error => { console.error('Could not start Pepper TCG:', error.message); process.exitCode = 1; });
 module.exports = { createApp, connectMongo, CLAIM_INTERVAL_MS, HOURLY_TOKEN_MIN, HOURLY_TOKEN_MAX, PRESENCE_TIMEOUT_MS };

@@ -16,7 +16,7 @@ class TradeError extends Error {
   }
 }
 
-function registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser }) {
+function registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields = async () => ({ role: 'player', banned: false }) }) {
   const cardStore = { cardDefinitions, cardInstances };
   const participants = userId => ({ $or: [{ senderUserId: userId }, { recipientUserId: userId }] });
   const sameId = (first, second) => first?.toString() === second?.toString();
@@ -80,16 +80,17 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
     const ids = [...new Map(entries.flatMap(trade => [trade.senderUserId, trade.recipientUserId])
       .map(id => [id.toString(), id])).values()];
     const players = ids.length ? await users.find({ _id: { $in: ids } }, {
-      projection: { username: 1, accountId: 1, avatarVersion: 1 }
+      projection: { username: 1, accountId: 1, avatarVersion: 1, role: 1, banned: 1 }
     }).toArray() : [];
     const names = new Map(players.map(player => [player._id.toString(), player.username]));
     const avatars = new Map(players.map(player => [player._id.toString(), avatarUrl(player)]));
+    const fields = new Map(await Promise.all(players.map(async player => [player._id.toString(), await publicPlayerFields(player)])));
     return entries.map(trade => {
       const requestAccepted = trade.status === 'negotiating' || trade.status === 'accepted' || Boolean(trade.requestAcceptedAt);
       return {
       id: trade._id.toString(), clientOfferId: trade.clientOfferId,
-      sender: { username: names.get(trade.senderUserId.toString()) ?? trade.senderUsername, accountId: trade.senderAccountId, avatarUrl: avatars.get(trade.senderUserId.toString()) ?? avatarUrl(null) },
-      recipient: { username: names.get(trade.recipientUserId.toString()) ?? trade.recipientUsername, accountId: trade.recipientAccountId, avatarUrl: avatars.get(trade.recipientUserId.toString()) ?? avatarUrl(null) },
+      sender: { username: names.get(trade.senderUserId.toString()) ?? trade.senderUsername, accountId: trade.senderAccountId, avatarUrl: avatars.get(trade.senderUserId.toString()) ?? avatarUrl(null), ...(fields.get(trade.senderUserId.toString()) ?? { role: 'player', banned: false }) },
+      recipient: { username: names.get(trade.recipientUserId.toString()) ?? trade.recipientUsername, accountId: trade.recipientAccountId, avatarUrl: avatars.get(trade.recipientUserId.toString()) ?? avatarUrl(null), ...(fields.get(trade.recipientUserId.toString()) ?? { role: 'player', banned: false }) },
       requestAccepted,
       offeredTokens: requestAccepted ? trade.offeredTokens : 0,
       requestedTokens: requestAccepted ? trade.requestedTokens : 0,
@@ -285,7 +286,7 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
     const tokens = senderSide ? trade.offeredTokens : trade.requestedTokens;
     const cards = senderSide ? trade.offeredCards : trade.requestedCards;
     const owner = await users.findOne({ _id: userId, accountId }, { session });
-    if (!owner) throw new TradeError(409, 'A player in this trade is no longer available.');
+    if (!owner || owner.banned) throw new TradeError(409, 'A player in this trade is no longer available.');
     if (!Number.isSafeInteger(owner.balance) || owner.balance < tokens) throw new TradeError(409, `${owner.username} no longer has enough tokens for this trade.`);
     const actual = await cardSnapshots(cardStore, cardIds(cards), owner, { session });
     const definitions = new Map(actual.map(card => [card.id, card.cardId]));
@@ -294,9 +295,9 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
 
   async function applyBalance(userId, accountId, outgoing, delta, session) {
     const player = await users.findOne({ _id: userId, accountId }, { session });
-    if (!player) throw new TradeError(409, 'A player in this trade is no longer available.');
+    if (!player || player.banned) throw new TradeError(409, 'A player in this trade is no longer available.');
     if (!Number.isSafeInteger(player.balance) || player.balance < outgoing) throw new TradeError(409, `${player.username} no longer has enough tokens for this trade.`);
-    if (delta > 0 && player.balance > Number.MAX_SAFE_INTEGER - delta) {
+    if (delta > 0 && player.balance > Number.MAX_SAFE_INTEGER - delta - (player.gamePayoutReserve ?? 0)) {
       throw new TradeError(409, "This trade would exceed a player's token balance limit.");
     }
     const updated = await users.updateOne({ _id: userId, accountId, balance: player.balance }, {
@@ -372,12 +373,13 @@ function registerTrading(app, { client, users, trades, tradeMessages, cardDefini
 
   async function publicMessages(entries) {
     const ids = [...new Map(entries.map(message => [message.senderUserId.toString(), message.senderUserId])).values()];
-    const players = ids.length ? await users.find({ _id: { $in: ids } }, { projection: { username: 1, accountId: 1, avatarVersion: 1 } }).toArray() : [];
+    const players = ids.length ? await users.find({ _id: { $in: ids } }, { projection: { username: 1, accountId: 1, avatarVersion: 1, role: 1, banned: 1 } }).toArray() : [];
     const names = new Map(players.map(player => [player._id.toString(), player.username]));
     const avatars = new Map(players.map(player => [player._id.toString(), avatarUrl(player)]));
+    const fields = new Map(await Promise.all(players.map(async player => [player._id.toString(), await publicPlayerFields(player)])));
     return entries.map(message => ({
       id: message._id.toString(), clientMessageId: message.clientMessageId,
-      sender: { username: names.get(message.senderUserId.toString()) ?? message.senderUsername, accountId: message.senderAccountId, avatarUrl: avatars.get(message.senderUserId.toString()) ?? avatarUrl(null) },
+      sender: { username: names.get(message.senderUserId.toString()) ?? message.senderUsername, accountId: message.senderAccountId, avatarUrl: avatars.get(message.senderUserId.toString()) ?? avatarUrl(null), ...(fields.get(message.senderUserId.toString()) ?? { role: 'player', banned: false }) },
       body: message.body, createdAt: message.createdAt.toISOString()
     }));
   }

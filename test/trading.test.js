@@ -21,7 +21,7 @@ function serve(t, store, options = {}) {
     const raw = await response.text();
     let data;
     try { data = JSON.parse(raw); } catch { data = { raw }; }
-    return { status: response.status, data, cookie: response.headers.get('set-cookie')?.split(';')[0] };
+    return { status: response.status, data, cookie: response.headers.get('set-cookie')?.split(';')[0], retryAfter: response.headers.get('retry-after') };
   };
 }
 
@@ -76,6 +76,34 @@ async function confirm(api, actor, trade) {
 async function balances(store, ...players) {
   return Promise.all(players.map(async account => (await store.users.findOne({ _id: account.id })).balance));
 }
+
+test('private chat rate limits report the wait and safely accept queued messages after it expires', async t => {
+  let now = Date.now();
+  const { api, store } = await fixture(t, { now: () => now });
+  const sender = await player(api, store, 'limit_sender');
+  const recipient = await player(api, store, 'limit_recipient');
+  const trade = await start(api, sender, recipient);
+  const route = `/api/trades/${trade.id}/messages`;
+  const first = { body: 'First message.', clientMessageId: crypto.randomUUID() };
+  const saved = await api(route, first, sender.cookie);
+  assert.equal(saved.status, 201);
+  for (let index = 1; index < 60; index += 1) {
+    assert.deepEqual((await api(route, first, sender.cookie)).data, saved.data);
+  }
+  const queued = { body: 'Queued message.', clientMessageId: crypto.randomUUID() };
+  now += 1250;
+  const limited = await api(route, queued, sender.cookie);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.data.retryAfterMs, 58750);
+  assert.equal(limited.retryAfter, '59');
+  assert.equal(await store.tradeMessages.countDocuments(), 1);
+  now += limited.data.retryAfterMs;
+  const resumed = await api(route, queued, sender.cookie);
+  assert.equal(resumed.status, 201);
+  assert.equal(resumed.data.message.clientMessageId, queued.clientMessageId);
+  assert.deepEqual((await api(route, queued, sender.cookie)).data, resumed.data);
+  assert.equal(await store.tradeMessages.countDocuments(), 2);
+});
 
 test('a request joins into a session where each player chooses their own tokens and both must confirm', async t => {
   const { api, store } = await fixture(t);
@@ -379,7 +407,7 @@ test('private session chat starts after joining, trims text, deduplicates retrie
   assert.equal(new Set(messages.map(result => result.data.message.id)).size, 1);
   const message = messages[0].data.message;
   assert.equal(message.body, 'Hello, trading partner!');
-  assert.deepEqual(message.sender, { username: sender.username, accountId: sender.accountId, avatarUrl: '/favicon.svg' });
+  assert.deepEqual(message.sender, { username: sender.username, accountId: sender.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
   assert.ok(Date.parse(message.createdAt));
   assert.equal((await api(`/api/trades/${trade.id}/messages`, { ...payload, body: 'Different body' }, sender.cookie)).status, 409);
   const answer = await api(`/api/trades/${trade.id}/messages`, { body: 'Hello back!', clientMessageId: payload.clientMessageId }, recipient.cookie);
@@ -477,11 +505,11 @@ test('session participants and private chat authors follow permanent identities 
     assert.equal((await api('/api/account/username', { username, currentPassword: 'trading-password' }, account.cookie, 'PATCH')).status, 200);
   }
   const saved = (await api(`/api/trades/${trade.id}`, undefined, sender.cookie)).data.trade;
-  assert.deepEqual(saved.sender, { username: 'renamed_sender', accountId: sender.accountId, avatarUrl: '/favicon.svg' });
-  assert.deepEqual(saved.recipient, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg' });
+  assert.deepEqual(saved.sender, { username: 'renamed_sender', accountId: sender.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
+  assert.deepEqual(saved.recipient, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
   assert.equal((await api(`/api/trades/${trade.id}`, undefined, outsider.cookie)).status, 404);
   const current = (await api(`/api/trades/${trade.id}/messages`, undefined, sender.cookie)).data.messages[0];
-  assert.deepEqual(current.sender, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg' });
+  assert.deepEqual(current.sender, { username: 'renamed_recipient', accountId: recipient.accountId, avatarUrl: '/favicon.svg', role: 'player', banned: false });
   assert.equal(current.id, message.data.message.id);
 });
 

@@ -60,7 +60,7 @@ async function trimChatHistory(messages) {
     .toArray();
   if (!oldestToKeep) return;
   // A cutoff preserves newer inserts when multiple sends trim at the same time.
-  await messages.deleteMany({ $or: [
+  await messages.deleteMany({ deleted: { $ne: true }, $or: [
     { createdAt: { $lt: oldestToKeep.createdAt } },
     { createdAt: oldestToKeep.createdAt, _id: { $lt: oldestToKeep._id } }
   ] });
@@ -82,6 +82,7 @@ async function connectMongo(options = {}) {
     const changelog = db.collection('changelog');
     const announcements = db.collection('announcements');
     const trades = db.collection('trades');
+    const games = db.collection('games');
     const tradeMessages = db.collection('trade_messages');
     const cardDefinitions = db.collection('card_definitions');
     const cardInstances = db.collection('card_instances');
@@ -109,6 +110,10 @@ async function connectMongo(options = {}) {
       trades.createIndex({ senderUserId: 1, clientOfferId: 1 }, { unique: true }),
       trades.createIndex({ senderUserId: 1, updatedAt: -1, _id: -1 }),
       trades.createIndex({ recipientUserId: 1, updatedAt: -1, _id: -1 }),
+      games.createIndex({ senderUserId: 1, clientRequestId: 1 }, { unique: true }),
+      games.createIndex({ senderUserId: 1, updatedAt: -1 }),
+      games.createIndex({ recipientUserId: 1, updatedAt: -1 }),
+      games.createIndex({ status: 1, expiresAt: 1 }),
       tradeMessages.createIndex({ tradeId: 1, createdAt: -1, _id: -1 }),
       tradeMessages.createIndex({ tradeId: 1, senderUserId: 1, clientMessageId: 1 }, { unique: true }),
       cardInstances.createIndex({ ownerUserId: 1, tradable: 1, acquiredAt: -1, _id: 1 }),
@@ -123,7 +128,7 @@ async function connectMongo(options = {}) {
     );
     await resolveChangelogOwner(users, siteSettings);
     await trimChatHistory(messages);
-    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, trades, tradeMessages, cardDefinitions, cardInstances, cardGrants, siteSettings };
+    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, cardDefinitions, cardInstances, cardGrants, siteSettings };
   } catch (error) {
     await client.close();
     throw error;

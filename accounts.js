@@ -25,8 +25,14 @@ async function withAccountActivity({ client, users }, ids, callback) {
   const work = async session => {
     const options = session ? { session } : {};
     for (const id of unique.sort((a, b) => a.toString().localeCompare(b.toString()))) {
-      const result = await users.updateOne({ _id: id }, { $inc: { activityRevision: 1 } }, options);
-      if (!result.matchedCount) throw new AccountError(409, 'Player unavailable.');
+      const result = await users.updateOne({ _id: id, banned: { $ne: true } }, { $inc: { activityRevision: 1 } }, options);
+      if (!result.matchedCount) {
+        const user = await users.findOne({ _id: id }, options);
+        const actorBanned = user?.banned === true && id.toString() === ids[0]?.toString();
+        const error = new AccountError(actorBanned ? 403 : 409, actorBanned ? 'Account banned.' : 'Player unavailable.');
+        error.banned = actorBanned;
+        throw error;
+      }
     }
     return callback(session);
   };
@@ -64,7 +70,7 @@ async function sanitizeAvatar(value) {
   } catch { throw new AccountError(400, 'Choose a valid image.'); }
 }
 
-function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInUser, passwordMatches, cookieName }) {
+function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInUser, passwordMatches, cookieName, now = Date.now }) {
   const { client, users, sessions, verificationTokens, messages, trades, tradeMessages, cardInstances } = store;
   const route = handler => async (req, res, next) => {
     try { await handler(req, res); }
@@ -86,7 +92,7 @@ function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInU
 
   app.put('/api/account/avatar', requireUser, rateLimit(20, 15 * 60 * 1000), route(async (req, res) => {
     const avatarData = await sanitizeAvatar(req.body?.imageDataUrl);
-    const user = await users.findOneAndUpdate({ _id: req.user._id }, {
+    const user = await users.findOneAndUpdate({ _id: req.user._id, banned: { $ne: true } }, {
       $set: { avatarData, avatarVersion: crypto.randomUUID() }
     }, { returnDocument: 'after' });
     if (!user) throw new AccountError(401, 'Sign in required.');
@@ -94,7 +100,7 @@ function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInU
   }));
 
   app.delete('/api/account/avatar', requireUser, rateLimit(20, 15 * 60 * 1000), route(async (req, res) => {
-    const user = await users.findOneAndUpdate({ _id: req.user._id }, {
+    const user = await users.findOneAndUpdate({ _id: req.user._id, banned: { $ne: true } }, {
       $unset: { avatarData: '', avatarVersion: '' }
     }, { returnDocument: 'after' });
     if (!user) throw new AccountError(401, 'Sign in required.');
@@ -109,7 +115,8 @@ function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInU
     }
     try {
       await atomic(client, async session => {
-        const deleted = await users.deleteOne({ _id: req.user._id, passwordHash: req.user.passwordHash }, { session });
+        await require('./games').cancelGamesForAccount(store, req.user._id, session, new Date(now()));
+        const deleted = await users.deleteOne({ _id: req.user._id, passwordHash: req.user.passwordHash, banned: { $ne: true } }, { session });
         if (!deleted.deletedCount) throw new AccountError(409, 'Account changed. Try again.');
         const participant = { $or: [{ senderUserId: req.user._id }, { recipientUserId: req.user._id }] };
         await trades.updateMany({ ...participant, status: { $in: ['pending', 'negotiating'] } }, {

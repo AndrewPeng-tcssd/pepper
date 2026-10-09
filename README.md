@@ -13,7 +13,7 @@ A private development version of the pepper trading card game website. Accounts,
    MONGODB_DB=pepper_tcg
    ```
 
-   Use MongoDB Atlas or a MongoDB replica set so confirmed trades and account deletion can update related records in one transaction. A standalone MongoDB server can store requests, but confirmations and account deletion require a replica set. Keep the real connection string private. `.env` is excluded by `.gitignore`.
+   Use MongoDB Atlas or a MongoDB replica set so trades, games, moderation, publishing, and account deletion can update related records in one transaction. These operations require a replica set. Keep the real connection string private. `.env` is excluded by `.gitignore`.
 4. Run `npm start`, then open `http://localhost:3000` in Chrome. Use `/profile` for the hourly token claim and Overview (`/`) for the pack animation test. The Packs page at `/packs` shows “Coming soon.” Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
 
 ## Accounts
@@ -32,25 +32,41 @@ Read release notes at `/changelog`. The original account named `675` can publish
 
 Every account has a permanent random account ID, such as `PPR-8F0B6ED0-77F5-4E25-9B41-B75B1EE16791`. New accounts receive their IDs on registration, and existing accounts receive them automatically when the server starts. IDs are saved uniquely in MongoDB and stay the same through username or password changes and server restarts. They appear in account details and public profiles.
 
-The changelog owner can choose **View as visitor** to hide the entry form and delete controls, then **Back to editing** to return without losing a draft. Deleting an entry asks for confirmation first.
+The administrator opens **Admin view** from Settings to show editing and management controls. Closing that view hides them without losing drafts. The choice persists per account in that browser. Deleting an entry asks for confirmation first.
 
 Changelog publishing permission is saved against the owner's permanent random account ID in MongoDB. Existing ownership automatically migrates from the original stored MongoDB account to its random ID. Changing that account's username keeps the permission; another account that later takes the name `675` does not receive it. If the owner has not registered yet, changing an existing account's username to `675` is reserved.
 
-Read site news at `/announcements`. The same permanent changelog owner can publish announcements with a title and description, preview them as a visitor, and delete them with confirmation. Everyone can read them. Announcements are saved in MongoDB with automatic publishing dates and do not change the development build version.
+Read site news at `/announcements`. Administrators and moderators can publish announcements from their enabled management view. Administrators can delete any announcement; moderators can delete only their own. Everyone can read announcements, which are saved with automatic dates and do not change the site version.
+
+## Moderation
+
+The permanent site owner is the administrator. **Open admin view** in Settings enables player lookup, moderator assignment or removal, bans, chat deletion, and publishing controls. Moderators use **Open mod view** for announcements, ordinary-player bans, and chat moderation. A moderator cannot ban an administrator or another moderator, or delete their messages; their own messages can still be deleted. Changelog publishing remains administrator-only. Closing either view hides these controls.
+
+Settings links directly to the available announcement and changelog editors while the management view is open. Moderation, privileged publishing, and deletion require MongoDB transactions on a replica set.
+
+Admin, Mod, and Banned badges appear beside usernames in chat, profiles, and other player lists. Role and ban changes also update existing messages. Banned players are excluded from the leaderboard. A banned session or correct-password login displays **You are banned** instead of the site, with a sign-out option. Unbanning allows a fresh login. Chat deletion leaves a message tombstone and preserves the original send receipt so a retry cannot recreate deleted content.
 
 The live player count above chat shows unique signed-in players with an open site page. Clicking it opens a list of online players with their pictures and profile links. Pages refresh the count and their activity every 20 seconds. Multiple tabs or devices count once per account, signed-out sessions stop counting immediately, and closed or disconnected pages age out after 75 seconds without activity. Guests can read the count without being counted.
 
 Select **Reply** on a chat message to quote it in your next message. You can cancel the reply while keeping your draft. Reply quotes keep the original message text after older messages leave the chat history, and follow the author's current username. Select an available quote to jump to the original message.
 
-Your own messages appear immediately while the server saves them. Other players receive the saved message on the next chat update. Failed sends show a retry option; retrying the same message does not create a duplicate if it was already saved.
+Your own messages appear immediately while the server saves them. Other players receive the saved message on the next chat update. When public or private chat reaches a sending limit, the message stays loading and retries automatically after the server's wait time. Other failed sends show a retry option. Retrying the same message keeps its original ID and does not create a duplicate if it was already saved.
 
 Moving between the site's pages keeps chat open, with the same messages, draft, reply selection, and scroll position. Navigation updates the main page without reloading the site; browser Back and Forward work too. Opening a new tab or manually refreshing still starts a new page.
 
-The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player links to their profile.
+The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player appears with their picture and links to their profile. The account summary in the Account menu also opens your profile. Clicking your own profile picture opens its upload control in Settings.
+
+## Games
+
+At `/games`, choose Tic-Tac-Toe or Rock Paper Scissors, enter a player's username, and choose the tokens each player stakes. Sending the request agrees to that stake. The recipient sees the same amount before accepting; neither balance changes until acceptance. Zero-token games are supported. Accepting reserves both equal stakes together. A winner receives the whole pot, and a draw returns each stake.
+
+Tic-Tac-Toe starts with the sender as X. Rock Paper Scissors keeps the opponent's choice hidden until the game ends. Each player can submit only their own moves. Requests, moves, results, and token transfers are saved, and retries do not duplicate them. Pending requests can be declined or cancelled; an active game can be resigned. The Games page includes active games and history, while incoming requests appear across the site.
+
+Requests expire after ten minutes. Tic-Tac-Toe allows two minutes per turn before forfeiting. Rock Paper Scissors allows two minutes: a sole submitted choice wins, or both stakes return if neither player chooses. Account deletion ends active games safely without leaving the other player's stake locked.
 
 ## Trading
 
-At `/trading`, enter a player's username and send a request with one click. Requests use their permanent account ID internally. Incoming requests appear in a bottom-right popup across the site; accepting opens the trade session. The recipient can also accept or decline from Trading. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
+At `/trading`, enter a player's username and send a request with one click. Requests use their permanent account ID internally. Incoming requests appear in a bottom-right popup across the site; accepting opens the trade session. **Decline** permanently declines the request, so it does not reappear after refreshing or signing back in. The recipient can also accept or decline from Trading. Tokens and cards become visible after the request is accepted. Each player then chooses only their own contribution, and both players can talk in the session's private chat.
 
 Your offered tokens and cards appear on the left, and the other player's appear on the right, including on narrow screens. Your selections preview immediately and show **Unsaved changes** until saved. Starting a trade from someone's profile opens the request form for that player, even if you previously viewed another session.
 
@@ -80,8 +96,10 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Account details, username and password changes, picture uploads, permanent account deletion, and appearance settings at `/settings`, with light or dark mode saved per browser.
 - Persistent MongoDB account balances.
 - Private trading sessions with each player's own card and token selections, two confirmations, private chat, actual owned card inventories, cancellation, decline, saved history, and atomic transfers.
+- Player-versus-player Tic-Tac-Toe and Rock Paper Scissors, equal token stakes, invitation acceptance, private choices, saved results, refunds, and atomic payouts.
 - Public changelog entries saved in MongoDB, with publishing and deletion restricted to the original `675` account and an automatic footer version.
-- Public announcements styled like changelog entries, with publishing and deletion restricted to the same permanent owner.
+- Public announcements with administrator/moderator publishing and author-aware moderator deletion, plus administrator-only changelog management.
+- Persistent admin/mod views in Settings, moderator assignments, bans, chat deletion, role badges, and a dedicated banned-account screen.
 - A clickable live count and list of unique signed-in players, shared across server instances and updated automatically above chat.
 - Click a username in chat to view that member's public profile, including their username, join date, token balance, and last and next claim details. Clicking your own username opens `/profile`, your account and token claim page. Other public profiles also open directly at `/profile/USERNAME`.
 - Cloudflare Turnstile verification and a random reward of 10–20 tokens once every rolling hour per account. Each whole-number reward is chosen on the server, and MongoDB adds it with an atomic update that also enforces the claim timer.
@@ -94,6 +112,6 @@ The Packs page at `/packs` currently displays “Coming soon.” There is curren
 
 ## Before a public launch
 
-Run behind HTTPS, configure real Cloudflare Turnstile keys, and add password recovery and chat moderation before accepting public users. Review privacy and payment requirements before accepting real users or payments. Back up MongoDB regularly once people use the site.
+Run behind HTTPS, configure real Cloudflare Turnstile keys, and add password recovery before accepting public users. Review privacy and payment requirements before accepting real users or payments. Back up MongoDB regularly once people use the site.
 
-Run the automated account, claim, and trading checks with `npm test`. The trading tests start isolated local MongoDB replica sets automatically and seed test cards only in their temporary databases.
+Run the automated account, claim, trading, games, chat, and moderation checks with `npm test`. Tests start isolated local MongoDB replica sets automatically and seed test accounts and cards only in their temporary databases.

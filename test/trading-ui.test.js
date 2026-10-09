@@ -101,7 +101,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   for (const match of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*\bid="([^"]+)"[^>]*)>/g)) elements.set(match[2], element(match[2], match[1]));
   const document = { getElementById: id => elements.get(id) || null, createElement: tag => element(tag), body: element('body'), activeElement: null, querySelectorAll: () => [], querySelector: () => null };
   const boundary = {
-    document, crypto, console, URLSearchParams,
+    document, crypto, console, URLSearchParams, window: {},
     location: { pathname: page === 'trading' ? '/trading' : '/', search: '' },
     api: async (route, options = {}) => {
       const call = { route, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : undefined };
@@ -112,7 +112,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
       throw new Error(`Unexpected network call ${call.method} ${route}`);
     },
     renderTradeLists() {}, renderTradeSession() {}, renderOverviewProfile() {}, renderChangelogEditor() {}, renderAnnouncementEditor() {}, syncPictureSettings() {}, setProfileAvatar() {},
-    clearClaimReward() {}, clearChatReply() {}, renderChat() {}, renderProfileDetails() {}, removeTurnstile() {}, renderClaim() {},
+    clearClaimReward() {}, clearChatReply() {}, resetChatSending() {}, renderChat() {}, renderProfileDetails() {}, removeTurnstile() {}, renderClaim() {},
     renderLeaderboard() {}, scrollChatToLatest() {}, loadPresence() {},
     isOwnChatMessage: () => false, refreshTradeInventories() {}, loadTradeSession() {}, loadTradeChat() {},
     renderOwnCardPicker() {}, renderTradeChat() {}, unavailableTradeCards: () => [], tradeCardArtwork: () => null,
@@ -137,9 +137,10 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   };
   context = vm.createContext(boundary);
   const functions = [
+    'accountRole', 'playerRoleBadges',
     'newTradeInventory', 'message', 'setUser', 'tradingIdentityIsCurrent', 'tradingBusy', 'mergeTradingUser', 'activeTrade',
     'newestTrade', 'rememberTrade', 'syncTradingUser', 'tradeStatusLabel', 'reconcileTradeAction',
-    'renderTradeNotification', 'acceptTradeNotification', 'renderTradingState', 'loadTrades',
+    'renderTradeNotification', 'acceptTradeNotification', 'declineTradeNotification', 'renderTradingState', 'loadTrades',
     'invalidateTradeReview', 'findTradingRecipient', 'finishSendingTrade', 'sendTradingOffer', 'actOnTrade',
     'prefillTradingRecipient', 'renderRoute'
   ];
@@ -147,7 +148,7 @@ function harness({ user = account('local_player'), page = 'trading', network, se
   const prefix = source.slice(0, source.indexOf('\nfunction newTradeInventory'));
   vm.runInContext(prefix + '\n' + functions.map(productionFunction).join('\n') + '\n' + [
     productionListener('tradingRecipient', 'input'), productionListener('tradingForm', 'submit'),
-    productionListener('tradeNotificationAccept', 'click'), productionListener('tradeNotificationDismiss', 'click')
+    productionListener('tradeNotificationAccept', 'click'), productionListener('tradeNotificationDecline', 'click')
   ].join('\n'), context);
   const shared = vm.runInContext('({ state, trading, tradeNotification })', context);
   shared.state.user = user;
@@ -346,25 +347,121 @@ test('a profile trade link preserves an unresolved request and recovers the newl
   assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
 });
 
-test('global polling shows received pending requests outside Trading and dismissal advances the queue', async () => {
+test('declining popup requests persists, advances the queue, and stays declined after a fresh page load', async () => {
   const local = account('local_player');
   const sender = account('sender');
   const first = request(sender, local, { createdAt: new Date(1000).toISOString() });
   const second = request(sender, local, { createdAt: new Date(2000).toISOString() });
   const outgoing = request(local, sender);
   const joined = request(sender, local, { status: 'negotiating', requestAccepted: true, version: 2 });
-  const ui = harness({ user: local, page: 'home', network: call => call.route === 'trades' ? { trades: [second, outgoing, joined, first], user: local } : undefined });
+  let savedTrades = [second, outgoing, joined, first];
+  const network = call => {
+    if (call.route === 'trades') return { trades: savedTrades, user: local };
+    if (call.method === 'POST' && call.route.endsWith('/decline')) {
+      const id = call.route.split('/')[1];
+      const trade = { ...savedTrades.find(item => item.id === id), status: 'declined' };
+      savedTrades = savedTrades.map(item => item.id === id ? trade : item);
+      return { trade, user: local };
+    }
+  };
+  const ui = harness({ user: local, page: 'home', network });
   await ui.call('loadTrades');
   assert.equal(ui.elements.get('tradeNotification').hidden, false);
   assert.equal(ui.tradeNotification.id, first.id);
   assert.equal(ui.elements.get('tradeNotificationCount').textContent, '2 requests waiting');
-  await ui.elements.get('tradeNotificationDismiss').dispatch('click');
+  await ui.elements.get('tradeNotificationDecline').dispatch('click');
+  await tick();
   assert.equal(ui.tradeNotification.id, second.id);
+  assert.equal(savedTrades.find(trade => trade.id === first.id).status, 'declined');
   await ui.call('loadTrades');
   assert.equal(ui.tradeNotification.id, second.id);
-  await ui.elements.get('tradeNotificationDismiss').dispatch('click');
+  await ui.call('declineTradeNotification');
+  await tick();
   assert.equal(ui.elements.get('tradeNotification').hidden, true);
-  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
+  assert.deepEqual(ui.calls.filter(call => call.method === 'POST').map(call => call.route), [`trades/${first.id}/decline`, `trades/${second.id}/decline`]);
+  assert.deepEqual(ui.navigated, []);
+  assert.deepEqual(ui.opened, []);
+  assert.deepEqual(ui.chatChanges, []);
+  const fresh = harness({ user: local, page: 'home', network });
+  await fresh.call('loadTrades');
+  assert.equal(fresh.elements.get('tradeNotification').hidden, true);
+  assert.equal(fresh.tradeNotification.id, null);
+});
+
+test('popup decline sends once, disables acceptance, and rejects stale pending responses', async () => {
+  const local = account('local_player');
+  const trade = request(account('sender'), local);
+  const declining = deferred();
+  const ui = harness({ user: local, page: 'home', network: call => {
+    if (call.method === 'POST') return declining.promise;
+    if (call.route === 'trades') return { trades: [trade], user: local };
+  } });
+  ui.trading.trades = [trade];
+  ui.call('renderTradingState');
+  const declined = ui.call('declineTradeNotification');
+  await ui.call('declineTradeNotification');
+  await ui.call('acceptTradeNotification');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
+  assert.equal(ui.elements.get('tradeNotificationAccept').disabled, true);
+  assert.equal(ui.elements.get('tradeNotificationDecline').disabled, true);
+  declining.resolve({ trade: { ...trade, status: 'declined' }, user: local });
+  await declined;
+  await tick();
+  await ui.call('loadTrades');
+  assert.equal(ui.trading.trades[0].status, 'declined');
+  assert.equal(ui.elements.get('tradeNotification').hidden, true);
+  assert.deepEqual(ui.navigated, []);
+});
+
+test('popup decline retries an uncertain outcome without allowing acceptance instead', async () => {
+  const local = account('local_player');
+  const trade = request(account('sender'), local);
+  let attempts = 0;
+  const ui = harness({ user: local, page: 'home', network: call => {
+    if (call.method === 'POST') {
+      if (++attempts === 1) throw new Error('Connection interrupted');
+      return { trade: { ...trade, status: 'declined' }, user: local };
+    }
+  } });
+  ui.trading.trades = [trade];
+  ui.call('renderTradingState');
+  await ui.call('declineTradeNotification');
+  await tick();
+  assert.equal(ui.trading.actionRetry.action, 'decline');
+  assert.equal(ui.trading.actionRetry.id, trade.id);
+  assert.equal(ui.elements.get('tradeNotification').hidden, false);
+  assert.equal(ui.elements.get('tradeNotificationDecline').textContent, 'Retry decline');
+  assert.equal(ui.elements.get('tradeNotificationMessage').textContent, 'Connection lost. Retry decline.');
+  assert.equal(ui.elements.get('tradeNotificationDecline').disabled, false);
+  assert.equal(ui.elements.get('tradeNotificationAccept').disabled, true);
+  await ui.call('acceptTradeNotification');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
+  await ui.call('declineTradeNotification');
+  await tick();
+  assert.equal(ui.trading.actionRetry, null);
+  assert.equal(ui.elements.get('tradeNotification').hidden, true);
+  assert.deepEqual(ui.calls.filter(call => call.method === 'POST').map(call => call.route), [`trades/${trade.id}/decline`, `trades/${trade.id}/decline`]);
+});
+
+test('polling recovers a saved decline whose response was lost', async () => {
+  const local = account('local_player');
+  const trade = request(account('sender'), local);
+  let saved = trade;
+  const ui = harness({ user: local, page: 'home', network: call => {
+    if (call.method === 'POST') {
+      saved = { ...trade, status: 'declined' };
+      throw new Error('Response lost');
+    }
+    if (call.route === 'trades') return { trades: [saved], user: local };
+  } });
+  ui.trading.trades = [trade];
+  ui.call('renderTradingState');
+  await ui.call('declineTradeNotification');
+  await tick();
+  assert.equal(ui.trading.actionRetry, null);
+  assert.equal(ui.elements.get('tradeNotification').hidden, true);
+  assert.equal(ui.trading.trades[0].status, 'declined');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
 });
 
 test('popup acceptance closes mobile chat, joins once, and opens the accepted session', async () => {
@@ -382,7 +479,7 @@ test('popup acceptance closes mobile chat, joins once, and opens the accepted se
   assert.deepEqual(ui.chatChanges, [false]);
   assert.deepEqual(ui.navigated, ['/trading']);
   assert.equal(ui.elements.get('tradeNotificationAccept').disabled, true);
-  assert.equal(ui.elements.get('tradeNotificationDismiss').disabled, true);
+  assert.equal(ui.elements.get('tradeNotificationDecline').disabled, true);
   joining.resolve({ trade: { ...trade, status: 'negotiating', requestAccepted: true, version: 2 }, user: local });
   await accepting;
   await tick();
@@ -410,6 +507,9 @@ test('popup acceptance preserves a retryable join after connection failure and n
   assert.equal(ui.trading.actionRetry.id, trade.id);
   assert.equal(ui.elements.get('tradeNotificationAccept').textContent, 'Retry acceptance');
   assert.equal(ui.elements.get('tradeNotificationAccept').disabled, false);
+  assert.equal(ui.elements.get('tradeNotificationDecline').disabled, true);
+  await ui.call('declineTradeNotification');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
   await ui.call('acceptTradeNotification');
   await tick();
   assert.equal(ui.trading.actionRetry, null);
@@ -441,16 +541,17 @@ test('old account poll and lookup responses cannot populate a new account or sen
   assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
 });
 
-test('dismissal or remote cancellation restores focus without stealing focus from an unrelated form', async () => {
-  for (const mode of ['dismiss', 'remote', 'unfocused']) {
+test('decline or remote cancellation restores focus without stealing focus from an unrelated form', async () => {
+  for (const mode of ['decline', 'remote', 'unfocused']) {
     const local = account('local_player');
-    const ui = harness({ user: local, page: 'home' });
     const trade = request(account('sender'), local);
+    const ui = harness({ user: local, page: 'home', network: call => call.method === 'POST' ? { trade: { ...trade, status: 'declined' }, user: local } : undefined });
     ui.trading.trades = [trade];
     ui.call('renderTradingState');
-    if (mode === 'dismiss') {
-      ui.elements.get('tradeNotificationDismiss').focus();
-      await ui.elements.get('tradeNotificationDismiss').dispatch('click');
+    if (mode === 'decline') {
+      ui.elements.get('tradeNotificationDecline').focus();
+      await ui.call('declineTradeNotification');
+      await tick();
       assert.equal(ui.evaluate('document.activeElement.id'), 'overviewTitle');
     } else {
       const focused = mode === 'remote' ? 'tradeNotificationAccept' : 'newUsername';
@@ -462,6 +563,31 @@ test('dismissal or remote cancellation restores focus without stealing focus fro
     }
     assert.equal(ui.elements.get('tradeNotification').hidden, true);
   }
+});
+
+test('popup decline finishing after an account switch cannot affect the new account', async () => {
+  const local = account('local_player');
+  const other = account('other_player');
+  const declining = deferred();
+  const trade = request(account('sender'), local);
+  const otherRequest = request(account('other_sender'), other);
+  const ui = harness({ user: local, page: 'home', network: call => call.method === 'POST' ? declining.promise : undefined });
+  ui.trading.trades = [trade];
+  ui.call('renderTradingState');
+  const declined = ui.call('declineTradeNotification');
+  ui.call('setUser', other);
+  await tick();
+  ui.trading.trades = [otherRequest];
+  ui.call('renderTradingState');
+  declining.resolve({ trade: { ...trade, status: 'declined' }, user: local });
+  await declined;
+  await tick();
+  assert.equal(ui.state.user.accountId, other.accountId);
+  assert.equal(ui.trading.actionRetry, null);
+  assert.equal(ui.tradeNotification.id, otherRequest.id);
+  assert.equal(ui.elements.get('tradeNotification').hidden, false);
+  assert.ok(!ui.trading.trades.some(item => item.id === trade.id));
+  assert.deepEqual(ui.navigated, []);
 });
 
 test('popup acceptance finishing after an account switch cannot reopen or populate the old account’s session', async () => {

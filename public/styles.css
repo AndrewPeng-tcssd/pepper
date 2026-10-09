@@ -127,6 +127,10 @@ input:focus { border-color: var(--accent); }
 .chat-avatar { width: 28px; height: 28px; }
 .account-dropdown > a, .account-dropdown > button { display: block; width: 100%; padding: 12px 16px; border: 0; background: var(--surface); color: var(--ink); font-size: 14px; text-align: left; text-decoration: none; }
 .account-dropdown > a:hover, .account-dropdown > button:hover { background: var(--paper); }
+.account-dropdown > a.account-menu-info { display: flex; flex-direction: column; gap: 5px; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.profile-picture-edit { display: block; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+.profile-picture-edit:not(:disabled):hover .profile-avatar { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.profile-picture-edit:disabled { opacity: 1; cursor: default; }
 .account-menu-message { padding: 0 16px 14px; margin: 0 !important; }
 .auth-loading .header-actions, .auth-loading:not(.public-profile-route) .profile-overview, .auth-loading .tokens-section, .auth-loading .chat-join { visibility: hidden; }
 
@@ -280,6 +284,65 @@ input:focus { border-color: var(--accent); }
 .trading-confirm-review h3 { margin-bottom: 12px; font-size: 18px; }
 .trading-confirm-review .trading-actions { margin-top: 18px; }
 .trading-status-negotiating { background: var(--accent-soft); color: var(--accent); }
+
+.games-overview { border-bottom: 1px solid var(--line); }
+.games-page-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }
+.games-page-heading h1 { margin: 0; font-size: clamp(36px, 3.7vw, 52px); }
+.games-balance { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.games-overview .form-message:empty { display: none; }
+.games-lobby { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); align-items: start; gap: 24px; }
+.games-request { display: grid; gap: 10px; }
+.games-request h2 { margin: 0 0 8px; font-size: 23px; }
+.games-request > label { margin-top: 7px; font-size: 13px; font-weight: 600; }
+.games-request > .button { justify-self: start; margin-top: 14px; }
+.games-pick { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; min-width: 0; margin: 0 0 4px; padding: 0; border: 0; }
+.games-pick legend { margin-bottom: 9px; font-size: 13px; font-weight: 600; }
+.games-pick label { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; min-height: 132px; padding: 14px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); font-size: 12px; font-weight: 600; text-align: center; cursor: pointer; }
+.games-pick label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.games-pick label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.games-pick input { position: absolute; width: 1px; height: 1px; min-height: 0; padding: 0; opacity: 0; }
+.games-pick-icon { color: var(--accent); font-size: clamp(20px, 2.4vw, 32px); letter-spacing: -2px; line-height: 1.2; }
+.games-list-sections { display: grid; gap: 28px; min-width: 0; }
+.games-list-sections h2 { margin: 0; font-size: 21px; }
+.games-list-sections > section > p { color: var(--muted); font-size: 14px; }
+.games-list-heading, .games-list-card-heading, .games-session-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.games-list { display: grid; gap: 14px; margin-top: 16px; }
+.games-list:empty { margin-top: 0; }
+.games-list-card-heading { margin-bottom: 17px; }
+.games-list-card h3 { margin: 0; font-size: 17px; }
+.games-list-card .player-identity { width: fit-content; color: var(--ink); font-size: 14px; text-decoration: none; overflow-wrap: anywhere; }
+.games-list-card .player-identity:hover { color: var(--accent); }
+.games-list-stake { margin: 14px 0; color: var(--muted); font-size: 13px; }
+.games-session { max-width: 720px; margin: 0 auto; padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.games-session > h2 { margin: 26px 0; text-align: center; font-size: clamp(25px, 3vw, 34px); }
+.games-players { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.games-player { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; text-align: center; }
+.games-player:first-child { border-top: 3px solid var(--accent); }
+.games-player-label { display: block; margin-bottom: 11px; color: var(--muted); font-size: 12px; }
+.games-player .player-identity { justify-content: center; flex-wrap: wrap; color: var(--ink); font-size: 14px; text-decoration: none; overflow-wrap: anywhere; }
+.games-player .player-identity:hover { color: var(--accent); }
+.games-player-symbol { display: block; margin-top: 12px; color: var(--accent); font-size: 23px; }
+.games-stakes { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 0; color: var(--muted); font-size: 13px; }
+.games-stakes strong { color: var(--ink); }
+.games-turn { margin: 17px 0 5px; text-align: center; font-size: 20px; font-weight: 650; }
+.games-deadline { margin: 0 0 22px; color: var(--muted); text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.games-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; width: min(100%, 350px); margin: 24px auto; }
+.games-square { display: grid; place-items: center; min-width: 0; aspect-ratio: 1; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); color: var(--accent); font: inherit; font-size: clamp(30px, 5vw, 50px); font-weight: 700; cursor: pointer; }
+.games-square:disabled { opacity: 1; cursor: default; }
+.games-square:not(:disabled):hover { border-color: var(--accent); background: var(--accent-soft); }
+.games-square.is-o { color: var(--success); }
+.games-square.is-winning { border-color: var(--accent); background: var(--accent-soft); }
+.games-rps-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 24px 0; }
+.games-choice { display: flex; flex-direction: column; align-items: center; gap: 13px; min-width: 0; padding: 20px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
+.games-choice > span:first-child { font-size: clamp(30px, 4vw, 44px); }
+.games-choice:disabled { opacity: .6; cursor: default; }
+.games-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); opacity: 1; }
+.games-choice:not(:disabled):hover { border-color: var(--accent); background: var(--accent-soft); }
+.games-reveal { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; text-align: center; font-size: 14px; }
+.games-session-actions { justify-content: center; margin-top: 24px; }
+.game-notification #gameNotificationTerms { margin-top: 12px; color: var(--muted); font-size: 13px; }
+@media (max-width: 900px) { .games-lobby { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .games-session { padding: 18px 14px; } .games-player { padding: 13px 9px; } .games-players { gap: 10px; } .games-list-card { padding: 20px; } }
 .trading-chat-messages { display: grid; align-content: start; gap: 14px; max-height: 360px; min-height: 100px; margin-top: 20px; padding: 16px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .trading-chat-row { min-width: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .trading-chat-row:last-child { padding-bottom: 0; border-bottom: 0; }
@@ -327,9 +390,6 @@ input:focus { border-color: var(--accent); }
   .trading-summary { align-items: flex-start; }
 }
 
-.changelog-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; max-width: 760px; margin-top: 24px; }
-.changelog-tools .button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
-.changelog-preview-notice { margin: 0; color: var(--muted); font-size: 13px; }
 .changelog-editor { max-width: 760px; margin-top: 32px; padding: 24px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .changelog-editor h2 { margin-bottom: 12px; font-size: 21px; }
 .changelog-editor > p { max-width: 640px; margin: 0; color: var(--muted); font-size: 14px; }
@@ -368,7 +428,26 @@ input:focus { border-color: var(--accent); }
 .leaderboard-table td:last-child { font-weight: 700; }
 .leaderboard-table tr:last-child td { border-bottom: 0; }
 .leaderboard-own-row { background: var(--accent-soft); }
-.leaderboard-profile { color: var(--ink); font-weight: 600; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.leaderboard-profile { display: inline-flex; align-items: center; gap: 10px; vertical-align: middle; color: var(--ink); font-weight: 600; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.leaderboard-profile > span { min-width: 0; }
+.role-badges { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.role-badge { display: inline-flex; align-items: center; padding: 2px 5px; border-radius: 4px; font-size: 10px; font-weight: 750; line-height: 1.3; letter-spacing: .015em; text-decoration: none; white-space: nowrap; }
+.role-badge-admin { color: var(--accent); background: var(--accent-soft); }
+.role-badge-mod { color: var(--success); background: var(--sidebar-surface); border: 1px solid var(--line); }
+.role-badge-banned { color: var(--error); background: var(--accent-soft); }
+.player-identity .role-badges, .leaderboard-profile .role-badges { margin-left: 0; }
+.moderation-settings { grid-column: 1 / -1; }
+.moderation-links { margin-top: 20px; }
+.moderation-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; max-width: 520px; margin-top: 24px; }
+.moderation-search label { grid-column: 1 / -1; font-size: 13px; font-weight: 600; }
+.moderation-players { display: grid; gap: 12px; }
+.moderation-player { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
+.moderation-player .player-identity { flex-wrap: wrap; color: var(--ink); text-decoration: none; font-size: 14px; overflow-wrap: anywhere; }
+.moderation-player .player-identity:hover { color: var(--accent); }
+.banned-screen { display: flex; min-height: 100svh; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 30px; text-align: center; }
+.banned-screen h1 { margin: 0; font-size: clamp(30px, 6vw, 52px); }
+body.banned-mode { padding: 0; }
+body.banned-mode > :not(#bannedScreen):not(script) { display: none !important; }
 .leaderboard-profile:hover { color: var(--accent-dark); }
 .leaderboard-you { display: inline-block; margin-left: 8px; color: var(--accent); font-size: 11px; font-weight: 600; }
 
@@ -450,6 +529,11 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .chat-row { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .chat-row-head { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 3px 8px; font-size: 12px; }
 .chat-row-head .chat-avatar { grid-row: 1 / span 2; }
+.chat-author-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.chat-author-identity .role-badges { margin-left: 0; }
+.chat-delete-button { margin: 9px 0 0 10px; padding: 0; border: 0; background: none; color: var(--error); font: inherit; font-size: 11px; cursor: pointer; }
+.chat-delete-button:hover { text-decoration: underline; }
+.chat-delete-button:disabled { opacity: .5; cursor: wait; }
 .chat-author { overflow-wrap: anywhere; color: var(--ink); font-weight: 700; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
 .chat-author:hover, .chat-author:focus-visible { color: var(--accent-dark); text-decoration-color: currentColor; }
 .chat-row-head time { grid-column: 2; color: var(--muted); font-size: 11px; }

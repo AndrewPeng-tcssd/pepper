@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
-const { MongoMemoryServer } = require('mongodb-memory-server');
+const { MongoMemoryReplSet } = require('mongodb-memory-server');
 const { ObjectId } = require('mongodb');
 const { createApp, connectMongo, CLAIM_INTERVAL_MS, PRESENCE_TIMEOUT_MS } = require('../server');
 const { migrate } = require('../scripts/migrate-sqlite');
@@ -17,7 +17,7 @@ let base;
 const sentEmails = [];
 const accountIdPattern = /^PPR-[A-F0-9]{8}-[A-F0-9]{4}-4[A-F0-9]{3}-[89AB][A-F0-9]{3}-[A-F0-9]{12}$/;
 before(async () => {
-  mongo = await MongoMemoryServer.create();
+  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   store = await connectMongo({ uri: mongo.getUri(), dbName: 'pepper_test' });
   server = createApp(store, {
     emailSendingPaused: false,
@@ -39,7 +39,7 @@ async function request(route, body, cookie, method = body === undefined ? 'GET' 
     headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
-  return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
+  return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0], retryAfter: response.headers.get('retry-after') };
 }
 
 function accountApi(t, accountStore = store, options = {}) {
@@ -291,6 +291,63 @@ test('public chat can be read, and only signed-in users can post', async () => {
   assert.equal((await request('/api/chat', { text: 'Too soon' }, signedUp.cookie)).status, 429);
 });
 
+test('chat cooldown reports its remaining wait and accepts the same queued message when it expires', async t => {
+  const isolated = await changelogStore(t);
+  let now = Date.now();
+  const api = accountApi(t, isolated, { now: () => now });
+  const writer = await api('/api/register', { username: 'cooldown_writer', password: '12345678' });
+  const first = await api('/api/chat', { text: 'First message.', clientMessageId: crypto.randomUUID() }, writer.cookie);
+  assert.equal(first.status, 201);
+  const queued = { text: 'Waiting message.', clientMessageId: crypto.randomUUID() };
+  const limited = await api('/api/chat', queued, writer.cookie);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.data.retryAfterMs, 3000);
+  assert.equal(limited.retryAfter, '3');
+  now += 1250;
+  const partialWait = await api('/api/chat', queued, writer.cookie);
+  assert.equal(partialWait.data.retryAfterMs, 1750);
+  assert.equal(partialWait.retryAfter, '2');
+  now += 1749;
+  const boundary = await api('/api/chat', queued, writer.cookie);
+  assert.equal(boundary.status, 429);
+  assert.equal(boundary.data.retryAfterMs, 1);
+  assert.equal(boundary.retryAfter, '1');
+  now += boundary.data.retryAfterMs;
+  const saved = await api('/api/chat', queued, writer.cookie);
+  assert.equal(saved.status, 201);
+  assert.equal(saved.data.message.clientMessageId, queued.clientMessageId);
+  assert.deepEqual((await api('/api/chat', queued, writer.cookie)).data, saved.data);
+  assert.equal(await isolated.messages.countDocuments(), 2);
+});
+
+test('chat rate-limit window reports a positive retry delay without extending the window on retries', async t => {
+  const isolated = await changelogStore(t);
+  let now = Date.now();
+  const api = accountApi(t, isolated, { now: () => now });
+  const writer = await api('/api/register', { username: 'window_writer', password: '12345678' });
+  const payload = { text: 'Keep this message once.', clientMessageId: crypto.randomUUID() };
+  const saved = await api('/api/chat', payload, writer.cookie);
+  assert.equal(saved.status, 201);
+  for (let index = 1; index < 12; index += 1) {
+    assert.deepEqual((await api('/api/chat', payload, writer.cookie)).data, saved.data);
+  }
+  now += 1250;
+  const limited = await api('/api/chat', payload, writer.cookie);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.data.retryAfterMs, 58750);
+  assert.equal(limited.retryAfter, '59');
+  now += 58749;
+  const boundary = await api('/api/chat', payload, writer.cookie);
+  assert.equal(boundary.status, 429);
+  assert.equal(boundary.data.retryAfterMs, 1);
+  assert.equal(boundary.retryAfter, '1');
+  now += boundary.data.retryAfterMs;
+  const replayed = await api('/api/chat', payload, writer.cookie);
+  assert.equal(replayed.status, 201);
+  assert.deepEqual(replayed.data, saved.data);
+  assert.equal(await isolated.messages.countDocuments(), 1);
+});
+
 test('chat reply targets require valid IDs and saved parent messages', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated);
@@ -337,7 +394,7 @@ test('chat rejects replies to the same permanent account before cooldown even af
   assert.equal(otherReply.status, 201);
   assert.equal(otherReply.data.message.username, 'self_author');
   assert.equal(otherReply.data.message.accountId, other.data.user.accountId);
-  assert.deepEqual(otherReply.data.message.replyTo, { avatarUrl: '/favicon.svg', id: parent.data.message.id, username: 'renamed_self_author', text: 'My original message.', available: true });
+  assert.deepEqual(otherReply.data.message.replyTo, { avatarUrl: '/favicon.svg', accountId: author.data.user.accountId, role: 'player', banned: false, id: parent.data.message.id, username: 'renamed_self_author', text: 'My original message.', available: true });
   assert.equal(await isolated.messages.countDocuments(), 2);
   assert.deepEqual((await api('/api/chat')).data.messages, [currentParent, otherReply.data.message]);
 });
@@ -359,7 +416,7 @@ test('legacy chat self-replies use normalized names while legacy and missing aut
   const allowed = await api('/api/chat', { text: 'Reply to someone else.', replyToId: otherLegacy._id.toString() }, writer.cookie);
   assert.equal(allowed.status, 201);
   assert.equal(allowed.data.message.accountId, writer.data.user.accountId);
-  assert.deepEqual(allowed.data.message.replyTo, { avatarUrl: '/favicon.svg', id: otherLegacy._id.toString(), username: 'older_player', text: 'Someone else wrote this.', available: true });
+  assert.deepEqual(allowed.data.message.replyTo, { avatarUrl: '/favicon.svg', accountId: null, role: 'player', banned: false, id: otherLegacy._id.toString(), username: 'older_player', text: 'Someone else wrote this.', available: true });
   assert.equal(await isolated.messages.countDocuments(), 4);
   assert.deepEqual((await api('/api/chat')).data.messages.find(message => message.id === allowed.data.message.id), allowed.data.message);
 });
@@ -373,7 +430,7 @@ test('chat replies use authoritative shallow quotes and follow the parent accoun
   const third = await api('/api/register', { username: 'quote_third', password });
   const parent = await api('/api/chat', { text: 'Original parent message.' }, author.cookie);
   assert.equal(parent.status, 201);
-  const quote = { id: parent.data.message.id, username: 'quote_author', avatarUrl: '/favicon.svg', text: 'Original parent message.', available: true };
+  const quote = { id: parent.data.message.id, username: 'quote_author', avatarUrl: '/favicon.svg', accountId: author.data.user.accountId, role: 'player', banned: false, text: 'Original parent message.', available: true };
   const reply = await api('/api/chat', {
     text: 'My reply.', replyToId: parent.data.message.id.toUpperCase(),
     replyTo: { id: new ObjectId().toString(), username: '675', text: 'Forged quote.', available: false },
@@ -381,11 +438,11 @@ test('chat replies use authoritative shallow quotes and follow the parent accoun
   }, writer.cookie);
   assert.equal(reply.status, 201);
   assert.deepEqual(reply.data.message.replyTo, quote);
-  assert.deepEqual(Object.keys(reply.data.message).sort(), ['accountId', 'avatarUrl', 'clientMessageId', 'createdAt', 'id', 'replyTo', 'text', 'username']);
+  assert.deepEqual(Object.keys(reply.data.message).sort(), ['accountId', 'avatarUrl', 'banned', 'clientMessageId', 'createdAt', 'id', 'replyTo', 'role', 'text', 'username']);
   const nested = await api('/api/chat', { text: 'Replying to that reply.', replyToId: reply.data.message.id }, third.cookie);
   assert.equal(nested.status, 201);
-  assert.deepEqual(nested.data.message.replyTo, { avatarUrl: '/favicon.svg', id: reply.data.message.id, username: 'quote_writer', text: 'My reply.', available: true });
-  assert.deepEqual(Object.keys(nested.data.message.replyTo).sort(), ['available', 'avatarUrl', 'id', 'text', 'username']);
+  assert.deepEqual(nested.data.message.replyTo, { avatarUrl: '/favicon.svg', accountId: writer.data.user.accountId, role: 'player', banned: false, id: reply.data.message.id, username: 'quote_writer', text: 'My reply.', available: true });
+  assert.deepEqual(Object.keys(nested.data.message.replyTo).sort(), ['accountId', 'available', 'avatarUrl', 'banned', 'id', 'role', 'text', 'username']);
   const initial = (await api('/api/chat')).data.messages;
   assert.equal(initial.find(message => message.id === parent.data.message.id).replyTo, null);
   assert.deepEqual(initial.find(message => message.id === reply.data.message.id).replyTo, quote);
@@ -424,7 +481,7 @@ test('chat reply quotes survive parent pruning while new replies cannot target r
   assert.equal(newest.status, 201);
   assert.equal(await isolated.messages.countDocuments(), 100);
   assert.equal(await isolated.messages.findOne({ _id: new ObjectId(parent.data.message.id) }), null);
-  const quote = { id: parent.data.message.id, username: 'pruned_author', avatarUrl: '/favicon.svg', text: 'Remember this parent.', available: false };
+  const quote = { id: parent.data.message.id, username: 'pruned_author', avatarUrl: '/favicon.svg', accountId: author.data.user.accountId, role: 'player', banned: false, text: 'Remember this parent.', available: false };
   const latest = (await api('/api/chat')).data.messages;
   assert.equal(latest.length, 100);
   assert.deepEqual(latest.find(message => message.id === reply.data.message.id).replyTo, quote);
@@ -574,11 +631,11 @@ test('leaderboard exposes public saved balances with tied ranks and reflects cla
       email: `${username.toLowerCase()}@example.test`, lastEmailAttemptAt: new Date()
     } });
   }
-  const row = (username, rank, balance) => ({ rank, username, accountId: players[username].data.user.accountId, balance });
+  const row = (username, rank, balance) => ({ rank, username, accountId: players[username].data.user.accountId, balance, avatarUrl: '/favicon.svg', role: 'player', banned: false });
   const initial = await api('/api/leaderboard');
   assert.equal(initial.status, 200);
   assert.deepEqual(initial.data, { entries: [row('Alpha', 1, 20), row('bravo', 1, 20), row('claim_player', 3, 5), row('zero_player', 4, 0)], totalPlayers: 4 });
-  for (const entry of initial.data.entries) assert.deepEqual(Object.keys(entry).sort(), ['accountId', 'balance', 'rank', 'username']);
+  for (const entry of initial.data.entries) assert.deepEqual(Object.keys(entry).sort(), ['accountId', 'avatarUrl', 'balance', 'banned', 'rank', 'role', 'username']);
   const claim = await api('/api/claim', { turnstileToken: 'test-token' }, players.claim_player.cookie);
   assert.equal(claim.status, 200);
   assert.equal(claim.data.awarded, 20);
@@ -591,6 +648,9 @@ test('leaderboard exposes public saved balances with tied ranks and reflects cla
   assert.deepEqual((await api('/api/leaderboard')).data, {
     entries: [row('claim_player', 1, 25), row('bravo', 2, 20), { ...row('Alpha', 2, 20), username: 'zeta' }, row('zero_player', 4, 0)], totalPlayers: 4
   });
+  await isolated.users.updateOne({ accountId: players.Alpha.data.user.accountId }, { $set: { avatarVersion: 'leaderboard-picture' } });
+  assert.equal((await api('/api/leaderboard')).data.entries.find(entry => entry.username === 'zeta').avatarUrl,
+    `/api/avatars/${players.Alpha.data.user.accountId}?v=leaderboard-picture`);
 });
 
 test('leaderboard retains deterministic competition ranks, limits results to 100, and persists after reconnecting', async t => {
@@ -607,7 +667,7 @@ test('leaderboard retains deterministic competition ranks, limits results to 100
   const sorted = [...players].sort((first, second) => second.balance - first.balance || first.usernameKey.localeCompare(second.usernameKey));
   const expectedEntries = sorted.slice(0, 100).map((player, index) => ({
     rank: sorted.findIndex(candidate => candidate.balance === player.balance) + 1,
-    username: player.username, accountId: player.accountId, balance: player.balance
+    username: player.username, accountId: player.accountId, balance: player.balance, avatarUrl: '/favicon.svg', role: 'player', banned: false
   }));
   const expected = { entries: expectedEntries, totalPlayers: 105 };
   const leaderboard = await api('/api/leaderboard');
@@ -644,7 +704,7 @@ test('public profiles can be read anonymously and only include public account de
   assert.match(result.data.profile.accountId, accountIdPattern);
   assert.equal(result.data.profile.accountId, (await store.users.findOne({ usernameKey: username.toLowerCase() })).accountId);
   assert.deepEqual(result.data, { profile: {
-    username, avatarUrl: '/favicon.svg', accountId: result.data.profile.accountId, createdAt: createdAt.toISOString(), balance: 25,
+    username, avatarUrl: '/favicon.svg', role: 'player', banned: false, accountId: result.data.profile.accountId, createdAt: createdAt.toISOString(), balance: 25,
     lastClaimAt, nextClaimAt: lastClaimAt + CLAIM_INTERVAL_MS
   } });
 
@@ -654,7 +714,7 @@ test('public profiles can be read anonymously and only include public account de
   assert.equal(legacy.status, 200);
   assert.match(legacy.data.profile.accountId, accountIdPattern);
   assert.deepEqual(legacy.data, { profile: {
-    username: legacyUsername, avatarUrl: '/favicon.svg', accountId: legacy.data.profile.accountId, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
+    username: legacyUsername, avatarUrl: '/favicon.svg', role: 'player', banned: false, accountId: legacy.data.profile.accountId, createdAt: null, balance: 0, lastClaimAt: null, nextClaimAt: null
   } });
 
   const noClaimUsername = `NoClaim_${crypto.randomBytes(3).toString('hex')}`;
@@ -662,7 +722,7 @@ test('public profiles can be read anonymously and only include public account de
   const noClaim = await request(`/api/profiles/${noClaimUsername}`);
   assert.equal(noClaim.status, 200);
   assert.deepEqual(noClaim.data, { profile: {
-    username: noClaimUsername, avatarUrl: '/favicon.svg', accountId: noClaim.data.profile.accountId, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
+    username: noClaimUsername, avatarUrl: '/favicon.svg', role: 'player', banned: false, accountId: noClaim.data.profile.accountId, createdAt: null, balance: 15, lastClaimAt: null, nextClaimAt: null
   } });
 
   for (const name of [`missing_${crypto.randomBytes(3).toString('hex')}`, 'ab', 'a'.repeat(25), 'invalid-name', 'invalid%20name']) {
@@ -1128,7 +1188,7 @@ test('announcements are public, only the owner can publish, and their dates and 
   const first = await api('/api/announcements', payload, owner.cookie);
   assert.equal(first.status, 201);
   assert.deepEqual(Object.keys(first.data), ['entry']);
-  assert.deepEqual(Object.keys(first.data.entry).sort(), ['createdAt', 'description', 'id', 'title']);
+  assert.deepEqual(Object.keys(first.data.entry).sort(), ['authorAccountId', 'createdAt', 'description', 'id', 'title']);
   assert.ok(Date.parse(first.data.entry.createdAt) >= beforePublish);
   assert.ok(Date.parse(first.data.entry.createdAt) <= Date.now());
   const storedFirst = await isolated.announcements.findOne({ _id: new ObjectId(first.data.entry.id) });
@@ -1223,7 +1283,7 @@ function assertPresence(data, count) {
   assert.equal(data.count, count);
   assert.equal(data.players.length, count);
   assert.equal(new Set(data.players.map(player => player.accountId)).size, count);
-  for (const player of data.players) assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'username']);
+  for (const player of data.players) assert.deepEqual(Object.keys(player).sort(), ['accountId', 'avatarUrl', 'banned', 'role', 'username']);
 }
 
 test('presence counts signed-in players only after heartbeats and deduplicates their active sessions', async t => {
