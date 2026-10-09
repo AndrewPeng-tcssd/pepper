@@ -86,6 +86,8 @@ async function connectMongo(options = {}) {
     const tradeMessages = db.collection('trade_messages');
     const friendships = db.collection('friendships');
     const friendMessages = db.collection('friend_messages');
+    const newsComments = db.collection('news_comments');
+    const announcementSeen = db.collection('announcement_seen');
     const cardDefinitions = db.collection('card_definitions');
     const cardInstances = db.collection('card_instances');
     const cardGrants = db.collection('card_grants');
@@ -125,6 +127,11 @@ async function connectMongo(options = {}) {
       friendMessages.createIndex({ friendshipId: 1, createdAt: -1, _id: -1 }),
       friendMessages.createIndex({ friendshipId: 1, senderUserId: 1, clientMessageId: 1 }, { unique: true }),
       friendMessages.createIndex({ senderUserId: 1, createdAt: -1, _id: -1 }),
+      newsComments.createIndex({ kind: 1, entryId: 1, createdAt: 1, _id: 1 }),
+      newsComments.createIndex({ kind: 1, entryId: 1, authorUserId: 1, clientMessageId: 1 }, { unique: true }),
+      newsComments.createIndex({ authorUserId: 1, createdAt: -1, _id: -1 }),
+      announcementSeen.createIndex({ entryId: 1, userId: 1 }, { unique: true }),
+      announcementSeen.createIndex({ userId: 1, entryId: 1 }),
       cardInstances.createIndex({ ownerUserId: 1, tradable: 1, acquiredAt: -1, _id: 1 }),
       cardInstances.createIndex({ cardId: 1, ownerUserId: 1 }),
       cardGrants.createIndex({ ownerUserId: 1, createdAt: -1 })
@@ -137,7 +144,7 @@ async function connectMongo(options = {}) {
     );
     await resolveChangelogOwner(users, siteSettings);
     await trimChatHistory(messages);
-    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, friendships, friendMessages, cardDefinitions, cardInstances, cardGrants, siteSettings };
+    return { client, db, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, friendships, friendMessages, newsComments, announcementSeen, cardDefinitions, cardInstances, cardGrants, siteSettings };
   } catch (error) {
     await client.close();
     throw error;

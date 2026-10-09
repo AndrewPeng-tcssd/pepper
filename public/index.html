@@ -7,12 +7,14 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=48">
+  <link rel="stylesheet" href="/styles.css?v=49">
   <script src="/player-picker.js?v=1" defer></script>
-  <script src="/app.js?v=48" defer></script>
+  <script src="/app.js?v=49" defer></script>
   <script src="/games.js?v=4" defer></script>
-  <script src="/moderation.js?v=5" defer></script>
+  <script src="/moderation.js?v=6" defer></script>
   <script src="/friends.js?v=1" defer></script>
+  <script src="/news-comments.js?v=1" defer></script>
+  <script src="/announcement-popup.js?v=1" defer></script>
 </head>
 <body class="auth-loading">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -460,6 +462,17 @@
     <p class="form-message" id="tradeNotificationMessage" role="status"></p>
     <div class="trading-actions"><button class="button trading-primary" id="tradeNotificationAccept" type="button">Accept</button><button class="button" id="tradeNotificationDecline" type="button">Decline</button></div>
   </aside>
+
+  <dialog class="announcement-popup" id="announcementPopup" aria-labelledby="announcementPopupTitle" aria-describedby="announcementPopupDescription">
+    <div class="dialog-content">
+      <button class="dialog-close" id="announcementPopupClose" type="button" aria-label="Close announcement">×</button>
+      <h2 id="announcementPopupTitle">Announcement</h2>
+      <div class="announcement-popup-meta"><time id="announcementPopupDate"></time><div id="announcementPopupAuthor"></div></div>
+      <p class="announcement-popup-description" id="announcementPopupDescription"></p>
+      <p class="form-message" id="announcementPopupMessage" role="status"></p>
+      <div class="trading-actions"><button class="button" id="announcementPopupRead" type="button">View announcement</button><button class="button trading-primary" id="announcementPopupDismiss" type="button">Got it</button></div>
+    </div>
+  </dialog>
 
   <dialog id="onlinePlayersDialog" aria-labelledby="onlinePlayersTitle">
     <div class="dialog-content">

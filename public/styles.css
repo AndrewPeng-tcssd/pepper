@@ -452,7 +452,12 @@ input:focus { border-color: var(--accent); }
 .changelog-entries { display: grid; gap: 16px; max-width: 760px; margin-top: 32px; }
 .changelog-entries:empty { margin-top: 0; }
 .changelog-entry { min-width: 0; padding: 24px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
-.changelog-entry-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 16px; font-size: 12px; }
+.changelog-entry-meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px 18px; margin-bottom: 16px; font-size: 12px; }
+.news-entry-date { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
+.news-entry-author { flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 52%; margin-left: auto; text-align: right; }
+.news-entry-author-name { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.news-entry-author .player-avatar { width: 28px; height: 28px; }
+.news-entry-author .role-badges { flex-wrap: wrap; justify-content: flex-end; }
 .changelog-entry-version { max-width: 100%; padding: 5px 9px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-weight: 700; overflow-wrap: anywhere; }
 .changelog-entry-meta time { color: var(--muted); }
 .changelog-entry h2 { margin-bottom: 12px; overflow-wrap: anywhere; font-size: 23px; }
@@ -462,6 +467,30 @@ input:focus { border-color: var(--accent); }
 .changelog-entry-actions .changelog-delete-button { color: var(--error); }
 .changelog-delete-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .changelog-delete-message { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
+.news-comments { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+.news-comments-summary { display: flex; align-items: center; gap: 9px; width: fit-content; color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; list-style: none; }
+.news-comments-summary::-webkit-details-marker { display: none; }
+.news-comments-summary::before { content: '+'; color: var(--accent); font-size: 19px; line-height: 1; }
+.news-comments[open] > .news-comments-summary::before { content: '−'; }
+.news-comments-list { display: grid; gap: 12px; margin-top: 18px; }
+.news-comments-empty { margin: 0; color: var(--muted); font-size: 14px; }
+.news-comments-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.news-comment-row { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.news-comment-author { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; font-size: 13px; }
+.news-comment-author .player-avatar { width: 26px; height: 26px; }
+.news-comment-text { margin: 10px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.news-comment-time { color: var(--muted); font-size: 11px; }
+.news-comment-status { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.news-comment-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.news-comment-actions .button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+.news-comments-form { display: grid; gap: 10px; margin-top: 18px; }
+.news-comments-form label { font-size: 13px; font-weight: 600; }
+.news-comments-input { width: 100%; min-height: 84px; padding: 10px 12px; resize: vertical; border: 1px solid var(--button-line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; line-height: 1.5; }
+.news-comments-form > .button { justify-self: start; }
+.news-comments-message { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+.news-comments-message:empty { display: none; }
+.news-comments-more { margin-top: 0; }
+.news-comments-sign-in { margin-top: 16px; }
 
 .leaderboard-overview > .leaderboard-summary { margin-top: 24px; font-size: 13px; }
 .leaderboard-summary:empty { display: none; }
@@ -623,6 +652,12 @@ dialog::backdrop { background: var(--dialog-backdrop); }
 .dialog-close:hover { background: var(--paper); color: var(--ink); }
 .dialog-content h2 { padding-right: 35px; margin-bottom: 22px; font-size: 27px; }
 .dialog-content > p { color: var(--muted); font-size: 14px; }
+.announcement-popup { width: min(620px, calc(100vw - 24px)); }
+.announcement-popup-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; font-size: 12px; }
+.announcement-popup-meta time { color: var(--muted); }
+.announcement-popup-meta > div { min-width: 0; max-width: 60%; }
+.announcement-popup-meta .player-identity { flex-wrap: wrap; justify-content: flex-end; overflow-wrap: anywhere; }
+.dialog-content > .announcement-popup-description { color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 .online-players-list { max-height: min(440px, 60vh); margin: 0; padding: 0; overflow-y: auto; list-style: none; }
 .online-player-link { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 4px; border-bottom: 1px solid var(--line); color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; }
 .online-player-link span { min-width: 0; overflow-wrap: anywhere; }

@@ -7,6 +7,7 @@ const { createMailer } = require('./mailer');
 const { registerTrading } = require('./trading');
 const { registerGames } = require('./games');
 const { registerFriends } = require('./friends');
+const { registerNews } = require('./news');
 const { avatarUrl, AccountError, withAccountActivity, registerAccountFeatures } = require('./accounts');
 const { createModeration, ModerationError } = require('./moderation');
 
@@ -68,7 +69,7 @@ const sendRateLimit = (res, message, remainingMs) => {
 const cookieOptions = () => `HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 const cookieToken = (req) => req.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
 
-function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, friendships, friendMessages, cardDefinitions, cardInstances, siteSettings }, options = {}) {
+function createApp({ client, users, sessions, messages, verificationTokens, changelog, announcements, trades, games, tradeMessages, friendships, friendMessages, newsComments, announcementSeen, cardDefinitions, cardInstances, siteSettings }, options = {}) {
   const app = express();
   const rateBuckets = new Map();
   const currentTime = options.now || Date.now;
@@ -349,7 +350,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json({ ok: true });
   });
 
-  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, games, tradeMessages, friendships, friendMessages, cardInstances }, {
+  registerAccountFeatures(app, { client, users, sessions, verificationTokens, messages, trades, games, tradeMessages, friendships, friendMessages, newsComments, announcementSeen, cardInstances }, {
     requireUser, rateLimit, signedInUser, passwordMatches, cookieName, now: currentTime
   });
   moderation.register(app, { requireUser, rateLimit });
@@ -433,13 +434,17 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
   app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields });
   registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime });
+  const news = registerNews(app, { users, changelog, announcements, newsComments, announcementSeen }, {
+    requireUser, rateLimit, moderation, now: currentTime, publicAnnouncement: entry => publicAnnouncementEntry(entry)
+  });
 
-  const publicChangelogEntry = (entry) => ({
+  const publicChangelogEntry = async (entry) => ({
     id: entry._id.toString(),
     title: entry.title,
     description: entry.description,
     version: displayBuildVersion(entry.version),
-    createdAt: entry.createdAt.toISOString()
+    createdAt: entry.createdAt.toISOString(),
+    ...await news.publicFields('changelog', entry)
   });
   async function currentBuildVersion() {
     const saved = await siteSettings.findOne({ _id: 'version' });
@@ -467,7 +472,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
   async function changelogSnapshot() {
     const entries = await changelog.find().sort({ createdAt: -1, _id: -1 }).toArray();
-    const publicEntries = entries.map(publicChangelogEntry);
+    const publicEntries = await Promise.all(entries.map(publicChangelogEntry));
     return { entries: publicEntries, latestVersion: await currentBuildVersion() };
   }
   app.get('/api/changelog', async (req, res) => {
@@ -489,29 +494,33 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       await changelog.insertOne(entry, { session });
       await saveBuildVersion(version, actor, session);
     });
-    res.status(201).json({ entry: publicChangelogEntry(entry), latestVersion: await currentBuildVersion() });
+    res.status(201).json({ entry: await publicChangelogEntry(entry), latestVersion: await currentBuildVersion() });
   });
   app.delete('/api/changelog/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!await canManageChangelog(req.user)) return sendError(res, 403, 'Only the changelog owner can delete updates.');
     if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This changelog entry ID is invalid.');
     const result = await moderation.runAs(req.user._id, async ({ session, role }) => {
       if (role !== 'admin') throw new ModerationError(403, 'Admin access required.');
-      return changelog.deleteOne({ _id: new ObjectId(req.params.id) }, { session });
+      const entryId = new ObjectId(req.params.id);
+      const deleted = await changelog.deleteOne({ _id: entryId }, { session });
+      if (deleted.deletedCount) await news.cleanup('changelog', entryId, session);
+      return deleted;
     });
     if (!result.deletedCount) return sendError(res, 404, 'Changelog entry not found.');
     res.json(await changelogSnapshot());
   });
 
-  const publicAnnouncementEntry = (entry) => ({
+  const publicAnnouncementEntry = async (entry) => ({
     id: entry._id.toString(),
     title: entry.title,
     description: entry.description,
     authorAccountId: entry.authorAccountId ?? null,
-    createdAt: entry.createdAt.toISOString()
+    createdAt: entry.createdAt.toISOString(),
+    ...await news.publicFields('announcements', entry)
   });
   async function announcementsSnapshot() {
     const entries = await announcements.find().sort({ createdAt: -1, _id: -1 }).toArray();
-    return { entries: entries.map(publicAnnouncementEntry) };
+    return { entries: await Promise.all(entries.map(publicAnnouncementEntry)) };
   }
   app.get('/api/announcements', async (req, res) => {
     res.json(await announcementsSnapshot());
@@ -526,8 +535,9 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     await moderation.runAs(req.user._id, async ({ session, role }) => {
       if (!['admin', 'mod'].includes(role)) throw new ModerationError(403, 'Moderator access required.');
       await announcements.insertOne(entry, { session });
+      await news.markSeen(entry._id, req.user._id, session);
     });
-    res.status(201).json({ entry: publicAnnouncementEntry(entry) });
+    res.status(201).json({ entry: await publicAnnouncementEntry(entry) });
   });
   app.delete('/api/announcements/:id', requireUser, rateLimit(30, 60 * 60 * 1000), async (req, res) => {
     if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return sendError(res, 400, 'This announcement entry ID is invalid.');
@@ -535,7 +545,9 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       const entry = await announcements.findOne({ _id: new ObjectId(req.params.id) }, { session });
       if (!entry) throw new ModerationError(404, 'Announcement not found.');
       if (role !== 'admin' && !(role === 'mod' && (entry.authorAccountId === actor.accountId || entry.authorId?.equals(actor._id)))) throw new ModerationError(403, 'Action unavailable.');
-      return announcements.deleteOne({ _id: entry._id }, { session });
+      const deleted = await announcements.deleteOne({ _id: entry._id }, { session });
+      if (deleted.deletedCount) await news.cleanup('announcements', entry._id, session);
+      return deleted;
     });
     if (!result.deletedCount) return sendError(res, 404, 'Announcement entry not found.');
     res.json(await announcementsSnapshot());

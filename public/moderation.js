@@ -104,7 +104,7 @@
       (replacement || row?.querySelector('.chat-author'))?.focus({ preventScroll: true });
     }
   }
-  function refreshEditors() { renderChangelogEditor(); renderAnnouncementEditor(); refreshChatControls(); }
+  function refreshEditors() { renderChangelogEditor(); renderAnnouncementEditor(); refreshChatControls(); window.PepperNewsComments?.syncUser(); }
   function closePlayerPicker() {
     playerPicker?.reset();
     moderation.searchRevision++;

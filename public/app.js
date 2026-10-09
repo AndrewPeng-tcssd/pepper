@@ -277,6 +277,8 @@ function setUser(user) {
   window.PepperGames?.syncUser();
   window.PepperModeration?.syncUser();
   window.PepperFriends?.syncUser();
+  window.PepperNewsComments?.syncUser();
+  window.PepperAnnouncementPopup?.syncUser();
   if (state.chatFollowLatest) scrollChatToLatest();
   if (viewingPublicProfile && (isOwnProfile(state.profile?.username || '') || isOwnProfile(routeProfileUsername()))) {
     navigateTo('/profile', { replace: true, focus: false, scroll: false });
@@ -537,6 +539,8 @@ function renderRoute() {
   }
   window.PepperGames?.onRoute();
   window.PepperFriends?.onRoute();
+  window.PepperNewsComments?.onRoute();
+  window.PepperAnnouncementPopup?.onRoute();
   syncTradeAutosaveRoute();
 }
 
@@ -723,9 +727,21 @@ function changelogActionButton(label, action) {
   return button;
 }
 
+function newsEntryAuthor(entry) {
+  const author = entry.author;
+  const identity = document.createElement(author?.accountId && author?.username ? 'a' : 'span');
+  identity.className = 'news-entry-author player-identity';
+  if (author?.accountId && author?.username) identity.href = profileHref(author.username);
+  const name = document.createElement('span'); name.className = 'news-entry-author-name';
+  name.textContent = author?.username || 'Unknown author';
+  identity.append(profileAvatar(author), name, playerRoleBadges(author));
+  return identity;
+}
+
 function renderChangelog(entries, latestVersion) {
   $('siteVersion').textContent = latestVersion || '0.4.0-0';
   window.PepperModeration?.syncVersion(latestVersion || '0.4.0-0');
+  window.PepperNewsComments?.reconcile('changelog', entries);
   const signature = JSON.stringify(entries);
   if (signature === state.changelogSignature) {
     renderChangelogEditor();
@@ -766,8 +782,10 @@ function renderChangelog(entries, latestVersion) {
     prompt.textContent = 'Delete this entry?';
     confirmation.append(prompt, changelogActionButton('Confirm delete', 'confirm'), changelogActionButton('Cancel', 'cancel'));
     actions.append(deleteButton, confirmation);
-    meta.append(version, date);
+    const dates = document.createElement('div'); dates.className = 'news-entry-date'; dates.append(version, date);
+    meta.append(dates, newsEntryAuthor(entry));
     article.append(meta, title, description, actions);
+    window.PepperNewsComments?.mount(article, 'changelog', entry);
     fragment.append(article);
   }
   $('changelogEntries').replaceChildren(fragment);
@@ -932,10 +950,12 @@ function announcementActionButton(label, action) {
 }
 
 function renderAnnouncements(entries) {
+  window.PepperNewsComments?.reconcile('announcements', entries);
   const signature = JSON.stringify(entries);
   if (signature === state.announcementSignature) {
     renderAnnouncementEditor();
     $('announcementRetry').hidden = true;
+    window.PepperAnnouncementPopup?.syncEntries(entries);
     return;
   }
   state.announcementSignature = signature;
@@ -969,8 +989,10 @@ function renderAnnouncements(entries) {
     prompt.textContent = 'Delete this announcement?';
     confirmation.append(prompt, announcementActionButton('Confirm delete', 'confirm'), announcementActionButton('Cancel', 'cancel'));
     actions.append(deleteButton, confirmation);
-    meta.append(date);
+    const dates = document.createElement('div'); dates.className = 'news-entry-date'; dates.append(date);
+    meta.append(dates, newsEntryAuthor(entry));
     article.append(meta, title, description, actions);
+    window.PepperNewsComments?.mount(article, 'announcements', entry);
     fragment.append(article);
   }
   $('announcementEntries').replaceChildren(fragment);
@@ -978,6 +1000,7 @@ function renderAnnouncements(entries) {
   announcementLoadFailed = false;
   message($('announcementMessage'), entries.length ? '' : 'No announcements yet.');
   $('announcementRetry').hidden = true;
+  window.PepperAnnouncementPopup?.syncEntries(entries);
 }
 
 async function loadAnnouncements(refresh = false) {

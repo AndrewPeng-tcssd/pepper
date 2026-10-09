@@ -912,7 +912,7 @@ test('changelog publishing is private, dates are automatic, and latest entries p
   assert.ok(Date.parse(first.data.entry.createdAt) >= beforePublish);
   assert.ok(Date.parse(first.data.entry.createdAt) <= Date.now());
   assert.match(first.data.entry.createdAt, /Z$/);
-  assert.deepEqual(Object.keys(first.data.entry).sort(), ['createdAt', 'description', 'id', 'title', 'version']);
+  assert.deepEqual(Object.keys(first.data.entry).sort(), ['author', 'commentCount', 'createdAt', 'description', 'id', 'title', 'version']);
   const storedFirst = await isolated.changelog.findOne({ _id: new ObjectId(first.data.entry.id) });
   assert.ok(storedFirst.createdAt instanceof Date);
   assert.ok(storedFirst.authorId.equals((await isolated.users.findOne({ usernameKey: '675' }))._id));
@@ -1013,6 +1013,7 @@ test('changelog deletion requires the permanent owner and rejects invalid or mis
   const renamedOwner = await api('/api/account/username', { username: 'renamed_deletion_owner', currentPassword: password }, owner.cookie, 'PATCH');
   assert.equal(renamedOwner.status, 200);
   assert.equal(renamedOwner.data.user.accountId, owner.data.user.accountId);
+  original.entries[0].author.username = 'renamed_deletion_owner';
   assert.equal(renamedOwner.data.user.canManageChangelog, true);
   const impostor = await api('/api/account/username', { username: '675', currentPassword: password }, member.cookie, 'PATCH');
   assert.equal(impostor.status, 200);
@@ -1315,7 +1316,7 @@ test('announcements are public, only the owner can publish, and their dates and 
   const first = await api('/api/announcements', payload, owner.cookie);
   assert.equal(first.status, 201);
   assert.deepEqual(Object.keys(first.data), ['entry']);
-  assert.deepEqual(Object.keys(first.data.entry).sort(), ['authorAccountId', 'createdAt', 'description', 'id', 'title']);
+  assert.deepEqual(Object.keys(first.data.entry).sort(), ['author', 'authorAccountId', 'commentCount', 'createdAt', 'description', 'id', 'title']);
   assert.ok(Date.parse(first.data.entry.createdAt) >= beforePublish);
   assert.ok(Date.parse(first.data.entry.createdAt) <= Date.now());
   const storedFirst = await isolated.announcements.findOne({ _id: new ObjectId(first.data.entry.id) });
@@ -1356,6 +1357,7 @@ test('announcement permission stays with the original owner through renaming, re
   assert.equal(renamedOwner.status, 200);
   assert.equal(renamedOwner.data.user.canManageAnnouncements, true);
   assert.equal(renamedOwner.data.user.accountId, owner.data.user.accountId);
+  original.entries[0].author.username = 'announcement_owner';
   const renamedMember = await api('/api/account/username', { username: '675', currentPassword: password }, member.cookie, 'PATCH');
   assert.equal(renamedMember.status, 200);
   assert.equal(renamedMember.data.user.canManageAnnouncements, false);

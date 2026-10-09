@@ -71,7 +71,7 @@ async function sanitizeAvatar(value) {
 }
 
 function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInUser, passwordMatches, cookieName, now = Date.now }) {
-  const { client, users, sessions, verificationTokens, messages, trades, tradeMessages, friendships, friendMessages, cardInstances } = store;
+  const { client, users, sessions, verificationTokens, messages, trades, tradeMessages, friendships, friendMessages, newsComments, announcementSeen, cardInstances } = store;
   const route = handler => async (req, res, next) => {
     try { await handler(req, res); }
     catch (error) {
@@ -132,6 +132,10 @@ function registerAccountFeatures(app, store, { requireUser, rateLimit, signedInU
         await cardInstances.deleteMany({ ownerUserId: req.user._id }, { session });
         await sessions.deleteMany({ userId: req.user._id }, { session });
         await verificationTokens.deleteMany({ userId: req.user._id }, { session });
+        if (newsComments) await newsComments.updateMany({ authorUserId: req.user._id }, {
+          $set: { deleted: true, text: '', deletedAt: new Date(now()) }, $unset: { authorAccountId: '' }
+        }, { session });
+        if (announcementSeen) await announcementSeen.deleteMany({ userId: req.user._id }, { session });
         await messages.deleteMany({ userId: req.user._id }, { session });
         await messages.updateMany({ 'replyTo.userId': req.user._id }, {
           $set: { 'replyTo.username': 'Deleted player', 'replyTo.text': 'Message deleted.' }

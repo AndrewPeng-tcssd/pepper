@@ -38,6 +38,10 @@ Changelog publishing permission is saved against the owner's permanent random ac
 
 Read site news at `/announcements`. Administrators and moderators can publish announcements from their enabled management view. Administrators can delete any announcement; moderators can delete only their own. Everyone can read announcements, which are saved with automatic dates and do not change the site version.
 
+Announcements and changelog entries show their author's current name and picture in the top-right corner. Expand **Comments** to read replies, then use **Load more** for longer discussions. Signed-in players can post comments. Comment authors can delete their own replies; administrators and enabled moderators can moderate replies with the same staff protections as chat. Rate-limited comments stay pending and retry automatically.
+
+Unseen announcements appear in a popup when visiting the site. **Got it** dismisses the current announcement, and **View announcement** opens its full entry. Signed-in accounts remember acknowledged announcements across visits and devices. Guests remember them in the current browser.
+
 ## Moderation
 
 The permanent site owner is the administrator. **Open admin view** in Settings loads players automatically, with **Make mod** and **Remove mod** beside eligible accounts. Use the username search to find someone specific. Admin view also enables bans, chat deletion, and publishing controls. Moderators use **Open mod view** for announcements, ordinary-player bans, and chat moderation. A moderator cannot ban an administrator or another moderator, or delete their messages; their own messages can still be deleted. Changelog publishing remains administrator-only. Closing either view hides these controls.
