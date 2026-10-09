@@ -7,9 +7,9 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=50">
+  <link rel="stylesheet" href="/styles.css?v=51">
   <script src="/player-picker.js?v=1" defer></script>
-  <script src="/app.js?v=50" defer></script>
+  <script src="/app.js?v=51" defer></script>
   <script src="/games.js?v=4" defer></script>
   <script src="/moderation.js?v=7" defer></script>
   <script src="/friends.js?v=1" defer></script>
@@ -65,7 +65,8 @@
       <details class="account-menu" id="accountMenu" hidden>
         <summary class="button"><span>Account</span><svg class="account-menu-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" /></svg></summary>
         <div class="account-dropdown">
-          <a class="account-menu-profile" href="/profile"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><span>Profile</span></a>
+          <a class="account-menu-info" href="/profile" aria-label="View your profile"><span class="player-identity"><img class="player-avatar" id="menuAvatar" src="/favicon.svg" alt="" width="32" height="32"><strong id="menuUsername"></strong></span><span><span id="menuBalance">0</span> tokens</span></a>
+          <a href="/profile">Profile</a>
           <a href="/friends">Friends</a>
           <a href="/settings">Settings</a>
           <button id="headerLogoutButton" type="button">Sign out</button>

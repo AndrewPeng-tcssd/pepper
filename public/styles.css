@@ -167,7 +167,9 @@ input:focus { border-color: var(--accent); }
 .chat-row-head .online-indicator { border-color: var(--sidebar-surface); }
 .account-dropdown > a, .account-dropdown > button { display: block; width: 100%; padding: 12px 16px; border: 0; background: var(--surface); color: var(--ink); font-size: 14px; text-align: left; text-decoration: none; }
 .account-dropdown > a:hover, .account-dropdown > button:hover { background: var(--paper); }
-.account-dropdown > a.account-menu-profile { display: flex; align-items: center; gap: 10px; }
+.account-dropdown > a.account-menu-info { display: flex; flex-direction: column; gap: 5px; padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.account-menu-info strong { overflow-wrap: anywhere; }
+.account-menu-info > span:last-child { color: var(--muted); }
 .profile-picture-edit { display: block; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
 .profile-picture-edit:not(:disabled):hover .profile-avatar { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .profile-picture-edit:disabled { opacity: 1; cursor: default; }

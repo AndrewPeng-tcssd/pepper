@@ -237,6 +237,9 @@ function setUser(user) {
   setProfileAvatar($('menuAvatar'), user);
   if (user) {
     if (previousPresenceIdentity !== (user.accountId || user.username) || $('newUsername').value === previousUsername) $('newUsername').value = user.username;
+    $('menuUsername').textContent = user.username;
+    $('menuUsername').append(playerRoleBadges(user));
+    $('menuBalance').textContent = user.balance.toLocaleString();
     $('panelBalance').textContent = user.balance.toLocaleString();
     $('accountBalance').textContent = user.balance.toLocaleString();
     $('accountName').textContent = user.username;
