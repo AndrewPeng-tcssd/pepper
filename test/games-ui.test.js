@@ -45,7 +45,7 @@ function harness(user, entries = [], network, options = {}) {
   const boundary = {
     document, window: { matchMedia: () => ({ matches: !!options.reducedMotion }), PepperPlayerPicker: {
       attach(settings) { const picker = { closed: 0, close() { this.closed++; }, reset() { this.closed++; } }; playerPickers.push({ settings, picker }); return picker; }
-    } }, crypto, console, setInterval() {}, setTimeout(callback, delay) { if (options.manualTimers) timers.push({ callback, delay }); else callback(); }, state: { user: null, accountSubmitting: false }, authRevision: 0, userIdentityRevision: 0, routeRevision: 0, pageKind: 'games', accountBanned: false,
+    } }, crypto, console, setInterval() {}, setTimeout(callback, delay) { if (options.manualTimers) timers.push({ callback, delay }); else callback(); }, clearTimeout() {}, state: { user: null, accountSubmitting: false }, authRevision: 0, userIdentityRevision: 0, routeRevision: 0, pageKind: 'games', accountBanned: false,
     profileHref: username => `/profile/${username}`, profileAvatar: () => node(), playerRoleBadges: () => node(), setChatOpen() {}, focusRouteHeading() {},
     navigateTo(route) { navigation.push(route); context.pageKind = 'games'; context.routeRevision++; },
     message(target, text) { target.textContent = text; },

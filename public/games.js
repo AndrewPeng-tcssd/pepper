@@ -5,7 +5,8 @@
   const choiceNames = { rock: 'Rock', paper: 'Paper', scissors: 'Scissors' };
   const choiceIcons = { rock: '✊', paper: '✋', scissors: '✌' };
   const payoutLabel = game => game.payoutMode === 'shared' ? 'Shared' : 'Single winner';
-  const games = { identity: null, revision: 0, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: 0 };
+  const DICE_ROUND_PAUSE_MS = 2000;
+  const games = { identity: null, revision: 0, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: 0, diceView: null };
   const active = game => ['pending', 'playing'].includes(game.status);
   const validStake = stake => Number.isSafeInteger(stake) && stake >= 1 && stake <= Math.floor(Number.MAX_SAFE_INTEGER / 4);
   const invalidRequest = game => game.status === 'pending' && !validStake(game.stake);
@@ -158,8 +159,45 @@
     }
     return face;
   }
+  function clearDiceView() {
+    const view = games.diceView;
+    games.diceView = null;
+    if (view?.timer != null) clearTimeout(view.timer);
+  }
+  const dicePaused = id => !!games.diceView?.pause && games.diceView.id === id;
+  function presentedDiceGame(game) {
+    if (pageKind !== 'games' || !game || game.game !== 'dice' || !['playing', 'completed'].includes(game.status)) {
+      clearDiceView(); return game;
+    }
+    let view = games.diceView;
+    if (view?.id !== game.id) {
+      clearDiceView();
+      view = games.diceView = { id: game.id, round: game.dice.round, pause: null, timer: null };
+    }
+    const history = game.dice.history || [];
+    const completed = history.find(round => round.round === view.round);
+    if (game.dice.round <= view.round || !completed) return game;
+    if (!view.pause) {
+      const pause = view.pause = { round: view.round };
+      const identity = games.identity, identityRevision = userIdentityRevision, navigationRevision = routeRevision;
+      view.timer = setTimeout(() => {
+        if (games.diceView !== view || view.pause !== pause) return;
+        view.timer = null;
+        if (!current(identity, identityRevision) || pageKind !== 'games' || games.selectedId !== view.id || navigationRevision !== routeRevision) {
+          clearDiceView(); return;
+        }
+        view.pause = null; view.round++;
+        games.sessionSignature = null; render();
+      }, DICE_ROUND_PAUSE_MS);
+    }
+    // History also contains bot-only rounds that may finish in one server response.
+    // Present each new round in order without replacing the saved match state.
+    if (!view.pause) return game;
+    return { ...game, status: 'playing', result: null, reason: null, winnerAccountId: null, placements: [], payouts: null, eligibleAccountIds: [],
+      dice: { round: view.round, groups: completed.groups, rolls: completed.rolls, history: history.filter(round => round.round < view.round) } };
+  }
   function diceRolling(game) {
-    return game.game === 'dice' && game.status === 'playing' && games.action?.action === 'move' && games.action.id === game.id && games.action.payload?.round === game.dice?.round;
+    return game.game === 'dice' && game.status === 'playing' && !dicePaused(game.id) && games.action?.action === 'move' && games.action.id === game.id && games.action.payload?.round === game.dice?.round;
   }
   function renderDice(game, showPlay) {
     el('gamesRolls').replaceChildren(); el('gamesRollAction').replaceChildren(); el('gamesPlacements').replaceChildren(); el('gamesDiceHistory').replaceChildren();
@@ -189,7 +227,7 @@
     }
     if (game.status === 'playing') {
       const eligible = game.eligibleAccountIds?.includes(games.identity);
-      const roll = button(diceRolling(game) ? 'Rolling…' : eligible ? 'Roll' : dice.rolls?.[games.identity] !== undefined ? 'Rolled' : 'Waiting', 'move', game.id, locked() || !eligible);
+      const roll = button(dicePaused(game.id) ? 'Next round…' : diceRolling(game) ? 'Rolling…' : eligible ? 'Roll' : dice.rolls?.[games.identity] !== undefined ? 'Rolled' : 'Waiting', 'move', game.id, locked() || dicePaused(game.id) || !eligible);
       roll.dataset.round = String(dice.round || 1); el('gamesRollAction').append(roll);
     }
     const placements = game.result === 'draw' && !(game.placements || []).length ? participants(game).map(player => ({ accountId: player.accountId, payout: game.payouts?.[player.accountId] ?? game.stake })) : game.placements || [];
@@ -213,7 +251,7 @@
     }
   }
   function renderSession() {
-    const game = games.entries.find(entry => entry.id === games.selectedId);
+    const game = presentedDiceGame(games.entries.find(entry => entry.id === games.selectedId));
     el('gamesLobby').hidden = !!game; el('gamesSession').hidden = !game;
     renderDeadline();
     const signature = JSON.stringify([game, games.identity, locked(), games.resignId]);
@@ -237,6 +275,7 @@
     const opponentName = game.opponentType === 'bot' ? 'Bot' : 'Opponent';
     el('gamesTurn').textContent = game.status === 'pending' ? 'Awaiting acceptance' : ended ? game.result === 'draw' ? 'Draw · stakes returned' : game.winnerAccountId === games.identity ? `You won ${count(game.stake * 2)} tokens` : `${opponentName} won the pot` : game.status !== 'playing' ? status(game) : game.game === 'tic-tac-toe' ? game.turnAccountId === games.identity ? 'Your turn' : `${opponentName}’s turn` : game.yourChoice ? 'Waiting for opponent' : 'Choose your move';
     if (game.game === 'dice') el('gamesTurn').textContent = game.status === 'pending' ? 'Waiting for players' : ended ? game.result === 'draw' ? 'Draw · stakes returned' : `${count(game.payouts?.[games.identity] ?? game.placements?.find(placement => placement.accountId === games.identity)?.payout)} tokens received` : game.status !== 'playing' ? status(game) : game.eligibleAccountIds?.includes(games.identity) ? 'Roll your dice' : 'Waiting for rolls';
+    if (dicePaused(game.id)) el('gamesTurn').textContent = 'Next round in 2 seconds…';
     if (diceRolling(game)) el('gamesTurn').textContent = 'Rolling…';
     const showPlay = game.status === 'playing' || ended;
     el('gamesPlayers').hidden = showPlay && game.game === 'dice';
@@ -315,6 +354,7 @@
   function syncUser() {
     const identity = state.user?.accountId || null;
     if (identity !== games.identity) {
+      clearDiceView();
       playerPicker?.reset();
       Object.assign(games, { identity, revision: games.revision + 1, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, notificationError: null, resignId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: games.draftRevision + 1 });
       el('gamesRequestForm').reset(); el('gamesOpponentType').value = 'player'; message(el('gamesMessage'), '');
@@ -349,10 +389,11 @@
     }
   }
   function openGame(id) {
+    if (games.selectedId !== id) clearDiceView();
     games.selectedId = id; games.resignId = null; games.sessionSignature = null; message(el('gamesMessage'), ''); render();
   }
   async function perform(operation) {
-    if (!state.user || busy() || (games.retry && games.retry !== operation)) return;
+    if (!state.user || busy() || (games.retry && games.retry !== operation) || (operation.action === 'move' && dicePaused(operation.id))) return;
     const identity = games.identity, identityRevision = userIdentityRevision, navigationRevision = routeRevision, accountRevision = authRevision;
     games.revision++; games.loading = false; games.action = operation; games.notificationError = null;
     const botRequest = operation.action === 'request' && operation.payload.opponentType === 'bot';
@@ -448,14 +489,14 @@
     if (locked()) return;
     const game = games.entries.find(entry => entry.id === id);
     if (game?.game === 'dice' && ['review-resign', 'resign'].includes(action)) return;
-    if (game?.game === 'dice' && action === 'move' && (game.status !== 'playing' || !game.eligibleAccountIds?.includes(games.identity) || payload.round !== game.dice?.round)) return;
+    if (game?.game === 'dice' && action === 'move' && (dicePaused(game.id) || game.status !== 'playing' || !game.eligibleAccountIds?.includes(games.identity) || payload.round !== game.dice?.round)) return;
     if (game?.game === 'dice' && action === 'accept' && !needsAcceptance(game)) return;
     if (action === 'accept' && games.entries.some(game => game.id === id && invalidRequest(game))) { message(el('gamesMessage'), 'Invalid bet. Decline request.'); return; }
     if (action === 'review-resign' || action === 'keep-playing') { games.resignId = action === 'review-resign' ? id : null; render(); return; }
     if (action === 'accept') { setChatOpen(false); navigateTo('/games', { focus: false }); openGame(id); }
     if (['accept', 'decline', 'cancel', 'resign', 'move'].includes(action)) void perform({ id, action, payload });
   }
-  function onRoute() { render(); if (pageKind === 'games' && state.user) void load(); }
+  function onRoute() { clearDiceView(); render(); if (pageKind === 'games' && state.user) void load(); }
   el('gamesRequestForm').addEventListener('submit', event => void requestGame(event));
   el('gamesPage').addEventListener('click', event => {
     const remove = event.target.closest('[data-game-remove-player]');

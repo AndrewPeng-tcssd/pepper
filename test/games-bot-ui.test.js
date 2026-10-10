@@ -54,7 +54,7 @@ function harness(user, entries = [], network) {
   const document = { getElementById: id => elements.get(id), createElement: tag => node('', '', tag.toUpperCase()), body: node(), activeElement: null, contains: () => true, querySelectorAll: () => [] };
   const boundary = {
     document, window: { PepperPlayerPicker: { attach(settings) { const picker = { close() {}, reset() {} }; pickers.push({ settings, picker }); return picker; } } },
-    crypto, console, setInterval() {}, setTimeout(callback) { callback(); }, state: { user: null, accountSubmitting: false }, authRevision: 0, userIdentityRevision: 0, routeRevision: 0, pageKind: 'games', accountBanned: false,
+    crypto, console, setInterval() {}, setTimeout(callback) { callback(); }, clearTimeout() {}, state: { user: null, accountSubmitting: false }, authRevision: 0, userIdentityRevision: 0, routeRevision: 0, pageKind: 'games', accountBanned: false,
     profileHref(username) { profileNames.push(username); return `/profile/${username}`; }, profileAvatar: () => node(), playerRoleBadges: () => node(), setChatOpen() {}, focusRouteHeading() {},
     navigateTo() { context.pageKind = 'games'; context.routeRevision++; }, message(target, text) { target.textContent = text; },
     setUser(value) { if (context.state.user?.accountId !== value?.accountId) context.userIdentityRevision++; context.authRevision++; context.state.user = value; context.window.PepperGames.syncUser(); },
