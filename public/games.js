@@ -17,18 +17,22 @@
   const isInvited = game => game.sender.accountId !== games.identity && !!self(game);
   const needsAcceptance = game => isInvited(game) && (game.game !== 'dice' || !self(game).accepted);
   const gameType = () => el('gamesRequestForm').querySelector('input[name="gameType"]:checked').value;
-  const opponentType = () => gameType() !== 'dice' && el('gamesOpponentType').value === 'bot' ? 'bot' : 'player';
+  const opponentType = () => {
+    if (gameType() !== 'dice') return el('gamesOpponentType').value === 'bot' ? 'bot' : 'player';
+    const bots = games.invitees.filter(player => player.isBot).length;
+    return bots === 0 ? 'player' : bots === games.invitees.length ? 'bot' : 'mixed';
+  };
   const playerCount = () => Math.max(2, Math.min(4, Number(el('gamesPlayerCount').value) || 2));
   const current = (identity, identityRevision) => state.user?.accountId === identity && games.identity === identity && userIdentityRevision === identityRevision;
   const count = value => Number(value || 0).toLocaleString();
   const playerPicker = window.PepperPlayerPicker?.attach({
     input: el('gamesUsername'),
-    isEnabled: () => !!state.user && !accountBanned && pageKind === 'games' && !games.selectedId && !locked() && opponentType() === 'player',
+    isEnabled: () => !!state.user && !accountBanned && pageKind === 'games' && !games.selectedId && !locked() && (gameType() === 'dice' || opponentType() !== 'bot'),
     renderAvatar: player => profileAvatar(player),
     search: async prefix => {
       const identity = games.identity, revision = userIdentityRevision, navigation = routeRevision, draftRevision = games.draftRevision;
       const { players } = await api(`players?username=${encodeURIComponent(prefix)}`);
-      return current(identity, revision) && navigation === routeRevision && pageKind === 'games' && draftRevision === games.draftRevision && opponentType() === 'player' ? players.filter(player => player.accountId !== identity && (gameType() !== 'dice' || !games.invitees.some(invitee => invitee.accountId === player.accountId))) : [];
+      return current(identity, revision) && navigation === routeRevision && pageKind === 'games' && draftRevision === games.draftRevision && (gameType() === 'dice' || opponentType() !== 'bot') ? players.filter(player => player.accountId !== identity && (gameType() !== 'dice' || !games.invitees.some(invitee => invitee.accountId === player.accountId))) : [];
     },
     onSelect: player => { games.pickedPlayer = player; message(el('gamesMessage'), ''); }
   });
@@ -59,7 +63,7 @@
     if (player.isBot) {
       const identity = document.createElement('span'); identity.className = 'player-identity games-bot-identity';
       const icon = document.createElement('span'); icon.className = 'games-bot-avatar'; icon.textContent = '🤖'; icon.setAttribute('aria-hidden', 'true');
-      const name = document.createElement('span'); name.textContent = 'Bot'; identity.append(icon, name); return identity;
+      const name = document.createElement('span'); name.textContent = player.username; identity.append(icon, name); return identity;
     }
     const link = document.createElement('a'); link.href = profileHref(player.username); link.className = 'player-identity';
     const name = document.createElement('span'); name.textContent = player.username;
@@ -77,22 +81,33 @@
       else { const waiting = document.createElement('span'); waiting.textContent = 'Waiting for players'; container.append(waiting); }
     } else if (game.status === 'playing' && game.game !== 'dice') container.append(button('Resign', 'review-resign', game.id));
   }
+  function normalizeDiceRoster() {
+    const capacity = playerCount() - 1;
+    for (let index = games.invitees.length - 1; index >= 0 && games.invitees.length > capacity; index--) {
+      if (games.invitees[index].isBot) games.invitees.splice(index, 1);
+    }
+    games.invitees = games.invitees.slice(0, capacity);
+    let botNumber = 0;
+    for (const player of games.invitees) {
+      if (player.isBot) player.username = playerCount() === 2 ? 'Bot' : `Bot #${++botNumber}`;
+    }
+  }
   function renderDraft() {
-    const dice = gameType() === 'dice';
-    if (dice) el('gamesOpponentType').value = 'player';
-    const bot = opponentType() === 'bot';
+    const dice = gameType() === 'dice', bot = !dice && opponentType() === 'bot';
     el('gamesOpponentOptions').hidden = dice;
     el('gamesOpponentType').disabled = locked() || dice;
     el('gamesUsernameLabel').hidden = bot;
     el('gamesUsernameField').hidden = bot;
     el('gamesUsername').disabled = locked() || bot;
-    el('gamesBotNote').hidden = !bot;
+    el('gamesBotNote').hidden = !bot && !(dice && games.invitees.some(player => player.isBot));
     el('gamesDiceOptions').hidden = !dice;
     el('gamesAddPlayer').hidden = !dice;
+    el('gamesFillBots').hidden = !dice;
     el('gamesInvitees').hidden = !dice;
     el('gamesUsername').required = !dice && !bot;
     el('gamesPayoutModeField').hidden = !dice || playerCount() === 2;
     el('gamesAddPlayer').disabled = locked() || games.invitees.length >= playerCount() - 1;
+    el('gamesFillBots').disabled = locked() || games.invitees.length >= playerCount() - 1;
     const signature = JSON.stringify([games.identity, dice, playerCount(), locked(), games.invitees]);
     if (signature === games.draftSignature) return;
     games.draftSignature = signature;
@@ -283,7 +298,7 @@
     el('gamesBalance').textContent = state.user ? `${count(state.user.balance)} tokens` : '';
     for (const input of el('gamesRequestForm').querySelectorAll('input, select')) input.disabled = locked();
     renderDraft();
-    if (locked() || games.selectedId || !state.user || pageKind !== 'games' || opponentType() === 'bot') playerPicker?.close();
+    if (locked() || games.selectedId || !state.user || pageKind !== 'games' || (gameType() !== 'dice' && opponentType() === 'bot')) playerPicker?.close();
     const botRequest = games.action?.action === 'request' ? games.action.payload?.opponentType === 'bot' : opponentType() === 'bot';
     el('gamesSend').disabled = locked(); el('gamesSend').textContent = games.action?.action === 'request' ? botRequest ? 'Starting…' : 'Sending…' : botRequest ? 'Start match' : 'Send request';
     el('gamesRefresh').disabled = busy() || games.loading;
@@ -376,12 +391,21 @@
       if (!current(identity, identityRevision) || navigationRevision !== routeRevision || pageKind !== 'games' || draftRevision !== games.draftRevision || gameType() !== 'dice') return;
       if (player.accountId === identity) { message(el('gamesMessage'), 'Choose another player.'); return; }
       if (games.invitees.some(invitee => invitee.accountId === player.accountId)) { message(el('gamesMessage'), 'Player already added.'); return; }
-      games.invitees.push(player); games.pickedPlayer = null; games.draftRevision++;
+      games.invitees.push(player); normalizeDiceRoster(); games.pickedPlayer = null; games.draftRevision++;
       el('gamesUsername').value = ''; message(el('gamesMessage'), '');
     } catch (error) {
       if (!current(identity, identityRevision) || navigationRevision !== routeRevision) return;
       if (error.status === 401) setUser(null); else message(el('gamesMessage'), error.message);
     } finally { if (current(identity, identityRevision)) { games.action = null; render(); } }
+  }
+  function fillBots() {
+    playerPicker?.close();
+    if (!state.user || locked() || gameType() !== 'dice' || games.invitees.length >= playerCount() - 1) return;
+    while (games.invitees.length < playerCount() - 1) {
+      games.invitees.push({ accountId: `draft-bot:${crypto.randomUUID()}`, username: 'Bot', isBot: true });
+    }
+    normalizeDiceRoster(); games.pickedPlayer = null; games.draftRevision++;
+    message(el('gamesMessage'), ''); render();
   }
   async function requestGame(event) {
     event.preventDefault();
@@ -391,14 +415,19 @@
     if (type !== 'dice' && !bot && !username) { message(el('gamesMessage'), 'Enter a username.'); return; }
     if (!rawStake || !validStake(stake)) { message(el('gamesMessage'), 'Bet at least 1 token.'); return; }
     if (stake > state.user.balance) { message(el('gamesMessage'), 'Not enough tokens.'); return; }
-    if (bot) {
-      await perform({ action: 'request', payload: { opponentType: 'bot', game: type, stake, clientRequestId: crypto.randomUUID() } });
-      return;
-    }
     if (type === 'dice') {
       const needed = playerCount() - 1 - games.invitees.length;
-      if (needed !== 0) { message(el('gamesMessage'), `Add ${needed} more ${needed === 1 ? 'player' : 'players'}.`); return; }
-      await perform({ action: 'request', payload: { recipientAccountIds: games.invitees.map(player => player.accountId), game: type, stake, payoutMode: playerCount() === 2 ? 'single-winner' : el('gamesPayoutMode').value, clientRequestId: crypto.randomUUID() } });
+      if (needed !== 0) { message(el('gamesMessage'), `Add ${needed} more ${needed === 1 ? 'player' : 'players'}, or fill with bots.`); return; }
+      const recipientAccountIds = games.invitees.filter(player => !player.isBot).map(player => player.accountId);
+      const botCount = games.invitees.length - recipientAccountIds.length;
+      const payload = { game: type, stake, clientRequestId: crypto.randomUUID(), ...(playerCount() > 2 ? { payoutMode: el('gamesPayoutMode').value } : {}) };
+      if (botCount > 0) Object.assign(payload, { opponentType: recipientAccountIds.length ? 'mixed' : 'bot', botCount });
+      if (recipientAccountIds.length) Object.assign(payload, { recipientAccountIds, payoutMode: playerCount() === 2 ? 'single-winner' : el('gamesPayoutMode').value });
+      await perform({ action: 'request', payload });
+      return;
+    }
+    if (bot) {
+      await perform({ action: 'request', payload: { opponentType: 'bot', game: type, stake, clientRequestId: crypto.randomUUID() } });
       return;
     }
     const identity = games.identity, identityRevision = userIdentityRevision, navigationRevision = routeRevision;
@@ -430,16 +459,17 @@
   el('gamesRequestForm').addEventListener('submit', event => void requestGame(event));
   el('gamesPage').addEventListener('click', event => {
     const remove = event.target.closest('[data-game-remove-player]');
-    if (remove && !remove.disabled && !locked()) { games.invitees = games.invitees.filter(player => player.accountId !== remove.dataset.gameRemovePlayer); games.draftRevision++; renderDraft(); return; }
+    if (remove && !remove.disabled && !locked()) { games.invitees = games.invitees.filter(player => player.accountId !== remove.dataset.gameRemovePlayer); normalizeDiceRoster(); games.draftRevision++; render(); return; }
     const target = event.target.closest('[data-game-action]'); if (!target || target.disabled) return;
     const payload = target.dataset.gameAction === 'move' ? { clientMoveId: crypto.randomUUID(), ...(target.dataset.round !== undefined ? { round: Number(target.dataset.round) } : target.dataset.position !== undefined ? { position: Number(target.dataset.position) } : { choice: target.dataset.choice }) } : {};
     act(target.dataset.gameAction, target.dataset.gameId, payload);
   });
   el('gamesAddPlayer').addEventListener('click', () => void addPlayer());
+  el('gamesFillBots').addEventListener('click', fillBots);
   el('gamesRequestForm').addEventListener('change', event => {
     if (locked() || ['gamesUsername', 'gamesStake'].includes(event.target.id)) return;
     games.draftRevision++; games.pickedPlayer = null;
-    games.invitees = games.invitees.slice(0, playerCount() - 1);
+    normalizeDiceRoster();
     playerPicker?.close(); render();
   });
   el('gamesUsername').addEventListener('input', () => { games.pickedPlayer = null; });

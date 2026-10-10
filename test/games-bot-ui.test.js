@@ -16,6 +16,18 @@ const match = (sender, extra = {}) => ({
   turnAccountId: sender.accountId, yourChoice: null, opponentChosen: false, choices: null, winnerAccountId: null, result: null,
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120000).toISOString(), ...extra
 });
+const diceMatch = (sender, count = 2, extra = {}) => {
+  const bots = Array.from({ length: count - 1 }, (_, index) => ({ ...bot, accountId: count === 2 ? 'BOT' : `BOT-${index + 1}`, username: count === 2 ? 'Bot' : `Bot #${index + 1}`, accepted: true }));
+  const players = [{ ...sender, accepted: true }, ...bots];
+  return match(sender, { game: 'dice', players, recipient: bots[0], pot: count * 10, payoutMode: count === 2 ? 'single-winner' : 'shared',
+    dice: { round: 1, rolls: Object.fromEntries(bots.map((entry, index) => [entry.accountId, index + 1])), groups: [players.map(entry => entry.accountId)], history: [] },
+    eligibleAccountIds: [sender.accountId], ...extra });
+};
+const mixedDiceMatch = (sender, invited, count, extra = {}) => {
+  const bots = Array.from({ length: count - 1 - invited.length }, (_, index) => ({ ...bot, accountId: `BOT-${index + 1}`, username: `Bot #${index + 1}`, accepted: true }));
+  const players = [{ ...sender, accepted: true }, ...invited.map(entry => ({ ...entry, accepted: false })), ...bots];
+  return diceMatch(sender, count, { opponentType: 'mixed', status: 'pending', recipient: players[1], players, eligibleAccountIds: [], dice: { round: 1, rolls: {}, groups: [players.map(entry => entry.accountId)], history: [] }, ...extra });
+};
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 
 // Run production UI against small DOM and network boundaries, including all draft controls.
@@ -31,7 +43,7 @@ function harness(user, entries = [], network) {
       append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; }, setAttribute(name, value) { this[name] = value; },
       addEventListener(type, listener) { listeners.set(type, listener); }, dispatch(type, target = this) { return listeners.get(type)?.({ preventDefault() {}, target }); },
       contains(target) { return !!target && (this === target || this.children.includes(target)); },
-      closest(selector) { return selector === '[data-game-action]' && this.dataset.gameAction ? this : null; },
+      closest(selector) { return selector === '[data-game-action]' && this.dataset.gameAction || selector === '[data-game-remove-player]' && this.dataset.gameRemovePlayer ? this : null; },
       focus() { document.activeElement = this; }, querySelector() { return radios.find(radio => radio.checked); },
       querySelectorAll(selector) { return selector === 'input, select' ? [...radios, ...['gamesUsername', 'gamesStake', 'gamesPlayerCount', 'gamesPayoutMode', 'gamesOpponentType'].map(id => elements.get(id))] : []; },
       reset() { elements.get('gamesUsername').value = ''; elements.get('gamesStake').value = '1'; elements.get('gamesPlayerCount').value = '2'; elements.get('gamesPayoutMode').value = 'shared'; elements.get('gamesOpponentType').value = 'player'; radios.forEach((radio, index) => { radio.checked = index === 0; }); },
@@ -55,7 +67,7 @@ function harness(user, entries = [], network) {
     }
   };
   context = vm.createContext(boundary);
-  vm.runInContext(source.replace('window.PepperGames = { syncUser, load, onRoute, renderNotification };', 'window.PepperGames = { syncUser, load, onRoute, renderNotification, inspect: () => games, perform, requestGame, act, render };'), context);
+  vm.runInContext(source.replace('window.PepperGames = { syncUser, load, onRoute, renderNotification };', 'window.PepperGames = { syncUser, load, onRoute, renderNotification, inspect: () => games, perform, requestGame, addPlayer, act, render };'), context);
   boundary.setUser(user);
   return { api: context.window.PepperGames, elements, calls, context, setUser: boundary.setUser, entries, radios, pickers, profileNames };
 }
@@ -64,8 +76,24 @@ function choose(ui, type, opponent = 'bot') {
   ui.elements.get('gamesOpponentType').value = opponent;
   ui.elements.get('gamesRequestForm').dispatch('change', ui.elements.get('gamesOpponentType'));
 }
+function changeCount(ui, count) {
+  ui.elements.get('gamesPlayerCount').value = String(count);
+  ui.elements.get('gamesRequestForm').dispatch('change', ui.elements.get('gamesPlayerCount'));
+}
+const fill = ui => ui.elements.get('gamesFillBots').click();
+const draft = ui => Array.from(ui.api.inspect().invitees);
+const draftIds = ui => draft(ui).map(entry => entry.accountId);
+function removeDraft(ui, accountId) {
+  const row = ui.elements.get('gamesInvitees').children.find(entry => entry.children[1].dataset.gameRemovePlayer === accountId);
+  assert.ok(row, `Missing roster seat ${accountId}`);
+  ui.elements.get('gamesPage').dispatch('click', row.children[1]);
+}
+async function addInvited(ui, entry) {
+  ui.elements.get('gamesUsername').value = entry.username;
+  await ui.api.addPlayer();
+}
 
-test('bot selection removes the required username, disables suggestions, and resets for Dice', async () => {
+test('RPS and TTT keep their opponent choice while Dice exposes Fill with bots and human invitations', async () => {
   const ui = harness(player('local')); await tick();
   choose(ui, 'tic-tac-toe');
   assert.equal(ui.elements.get('gamesUsername').required, false);
@@ -74,15 +102,235 @@ test('bot selection removes the required username, disables suggestions, and res
   assert.equal(ui.elements.get('gamesBotNote').hidden, false);
   assert.equal(ui.elements.get('gamesSend').textContent, 'Start match');
   assert.equal(ui.pickers[0].settings.isEnabled(), false);
+  assert.equal(ui.elements.get('gamesFillBots').hidden, true);
   choose(ui, 'dice');
-  assert.equal(ui.elements.get('gamesOpponentType').value, 'player');
   assert.equal(ui.elements.get('gamesOpponentOptions').hidden, true);
-  assert.equal(ui.elements.get('gamesBotNote').hidden, true);
+  assert.equal(ui.elements.get('gamesFillBots').hidden, false);
+  assert.equal(ui.elements.get('gamesFillBots').disabled, false);
+  assert.equal(ui.elements.get('gamesDiceOptions').hidden, false);
+  assert.equal(ui.elements.get('gamesAddPlayer').hidden, false);
+  assert.equal(ui.elements.get('gamesInvitees').hidden, false);
+  assert.equal(ui.elements.get('gamesUsernameField').hidden, false);
   assert.equal(ui.elements.get('gamesSend').textContent, 'Send request');
+  assert.equal(ui.pickers[0].settings.isEnabled(), true);
+  fill(ui);
+  assert.equal(ui.elements.get('gamesSend').textContent, 'Start match');
+  assert.equal(ui.elements.get('gamesFillBots').disabled, true);
   choose(ui, 'rock-paper-scissors', 'player');
   assert.equal(ui.elements.get('gamesUsername').required, true);
   assert.equal(ui.elements.get('gamesUsernameField').hidden, false);
   assert.equal(ui.elements.get('gamesOpponentOptions').hidden, false);
+  assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+});
+
+test('Dice bot requests fill two, three, and four player matches without recipient IDs', async () => {
+  for (const [count, payoutMode] of [[2, 'shared'], [3, 'shared'], [4, 'single-winner']]) {
+    const local = player('local');
+    const ui = harness(local, [], call => call.method === 'POST' ? { game: diceMatch(local, count, { stake: call.payload.stake, pot: count * call.payload.stake, payoutMode: count === 2 ? 'single-winner' : call.payload.payoutMode }), user: local } : undefined);
+    await tick(); choose(ui, 'dice');
+    ui.elements.get('gamesPlayerCount').value = String(count);
+    ui.elements.get('gamesPayoutMode').value = payoutMode;
+    ui.elements.get('gamesRequestForm').dispatch('change', ui.elements.get('gamesPlayerCount'));
+    fill(ui);
+    ui.elements.get('gamesStake').value = '17';
+    assert.equal(ui.elements.get('gamesPayoutModeField').hidden, count === 2);
+    await ui.api.requestGame({ preventDefault() {} }); await tick();
+    const posts = ui.calls.filter(call => call.method === 'POST');
+    assert.equal(posts.length, 1);
+    assert.deepEqual(Object.keys(posts[0].payload).sort(), ['botCount', 'clientRequestId', 'game', 'opponentType', ...(count > 2 ? ['payoutMode'] : []), 'stake'].sort());
+    assert.equal(posts[0].payload.opponentType, 'bot');
+    assert.equal(posts[0].payload.game, 'dice');
+    assert.equal(posts[0].payload.botCount, count - 1);
+    assert.equal(posts[0].payload.stake, 17);
+    assert.equal(posts[0].payload.payoutMode, count > 2 ? payoutMode : undefined);
+    assert.ok(ui.calls.every(call => call.route === 'games'));
+    assert.equal(ui.elements.get('gamesSession').hidden, false);
+    assert.equal(ui.elements.get('gamesStakeSummary').textContent, '17 tokens each');
+    assert.equal(ui.elements.get('gamesPot').textContent, `${17 * count} token pot · ${count === 2 || payoutMode === 'single-winner' ? 'Single winner' : 'Shared'}`);
+    assert.equal(ui.elements.get('gamesMessage').textContent, 'Match started.');
+  }
+});
+
+test('Dice bot names remain distinct and unlinked while only the human can roll', async () => {
+  for (const count of [2, 3, 4]) {
+    const local = player('local'), game = diceMatch(local, count);
+    const ui = harness(local, [game]); await tick(); ui.api.act('open', game.id);
+    const rows = ui.elements.get('gamesRolls').children;
+    assert.equal(rows.length, count);
+    for (let index = 1; index < count; index++) {
+      const identity = rows[index].children[0];
+      assert.equal(identity.tagName, 'SPAN'); assert.equal(identity.href, undefined);
+      assert.equal(identity.children[1].textContent, count === 2 ? 'Bot' : `Bot #${index}`);
+      assert.equal(rows[index].children[1].dataset.value, String(index));
+    }
+    assert.ok(ui.profileNames.every(name => !name.startsWith('Bot')));
+    assert.equal(ui.elements.get('gamesRollAction').children.length, 1);
+    assert.equal(ui.elements.get('gamesRollAction').children[0].textContent, 'Roll');
+    assert.equal(ui.elements.get('gamesRollAction').children[0].disabled, false);
+    assert.equal(ui.elements.get('gamesTurn').textContent, 'Roll your dice');
+  }
+});
+
+test('Fill with bots adds only vacant seats and never duplicates a full roster', async () => {
+  for (const humans of [0, 1, 2]) {
+    const local = player('local'), invited = Array.from({ length: humans }, (_, index) => player(`guest${index + 1}`));
+    const ui = harness(local, [], call => call.route.startsWith('profiles/') ? { profile: invited.find(entry => call.route === `profiles/${entry.username}`) } : undefined);
+    await tick(); choose(ui, 'dice'); changeCount(ui, 4);
+    for (const entry of invited) await addInvited(ui, entry);
+    fill(ui);
+    assert.equal(draft(ui).length, 3);
+    assert.deepEqual(draft(ui).filter(entry => !entry.isBot).map(entry => entry.accountId), invited.map(entry => entry.accountId));
+    const bots = draft(ui).filter(entry => entry.isBot);
+    assert.equal(bots.length, 3 - humans); assert.equal(new Set(bots.map(entry => entry.accountId)).size, bots.length);
+    assert.deepEqual(bots.map(entry => entry.username), Array.from({ length: bots.length }, (_, index) => `Bot #${index + 1}`));
+    assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+    assert.equal(ui.elements.get('gamesAddPlayer').disabled, true);
+    const before = draftIds(ui); fill(ui); assert.deepEqual(draftIds(ui), before);
+    assert.ok(ui.profileNames.every(name => !name.startsWith('Bot')));
+    for (const row of ui.elements.get('gamesInvitees').children.slice(humans)) {
+      assert.equal(row.children[0].tagName, 'SPAN'); assert.equal(row.children[0].href, undefined);
+      assert.equal(row.children[1].disabled, false);
+    }
+  }
+});
+
+test('a bot can be removed, replaced by a real invitee, and refilled with consecutive names', async () => {
+  const local = player('local'), guest = player('guest');
+  const ui = harness(local, [], call => call.route === 'profiles/guest' ? { profile: guest } : undefined);
+  await tick(); choose(ui, 'dice'); changeCount(ui, 4); fill(ui);
+  const removed = draft(ui)[1].accountId;
+  removeDraft(ui, removed);
+  assert.equal(draft(ui).length, 2); assert.equal(ui.elements.get('gamesFillBots').disabled, false);
+  assert.deepEqual(draft(ui).map(entry => entry.username), ['Bot #1', 'Bot #2']);
+  await addInvited(ui, guest);
+  assert.equal(draft(ui).length, 3); assert.equal(draft(ui).filter(entry => !entry.isBot)[0].accountId, guest.accountId);
+  assert.equal(ui.elements.get('gamesSend').textContent, 'Send request');
+  const botId = draft(ui).find(entry => entry.isBot).accountId;
+  removeDraft(ui, botId); fill(ui);
+  assert.equal(draft(ui).length, 3);
+  assert.deepEqual(draft(ui).filter(entry => entry.isBot).map(entry => entry.username), ['Bot #1', 'Bot #2']);
+  assert.ok(!draftIds(ui).includes(botId));
+  assert.ok(ui.profileNames.every(name => !name.startsWith('Bot')));
+});
+
+test('Dice count changes remove bots before humans and growth leaves open seats for filling', async () => {
+  const local = player('local'), first = player('first'), second = player('second');
+  const ui = harness(local, [], call => call.route === 'profiles/first' ? { profile: first } : call.route === 'profiles/second' ? { profile: second } : undefined);
+  await tick(); choose(ui, 'dice'); changeCount(ui, 4);
+  await addInvited(ui, first); await addInvited(ui, second); fill(ui);
+  changeCount(ui, 3);
+  assert.deepEqual(draftIds(ui), [first.accountId, second.accountId]);
+  assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+  changeCount(ui, 2);
+  assert.deepEqual(draftIds(ui), [first.accountId]);
+  changeCount(ui, 4);
+  assert.deepEqual(draftIds(ui), [first.accountId]);
+  assert.equal(ui.elements.get('gamesFillBots').disabled, false);
+  fill(ui);
+  assert.deepEqual(draft(ui).filter(entry => !entry.isBot).map(entry => entry.accountId), [first.accountId]);
+  assert.deepEqual(draft(ui).filter(entry => entry.isBot).map(entry => entry.username), ['Bot #1', 'Bot #2']);
+});
+
+test('all-bot rosters rename the sole opponent Bot when reduced to two players', async () => {
+  const ui = harness(player('local')); await tick(); choose(ui, 'dice'); changeCount(ui, 4); fill(ui);
+  changeCount(ui, 2);
+  assert.equal(draft(ui).length, 1); assert.equal(draft(ui)[0].username, 'Bot');
+  changeCount(ui, 4);
+  assert.equal(draft(ui).length, 1); assert.equal(draft(ui)[0].username, 'Bot #1');
+  fill(ui);
+  assert.deepEqual(draft(ui).map(entry => entry.username), ['Bot #1', 'Bot #2', 'Bot #3']);
+});
+
+test('Dice requires a full roster and supports human-only requests with no bot terms', async () => {
+  for (const count of [2, 3, 4]) {
+    const local = player('local'), invited = Array.from({ length: count - 1 }, (_, index) => player(`guest${index + 1}`));
+    const ui = harness(local, [], call => call.route.startsWith('profiles/') ? { profile: invited.find(entry => call.route === `profiles/${entry.username}`) }
+      : call.method === 'POST' ? { game: mixedDiceMatch(local, invited, count, { opponentType: 'player' }), user: local } : undefined);
+    await tick(); choose(ui, 'dice'); changeCount(ui, count);
+    await ui.api.requestGame({ preventDefault() {} });
+    assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
+    assert.match(ui.elements.get('gamesMessage').textContent, /Add|Fill|place|seat/i);
+    for (const entry of invited) await addInvited(ui, entry);
+    assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+    const before = draftIds(ui); fill(ui); assert.deepEqual(draftIds(ui), before);
+    ui.elements.get('gamesStake').value = '12';
+    ui.elements.get('gamesPayoutMode').value = 'single-winner';
+    await ui.api.requestGame({ preventDefault() {} }); await tick();
+    const posts = ui.calls.filter(call => call.method === 'POST');
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0].payload.recipientAccountIds, invited.map(entry => entry.accountId));
+    assert.equal(posts[0].payload.botCount, undefined); assert.equal(posts[0].payload.opponentType, undefined);
+    assert.equal(posts[0].payload.payoutMode, 'single-winner'); assert.equal(posts[0].payload.stake, 12);
+    assert.equal(ui.elements.get('gamesMessage').textContent, 'Request sent.');
+  }
+});
+
+test('Fill with bots is unavailable in RPS and TTT and cannot mutate their drafts', async () => {
+  const ui = harness(player('local')); await tick();
+  for (const type of ['tic-tac-toe', 'rock-paper-scissors']) {
+    choose(ui, type, 'player');
+    assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+    const before = draftIds(ui); fill(ui); assert.deepEqual(draftIds(ui), before);
+  }
+});
+
+test('mixed Dice sends real invitees and fills remaining places with matching bots', async () => {
+  for (const [count, humans, payoutMode] of [[3, 1, 'shared'], [4, 1, 'single-winner'], [4, 2, 'shared']]) {
+    const local = player('local'), invited = Array.from({ length: humans }, (_, index) => player(`guest${index + 1}`));
+    const ui = harness(local, [], call => call.route.startsWith('profiles/') ? { profile: invited.find(entry => call.route === `profiles/${entry.username}`) } : call.method === 'POST' ? { game: mixedDiceMatch(local, invited, count, { stake: call.payload.stake }), user: local } : undefined);
+    await tick(); choose(ui, 'dice');
+    ui.elements.get('gamesPlayerCount').value = String(count); ui.elements.get('gamesPayoutMode').value = payoutMode;
+    ui.elements.get('gamesRequestForm').dispatch('change', ui.elements.get('gamesPlayerCount'));
+    for (const entry of invited) { ui.elements.get('gamesUsername').value = entry.username; await ui.api.addPlayer(); }
+    const botCount = count - 1 - humans; fill(ui);
+    assert.equal(ui.elements.get('gamesAddPlayer').disabled, true);
+    assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+    ui.elements.get('gamesStake').value = '13'; await ui.api.requestGame({ preventDefault() {} }); await tick();
+    const posts = ui.calls.filter(call => call.method === 'POST');
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0].payload.recipientAccountIds, invited.map(entry => entry.accountId));
+    assert.equal(posts[0].payload.opponentType, 'mixed'); assert.equal(posts[0].payload.botCount, botCount);
+    assert.equal(posts[0].payload.game, 'dice'); assert.equal(posts[0].payload.stake, 13); assert.equal(posts[0].payload.payoutMode, payoutMode);
+    assert.equal(ui.elements.get('gamesMessage').textContent, 'Request sent.');
+    const rows = ui.elements.get('gamesPlayers').children;
+    for (let index = humans + 1; index < count; index++) {
+      const identity = rows[index].children[1];
+      assert.equal(identity.tagName, 'SPAN'); assert.equal(identity.href, undefined);
+      assert.equal(identity.children[1].textContent, `Bot #${index - humans}`);
+      assert.equal(rows[index].children[2].textContent, 'Accepted');
+    }
+  }
+});
+
+test('Dice bot and mixed retries keep the original participants and prize mode', async () => {
+  for (const opponent of ['bot', 'mixed']) {
+    const local = player('local'), guest = player('guest'); let attempts = 0;
+    const ui = harness(local, [], call => {
+      if (call.route === 'profiles/guest') return { profile: guest };
+      if (call.method !== 'POST') return;
+      if (++attempts === 1) throw new Error('Response lost');
+      return { game: opponent === 'mixed' ? mixedDiceMatch(local, [guest], 4) : diceMatch(local, 4), user: local };
+    });
+    await tick(); choose(ui, 'dice');
+    ui.elements.get('gamesPlayerCount').value = '4'; ui.elements.get('gamesPayoutMode').value = 'single-winner';
+    ui.elements.get('gamesRequestForm').dispatch('change', ui.elements.get('gamesPlayerCount'));
+    if (opponent === 'mixed') { ui.elements.get('gamesUsername').value = 'guest'; await ui.api.addPlayer(); }
+    fill(ui);
+    ui.elements.get('gamesStake').value = '29'; await ui.api.requestGame({ preventDefault() {} }); await tick();
+    const retry = ui.api.inspect().retry; assert.ok(retry);
+    for (const id of ['gamesPlayerCount', 'gamesPayoutMode', 'gamesOpponentType', 'gamesStake']) assert.equal(ui.elements.get(id).disabled, true);
+    assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+    const before = draftIds(ui); fill(ui);
+    removeDraft(ui, before[before.length - 1]);
+    ui.elements.get('gamesUsername').value = 'guest'; await ui.api.addPlayer();
+    assert.deepEqual(draftIds(ui), before);
+    await ui.api.perform(retry); await tick();
+    const posts = ui.calls.filter(call => call.method === 'POST');
+    assert.equal(posts.length, 2); assert.deepEqual(posts[0].payload, posts[1].payload);
+    assert.equal(posts[1].payload.botCount, opponent === 'mixed' ? 2 : 3);
+    assert.equal(posts[1].payload.stake, 29); assert.equal(posts[1].payload.payoutMode, 'single-winner');
+    assert.equal(ui.api.inspect().retry, null);
+  }
 });
 
 test('both bot games start directly without account lookup or recipient IDs', async () => {
@@ -180,4 +428,23 @@ test('an old bot response cannot reopen the match or change the next account', a
   assert.equal(ui.api.inspect().selectedId, null);
   assert.equal(ui.api.inspect().entries.length, 0);
   assert.equal(ui.elements.get('gamesOpponentType').value, 'player');
+});
+
+test('switching accounts clears a filled Dice roster and ignores an old request response', async () => {
+  const local = player('local'), next = player('next'), response = deferred();
+  const ui = harness(local, [], call => call.method === 'POST' ? response.promise : undefined);
+  await tick(); choose(ui, 'dice'); changeCount(ui, 4); fill(ui);
+  assert.equal(draft(ui).length, 3);
+  const pending = ui.api.requestGame({ preventDefault() {} });
+  assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+  ui.setUser(next);
+  assert.deepEqual(draftIds(ui), []); assert.equal(ui.api.inspect().retry, null);
+  assert.equal(ui.elements.get('gamesPlayerCount').value, '2');
+  assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+  response.resolve({ game: diceMatch(local, 4), user: { ...local, balance: 90 } });
+  await pending; await tick();
+  assert.equal(ui.context.state.user.accountId, next.accountId); assert.equal(ui.context.state.user.balance, 100);
+  assert.equal(ui.api.inspect().selectedId, null); assert.equal(ui.api.inspect().entries.length, 0);
+  choose(ui, 'dice');
+  assert.deepEqual(draftIds(ui), []); assert.equal(ui.elements.get('gamesFillBots').disabled, false);
 });

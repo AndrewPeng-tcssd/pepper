@@ -21,7 +21,6 @@ const matchPlayers = match => match.players ?? [
   { userId: match.senderUserId, accountId: match.senderAccountId, username: match.senderUsername, accepted: true },
   { userId: match.recipientUserId, accountId: match.recipientAccountId, username: match.recipientUsername, accepted: match.status !== 'pending', ...(botMatch(match) ? { isBot: true } : {}) }
 ];
-const matchUserIds = match => matchPlayers(match).map(player => player.userId);
 const walletUserIds = match => matchPlayers(match).filter(player => !player.isBot).map(player => player.userId);
 const lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
 
@@ -69,9 +68,12 @@ async function finish(store, match, session, now, { winner = null, reason, statu
       }
     }
     if (diceAwards) {
-      for (const award of diceAwards) await credit(store.users, players.find(player => player.accountId === award.accountId).userId, award.amount, session);
+      for (const award of diceAwards) {
+        const player = players.find(player => player.accountId === award.accountId);
+        if (!player.isBot) await credit(store.users, player.userId, award.amount, session);
+      }
     } else if (winner) {
-      if (!botMatch(match) || !sameId(winner, BOT_USER_ID)) await credit(store.users, winner, pot, session);
+      if (!players.find(player => sameId(player.userId, winner))?.isBot) await credit(store.users, winner, pot, session);
     } else for (const id of walletUserIds(match)) await credit(store.users, id, match.stake, session);
   }
   const update = { status, result: status === 'completed' ? diceOutcome ? diceOutcome.draw ? 'draw' : match.payoutMode === 'shared' ? 'ranked' : 'win' : winner ? 'win' : 'draw' : null,
@@ -122,6 +124,32 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     }
     return receipts.get(key);
   };
+  const diceRoll = (receipts, key) => {
+    if (!receipts.has(key)) {
+      const value = randomDice();
+      if (!Number.isInteger(value) || value < 1 || value > 6) throw new GameError(503, 'Dice unavailable. Try later.');
+      receipts.set(key, value);
+    }
+    return receipts.get(key);
+  };
+  function rollDiceBots(match, receipts, outcome = null) {
+    let state = outcome?.state ?? match.dice;
+    const moves = [...match.moves];
+    let rolls = 0;
+    while (!outcome?.complete) {
+      const eligible = eligibleDicePlayers(state, match.payoutMode, match.players.length);
+      const bot = match.players.find(player => player.isBot && eligible.includes(player.accountId));
+      if (!bot) break;
+      // A broken random source must not keep a transaction in an endless tie.
+      if (++rolls > 100) throw new GameError(503, 'Dice unavailable. Try later.');
+      const receipt = `${state.round}:${bot.accountId}`;
+      const value = diceRoll(receipts, receipt);
+      moves.push({ id: `bot:${receipt}`, userId: bot.userId, round: state.round, value, automatic: true });
+      outcome = recordDiceRoll(state, bot.accountId, value, match.payoutMode, match.players.length);
+      state = outcome.state;
+    }
+    return { dice: state, moves, outcome };
+  }
   const idFrom = value => {
     if (typeof value !== 'string' || !/^[a-f0-9]{24}$/i.test(value)) throw new GameError(400, 'Invalid match.');
     return new ObjectId(value);
@@ -146,13 +174,13 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     const publicFields = new Map(await Promise.all(people.map(async person => [person._id.toString(), await publicPlayerFields(person)])));
     return matches.map(match => {
       const publicPerson = player => {
-        if (player.isBot) return { accountId: BOT_ACCOUNT_ID, username: 'Bot', isBot: true, avatarUrl: null, role: 'player', banned: false };
+        if (player.isBot) return { accountId: player.accountId, username: player.username, isBot: true, avatarUrl: null, role: 'player', banned: false };
         const user = byId.get(player.userId.toString());
         return { accountId: player.accountId, username: user?.username ?? player.username, avatarUrl: avatarUrl(user),
           ...(user ? publicFields.get(user._id.toString()) : { role: 'player', banned: false }) };
       };
       const person = role => {
-        return publicPerson({ userId: match[`${role}UserId`], accountId: match[`${role}AccountId`], username: match[`${role}Username`], isBot: role === 'recipient' && botMatch(match) });
+        return publicPerson(matchPlayers(match).find(player => sameId(player.userId, match[`${role}UserId`])));
       };
       const mine = sameId(match.senderUserId, viewerId) ? 'sender' : 'recipient';
       const theirs = mine === 'sender' ? 'recipient' : 'sender';
@@ -203,7 +231,9 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
           outcome = recordDiceRoll(state, accountId, value, match.payoutMode, match.players.length);
           state = outcome.state;
         }
-        const update = { dice: state, moves, version: match.version + 1, updatedAt: at, expiresAt: new Date(at.getTime() + TURN_MS) };
+        const automatic = rollDiceBots({ ...match, dice: state, moves }, timeoutRolls, outcome);
+        outcome = automatic.outcome;
+        const update = { dice: automatic.dice, moves: automatic.moves, version: match.version + 1, updatedAt: at, expiresAt: new Date(at.getTime() + TURN_MS) };
         await games.updateOne({ _id: id, version: match.version }, { $set: update }, { session });
         const changed = { ...match, ...update };
         const winner = outcome?.winnerAccountId ? match.players.find(player => player.accountId === outcome.winnerAccountId).userId : null;
@@ -253,28 +283,36 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     await respond(res, await privateMatch(id, req.user._id), req.user._id);
   }));
   app.post('/api/games', requireUser, rateLimit(60, 60 * 60 * 1000), route(async (req, res) => {
-    const { game, stake, recipientAccountId, recipientAccountIds, clientRequestId, payoutMode: requestedMode, opponentType = 'player' } = req.body || {};
+    const { game, stake, recipientAccountId, recipientAccountIds, clientRequestId, payoutMode: requestedMode, opponentType = 'player', botCount: requestedBotCount } = req.body || {};
     if (!GAME_TYPES.includes(game)) throw new GameError(400, 'Choose a game.');
     if (!validStake(stake)) throw new GameError(400, 'Bet at least 1 token.');
     if (typeof clientRequestId !== 'string' || !UUID.test(clientRequestId)) throw new GameError(400, 'Invalid request ID.');
-    if (!['player', 'bot'].includes(opponentType)) throw new GameError(400, 'Choose an opponent.');
+    if (!['player', 'bot', 'mixed'].includes(opponentType)) throw new GameError(400, 'Choose an opponent.');
     const withBot = opponentType === 'bot';
-    if (withBot && game === 'dice') throw new GameError(400, 'Bots can only play Tic-Tac-Toe or Rock Paper Scissors.');
-    if (withBot && (recipientAccountId !== undefined || recipientAccountIds !== undefined || requestedMode !== undefined)) throw new GameError(400, 'Choose either a bot or a player.');
+    const mixed = opponentType === 'mixed';
+    if (mixed && game !== 'dice') throw new GameError(400, 'Choose either a bot or a player.');
+    if (game !== 'dice' && requestedBotCount !== undefined) throw new GameError(400, 'Choose a valid bot count.');
+    const defaultBotCount = withBot ? 1 : 0;
+    const botCount = game === 'dice' && requestedBotCount !== undefined ? requestedBotCount : defaultBotCount;
+    if (game === 'dice' && (!Number.isInteger(botCount) || botCount < 0 || botCount > 3
+      || ((withBot || mixed) && botCount === 0) || (opponentType === 'player' && botCount !== 0))) throw new GameError(400, 'Choose a valid bot count.');
+    if (withBot && (recipientAccountId !== undefined || recipientAccountIds !== undefined || (game !== 'dice' && requestedMode !== undefined))) throw new GameError(400, 'Choose either a bot or a player.');
     const requestedRecipients = withBot ? [] : game === 'dice' ? recipientAccountIds : [recipientAccountId];
     if (!withBot && (!Array.isArray(requestedRecipients) || requestedRecipients.length < 1 || requestedRecipients.length > (game === 'dice' ? 3 : 1)
       || requestedRecipients.some(accountId => typeof accountId !== 'string' || !ACCOUNT_ID.test(accountId)))) throw new GameError(400, 'Choose a player.');
     const requestId = clientRequestId.toLowerCase();
     const recipientIds = requestedRecipients.map(accountId => accountId.toUpperCase()).sort();
     if (new Set(recipientIds).size !== recipientIds.length) throw new GameError(400, 'Choose different players.');
+    const playerCount = 1 + recipientIds.length + botCount;
+    if (game === 'dice' && playerCount > 4) throw new GameError(400, 'Dice needs two to four players.');
     if (game === 'dice' && requestedMode !== undefined && !['shared', 'single-winner'].includes(requestedMode)) throw new GameError(400, 'Choose a prize mode.');
-    const payoutMode = game === 'dice' ? recipientIds.length === 1 ? 'single-winner' : requestedMode ?? 'shared' : null;
-    const recipientId = recipientIds[0];
+    const payoutMode = game === 'dice' ? playerCount === 2 ? 'single-winner' : requestedMode ?? 'shared' : null;
     const replay = async session => {
       const saved = await games.findOne({ senderUserId: req.user._id, clientRequestId: requestId }, session ? { session } : {});
-      const savedRecipients = saved && botMatch(saved) ? [] : saved?.game === 'dice' ? saved.players.slice(1).map(player => player.accountId).sort() : [saved?.recipientAccountId];
+      const savedRecipients = saved?.game === 'dice' ? saved.players.slice(1).filter(player => !player.isBot).map(player => player.accountId).sort()
+        : saved && botMatch(saved) ? [] : [saved?.recipientAccountId];
       if (saved && (saved.game !== game || saved.stake !== stake || (saved.opponentType ?? 'player') !== opponentType || JSON.stringify(savedRecipients) !== JSON.stringify(recipientIds)
-        || (game === 'dice' && saved.payoutMode !== payoutMode))) throw new GameError(409, 'Request terms already saved.');
+        || (game === 'dice' && (saved.payoutMode !== payoutMode || saved.players.filter(player => player.isBot).length !== botCount)))) throw new GameError(409, 'Request terms already saved.');
       return saved;
     };
     const botReceipts = new Map();
@@ -287,7 +325,12 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         const invitees = withBot ? [] : await users.find({ accountId: { $in: recipientIds } }, { session }).toArray();
         const byAccount = new Map(invitees.map(player => [player.accountId, player]));
         const recipients = recipientIds.map(accountId => byAccount.get(accountId));
-        const recipient = withBot ? { _id: BOT_USER_ID, accountId: BOT_ACCOUNT_ID, username: 'Bot' } : recipients[0];
+        const bots = Array.from({ length: botCount }, (_, index) => ({
+          _id: playerCount === 2 ? BOT_USER_ID : `bot:${index + 1}`,
+          accountId: playerCount === 2 ? BOT_ACCOUNT_ID : `BOT-${index + 1}`,
+          username: playerCount === 2 ? 'Bot' : `Bot #${index + 1}`, isBot: true
+        }));
+        const recipient = recipients[0] ?? bots[0];
         if (!sender || recipients.some(player => !player)) throw new GameError(404, 'Player unavailable.');
         if (sender.banned) throw new GameError(403, 'Account banned.');
         if (recipients.some(player => player.banned)) throw new GameError(409, 'Player unavailable.');
@@ -307,15 +350,16 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
           choices: game === 'rock-paper-scissors' ? { sender: null, recipient: null } : null,
           turnUserId: null, winnerUserId: null, escrowed: withBot, payoutReserved: withBot, moves: [],
           ...(game === 'dice' ? { payoutMode, participantUserIds: [sender._id, ...recipients.map(player => player._id)],
-            players: [sender, ...recipients].map((player, index) => ({ userId: player._id, accountId: player.accountId, username: player.username, accepted: index === 0 })),
-            dice: createDice([sender.accountId, ...recipientIds]) } : {}),
+            players: [sender, ...recipients, ...bots].map((player, index) => ({ userId: player._id, accountId: player.accountId, username: player.username, accepted: index === 0 || !!player.isBot, ...(player.isBot ? { isBot: true } : {}) })),
+            dice: createDice([sender.accountId, ...recipientIds, ...bots.map(player => player.accountId)]) } : {}),
           createdAt: at, updatedAt: at, expiresAt: new Date(at.getTime() + (withBot ? TURN_MS : REQUEST_MS))
         };
         if (withBot) {
+          const pot = stake * playerCount;
           const reserved = sender.gamePayoutReserve ?? 0;
-          if (!Number.isSafeInteger(reserved) || reserved < 0 || sender.balance > Number.MAX_SAFE_INTEGER - stake - reserved) throw new GameError(409, 'Token balance too large.');
+          if (!Number.isSafeInteger(reserved) || reserved < 0 || sender.balance > Number.MAX_SAFE_INTEGER - (pot - stake) - reserved) throw new GameError(409, 'Token balance too large.');
           const debited = await users.updateOne({ _id: sender._id, balance: sender.balance }, {
-            $inc: { balance: -stake, gamePayoutReserve: stake * 2, activityRevision: 1 }
+            $inc: { balance: -stake, gamePayoutReserve: pot, activityRevision: 1 }
           }, { session });
           if (!debited.matchedCount) throw new GameError(409, 'Token balance changed.');
           document.acceptedAt = at;
@@ -327,10 +371,13 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
               document.board[position] = 'X';
               document.moves.push({ id: 'bot:opening', userId: BOT_USER_ID, value: position, automatic: true });
             }
-          } else {
+          } else if (game === 'rock-paper-scissors') {
             const choice = CHOICES[botPick(botReceipts, 'rps-choice', CHOICES.length)];
             document.choices.recipient = choice;
             document.moves.push({ id: 'bot:choice', userId: BOT_USER_ID, value: choice, automatic: true });
+          } else {
+            const automatic = rollDiceBots(document, botReceipts);
+            document.dice = automatic.dice; document.moves = automatic.moves;
           }
         }
         await games.insertOne(document, { session });
@@ -347,6 +394,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     const id = await prepare(req);
     // Retain one choice if MongoDB retries this acceptance transaction.
     let xUserId;
+    const botReceipts = new Map();
     const match = await atomic(client, async session => {
       const saved = await privateMatch(id, req.user._id, session);
       if (saved.game === 'dice') {
@@ -365,7 +413,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         const everyoneAccepted = players.every(player => player.accepted);
         const pot = saved.stake * players.length;
         if (everyoneAccepted) {
-          for (const userId of matchUserIds(saved).sort((a, b) => a.toString().localeCompare(b.toString()))) {
+          for (const userId of walletUserIds(saved).sort((a, b) => a.toString().localeCompare(b.toString()))) {
             const user = await users.findOne({ _id: userId }, { session });
             if (!user || user.banned) throw new GameError(409, 'Player unavailable.');
             if (!Number.isSafeInteger(user.balance) || user.balance < saved.stake) throw new GameError(409, 'Not enough tokens.');
@@ -380,6 +428,10 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         const at = currentDate();
         const update = { players, updatedAt: at, version: saved.version + 1,
           ...(everyoneAccepted ? { status: 'playing', escrowed: true, payoutReserved: true, acceptedAt: at, expiresAt: new Date(at.getTime() + TURN_MS) } : {}) };
+        if (everyoneAccepted) {
+          const automatic = rollDiceBots({ ...saved, ...update }, botReceipts);
+          update.dice = automatic.dice; update.moves = automatic.moves;
+        }
         await games.updateOne({ _id: id, version: saved.version }, { $set: update }, { session });
         return { ...saved, ...update };
       }
@@ -464,10 +516,11 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         if (!eligibleDicePlayers(saved.dice, saved.payoutMode, saved.players.length).includes(actor.accountId)) throw new GameError(409, 'Roll unavailable.');
         rolledDice ??= randomDice();
         if (!Number.isInteger(rolledDice) || rolledDice < 1 || rolledDice > 6) throw new GameError(503, 'Dice unavailable. Try later.');
-        const outcome = recordDiceRoll(saved.dice, actor.accountId, rolledDice, saved.payoutMode, saved.players.length);
+        let outcome = recordDiceRoll(saved.dice, actor.accountId, rolledDice, saved.payoutMode, saved.players.length);
         const at = currentDate();
-        const update = { dice: outcome.state, updatedAt: at, version: saved.version + 1, expiresAt: new Date(at.getTime() + TURN_MS),
-          moves: [...saved.moves, { id: moveId, userId: req.user._id, round, value: rolledDice }] };
+        const automatic = rollDiceBots({ ...saved, moves: [...saved.moves, { id: moveId, userId: req.user._id, round, value: rolledDice }] }, botReceipts, outcome);
+        outcome = automatic.outcome;
+        const update = { dice: automatic.dice, updatedAt: at, version: saved.version + 1, expiresAt: new Date(at.getTime() + TURN_MS), moves: automatic.moves };
         await games.updateOne({ _id: id, version: saved.version }, { $set: update }, { session });
         const changed = { ...saved, ...update };
         const winner = outcome.winnerAccountId ? saved.players.find(player => player.accountId === outcome.winnerAccountId).userId : null;

@@ -59,14 +59,16 @@ const move = (api, actor, game, value, clientMoveId = crypto.randomUUID()) => ap
 const wallet = (store, actor) => store.users.findOne({ _id: actor.id });
 const document = (store, game) => store.games.findOne({ _id: new ObjectId(game.id) });
 
-test('bot games reject unsupported types, mixed recipients, and invalid stakes without wallet changes', async t => {
+test('bot games reject unsupported types, invalid bot rosters, and invalid stakes without wallet changes', async t => {
   const { api, store } = await fixture(t);
   const a = await player(api, store, 'bot_validate_a');
   const b = await player(api, store, 'bot_validate_b');
   const before = await wallet(store, a);
   assert.equal((await api('/api/games', terms())).status, 401);
   for (const extra of [
-    { game: 'dice', recipientAccountIds: [b.accountId] }, { game: 'dice' }, { game: 'poker' },
+    { game: 'dice', recipientAccountIds: [b.accountId] }, { game: 'dice', botCount: 4 }, { game: 'poker' },
+    { game: 'dice', botCount: 0 }, { game: 'dice', botCount: 1.5 }, { game: 'dice', botCount: '1' },
+    { opponentType: 'mixed' }, { opponentType: 'mixed', recipientAccountIds: [b.accountId] },
     { opponentType: 'robot' }, { opponentType: true }, { opponentType: null },
     { recipientAccountId: b.accountId }, { recipientAccountIds: [b.accountId] },
     { stake: 0 }, { stake: -1 }, { stake: 0.5 }, { stake: '10' }, { stake: Number.MAX_SAFE_INTEGER },
