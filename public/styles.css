@@ -374,6 +374,10 @@ input:focus { border-color: var(--accent); }
 .games-request h2 { margin: 0 0 8px; font-size: 23px; }
 .games-request > label { margin-top: 7px; font-size: 13px; font-weight: 600; }
 .games-request > .button { justify-self: start; margin-top: 14px; }
+.games-opponent-options label { display: block; margin: 7px 0; font-size: 13px; font-weight: 600; }
+.games-opponent-options select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--button-line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 14px; }
+.games-bot-note { margin: 2px 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.games-bot-avatar { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 50%; background: var(--paper); font-size: 18px; }
 .games-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; min-width: 0; margin: 0 0 4px; padding: 0; border: 0; }
 .games-pick legend { margin-bottom: 9px; font-size: 13px; font-weight: 600; }
 .games-pick label { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; min-height: 132px; padding: 14px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); font-size: 12px; font-weight: 600; text-align: center; cursor: pointer; }
@@ -390,7 +394,7 @@ input:focus { border-color: var(--accent); }
 .games-list-card-heading { margin-bottom: 17px; }
 .games-list-card h3 { margin: 0; font-size: 17px; }
 .games-list-card .player-identity { width: fit-content; color: var(--ink); font-size: 14px; text-decoration: none; overflow-wrap: anywhere; }
-.games-list-card .player-identity:hover { color: var(--accent); }
+.games-list-card a.player-identity:hover { color: var(--accent); }
 .games-list-stake { margin: 14px 0; color: var(--muted); font-size: 13px; }
 .games-session { max-width: 720px; margin: 0 auto; padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 .games-session > h2 { margin: 26px 0; text-align: center; font-size: clamp(25px, 3vw, 34px); }
@@ -399,7 +403,7 @@ input:focus { border-color: var(--accent); }
 .games-player:first-child { border-top: 3px solid var(--accent); }
 .games-player-label { display: block; margin-bottom: 11px; color: var(--muted); font-size: 12px; }
 .games-player .player-identity { justify-content: center; flex-wrap: wrap; color: var(--ink); font-size: 14px; text-decoration: none; overflow-wrap: anywhere; }
-.games-player .player-identity:hover { color: var(--accent); }
+.games-player a.player-identity:hover { color: var(--accent); }
 .games-player-symbol { display: block; margin-top: 12px; color: var(--accent); font-size: 23px; }
 .games-stakes { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 0; color: var(--muted); font-size: 13px; }
 .games-stakes strong { color: var(--ink); }

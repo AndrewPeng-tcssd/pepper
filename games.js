@@ -7,18 +7,22 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{1
 const ACCOUNT_ID = /^PPR-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const GAME_TYPES = ['tic-tac-toe', 'rock-paper-scissors', 'dice'];
 const CHOICES = ['rock', 'paper', 'scissors'];
+const BOT_USER_ID = 'bot';
+const BOT_ACCOUNT_ID = 'BOT';
 const ACTIVE = ['pending', 'playing'];
 const REQUEST_MS = 10 * 60 * 1000;
 const TURN_MS = 2 * 60 * 1000;
 const MAX_STAKE = Math.floor(Number.MAX_SAFE_INTEGER / 4);
 const validStake = stake => Number.isSafeInteger(stake) && stake >= 1 && stake <= MAX_STAKE;
 const sameId = (a, b) => a?.toString() === b?.toString();
+const botMatch = match => match.opponentType === 'bot';
 const participants = userId => ({ $or: [{ participantUserIds: userId }, { senderUserId: userId }, { recipientUserId: userId }] });
 const matchPlayers = match => match.players ?? [
   { userId: match.senderUserId, accountId: match.senderAccountId, username: match.senderUsername, accepted: true },
-  { userId: match.recipientUserId, accountId: match.recipientAccountId, username: match.recipientUsername, accepted: match.status !== 'pending' }
+  { userId: match.recipientUserId, accountId: match.recipientAccountId, username: match.recipientUsername, accepted: match.status !== 'pending', ...(botMatch(match) ? { isBot: true } : {}) }
 ];
 const matchUserIds = match => matchPlayers(match).map(player => player.userId);
+const walletUserIds = match => matchPlayers(match).filter(player => !player.isBot).map(player => player.userId);
 const lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
 
 class GameError extends Error {
@@ -57,7 +61,7 @@ async function finish(store, match, session, now, { winner = null, reason, statu
     : null;
   if (match.escrowed) {
     if (match.payoutReserved) {
-      for (const id of matchUserIds(match)) {
+      for (const id of walletUserIds(match)) {
         const released = await store.users.updateOne({ _id: id, gamePayoutReserve: { $gte: pot } }, {
           $inc: { gamePayoutReserve: -pot }
         }, { session });
@@ -66,8 +70,9 @@ async function finish(store, match, session, now, { winner = null, reason, statu
     }
     if (diceAwards) {
       for (const award of diceAwards) await credit(store.users, players.find(player => player.accountId === award.accountId).userId, award.amount, session);
-    } else if (winner) await credit(store.users, winner, pot, session);
-    else for (const id of matchUserIds(match)) await credit(store.users, id, match.stake, session);
+    } else if (winner) {
+      if (!botMatch(match) || !sameId(winner, BOT_USER_ID)) await credit(store.users, winner, pot, session);
+    } else for (const id of walletUserIds(match)) await credit(store.users, id, match.stake, session);
   }
   const update = { status, result: status === 'completed' ? diceOutcome ? diceOutcome.draw ? 'draw' : match.payoutMode === 'shared' ? 'ranked' : 'win' : winner ? 'win' : 'draw' : null,
     winnerUserId: winner, reason, escrowed: false, payoutReserved: false, expiresAt: null, turnUserId: null,
@@ -105,10 +110,18 @@ async function cancelGamesForAccount(store, userId, session, now = new Date()) {
     { session, arrayFilters: [{ 'player.userId': userId }] });
 }
 
-function registerGames(app, store, { requireUser, rateLimit, signedInUser, publicPlayerFields = async () => ({ role: 'player', banned: false }), now = Date.now, randomDice = () => crypto.randomInt(1, 7) }) {
+function registerGames(app, store, { requireUser, rateLimit, signedInUser, publicPlayerFields = async () => ({ role: 'player', banned: false }), now = Date.now, randomDice = () => crypto.randomInt(1, 7), randomBot = length => crypto.randomInt(length) }) {
   const { client, users, games } = store;
   const currentDate = () => new Date(now());
   const otherId = (match, id) => sameId(match.senderUserId, id) ? match.recipientUserId : match.senderUserId;
+  const botPick = (receipts, key, length) => {
+    if (!receipts.has(key)) {
+      const value = randomBot(length);
+      if (!Number.isInteger(value) || value < 0 || value >= length) throw new GameError(503, 'Bot unavailable. Try later.');
+      receipts.set(key, value);
+    }
+    return receipts.get(key);
+  };
   const idFrom = value => {
     if (typeof value !== 'string' || !/^[a-f0-9]{24}$/i.test(value)) throw new GameError(400, 'Invalid match.');
     return new ObjectId(value);
@@ -127,18 +140,19 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     return match;
   };
   async function serialize(matches, viewerId) {
-    const ids = [...new Map(matches.flatMap(matchUserIds).map(id => [id.toString(), id])).values()];
+    const ids = [...new Map(matches.flatMap(walletUserIds).map(id => [id.toString(), id])).values()];
     const people = ids.length ? await users.find({ _id: { $in: ids } }, { projection: { username: 1, accountId: 1, avatarVersion: 1, role: 1, banned: 1 } }).toArray() : [];
     const byId = new Map(people.map(person => [person._id.toString(), person]));
     const publicFields = new Map(await Promise.all(people.map(async person => [person._id.toString(), await publicPlayerFields(person)])));
     return matches.map(match => {
       const publicPerson = player => {
+        if (player.isBot) return { accountId: BOT_ACCOUNT_ID, username: 'Bot', isBot: true, avatarUrl: null, role: 'player', banned: false };
         const user = byId.get(player.userId.toString());
         return { accountId: player.accountId, username: user?.username ?? player.username, avatarUrl: avatarUrl(user),
           ...(user ? publicFields.get(user._id.toString()) : { role: 'player', banned: false }) };
       };
       const person = role => {
-        return publicPerson({ userId: match[`${role}UserId`], accountId: match[`${role}AccountId`], username: match[`${role}Username`] });
+        return publicPerson({ userId: match[`${role}UserId`], accountId: match[`${role}AccountId`], username: match[`${role}Username`], isBot: role === 'recipient' && botMatch(match) });
       };
       const mine = sameId(match.senderUserId, viewerId) ? 'sender' : 'recipient';
       const theirs = mine === 'sender' ? 'recipient' : 'sender';
@@ -146,7 +160,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         ? match.xUserId ?? (['playing', 'completed'].includes(match.status) ? match.senderUserId : null)
         : null;
       return {
-        id: match._id.toString(), clientRequestId: match.clientRequestId, game: match.game, stake: match.stake,
+        id: match._id.toString(), clientRequestId: match.clientRequestId, game: match.game, stake: match.stake, opponentType: match.opponentType ?? 'player',
         sender: person('sender'), recipient: person('recipient'), status: match.status, version: match.version,
         xAccountId: xUserId ? sameId(xUserId, match.senderUserId) ? match.senderAccountId : match.recipientAccountId : null,
         board: match.board, turnAccountId: match.turnUserId ? sameId(match.turnUserId, match.senderUserId) ? match.senderAccountId : match.recipientAccountId : null,
@@ -239,13 +253,17 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     await respond(res, await privateMatch(id, req.user._id), req.user._id);
   }));
   app.post('/api/games', requireUser, rateLimit(60, 60 * 60 * 1000), route(async (req, res) => {
-    const { game, stake, recipientAccountId, recipientAccountIds, clientRequestId, payoutMode: requestedMode } = req.body || {};
+    const { game, stake, recipientAccountId, recipientAccountIds, clientRequestId, payoutMode: requestedMode, opponentType = 'player' } = req.body || {};
     if (!GAME_TYPES.includes(game)) throw new GameError(400, 'Choose a game.');
     if (!validStake(stake)) throw new GameError(400, 'Bet at least 1 token.');
     if (typeof clientRequestId !== 'string' || !UUID.test(clientRequestId)) throw new GameError(400, 'Invalid request ID.');
-    const requestedRecipients = game === 'dice' ? recipientAccountIds : [recipientAccountId];
-    if (!Array.isArray(requestedRecipients) || requestedRecipients.length < 1 || requestedRecipients.length > (game === 'dice' ? 3 : 1)
-      || requestedRecipients.some(accountId => typeof accountId !== 'string' || !ACCOUNT_ID.test(accountId))) throw new GameError(400, 'Choose a player.');
+    if (!['player', 'bot'].includes(opponentType)) throw new GameError(400, 'Choose an opponent.');
+    const withBot = opponentType === 'bot';
+    if (withBot && game === 'dice') throw new GameError(400, 'Bots can only play Tic-Tac-Toe or Rock Paper Scissors.');
+    if (withBot && (recipientAccountId !== undefined || recipientAccountIds !== undefined || requestedMode !== undefined)) throw new GameError(400, 'Choose either a bot or a player.');
+    const requestedRecipients = withBot ? [] : game === 'dice' ? recipientAccountIds : [recipientAccountId];
+    if (!withBot && (!Array.isArray(requestedRecipients) || requestedRecipients.length < 1 || requestedRecipients.length > (game === 'dice' ? 3 : 1)
+      || requestedRecipients.some(accountId => typeof accountId !== 'string' || !ACCOUNT_ID.test(accountId)))) throw new GameError(400, 'Choose a player.');
     const requestId = clientRequestId.toLowerCase();
     const recipientIds = requestedRecipients.map(accountId => accountId.toUpperCase()).sort();
     if (new Set(recipientIds).size !== recipientIds.length) throw new GameError(400, 'Choose different players.');
@@ -254,21 +272,22 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     const recipientId = recipientIds[0];
     const replay = async session => {
       const saved = await games.findOne({ senderUserId: req.user._id, clientRequestId: requestId }, session ? { session } : {});
-      const savedRecipients = saved?.game === 'dice' ? saved.players.slice(1).map(player => player.accountId).sort() : [saved?.recipientAccountId];
-      if (saved && (saved.game !== game || saved.stake !== stake || JSON.stringify(savedRecipients) !== JSON.stringify(recipientIds)
+      const savedRecipients = saved && botMatch(saved) ? [] : saved?.game === 'dice' ? saved.players.slice(1).map(player => player.accountId).sort() : [saved?.recipientAccountId];
+      if (saved && (saved.game !== game || saved.stake !== stake || (saved.opponentType ?? 'player') !== opponentType || JSON.stringify(savedRecipients) !== JSON.stringify(recipientIds)
         || (game === 'dice' && saved.payoutMode !== payoutMode))) throw new GameError(409, 'Request terms already saved.');
       return saved;
     };
+    const botReceipts = new Map();
     let match;
     try {
       match = await atomic(client, async session => {
         const saved = await replay(session);
         if (saved) return saved;
         const sender = await users.findOne({ _id: req.user._id }, { session });
-        const invitees = await users.find({ accountId: { $in: recipientIds } }, { session }).toArray();
+        const invitees = withBot ? [] : await users.find({ accountId: { $in: recipientIds } }, { session }).toArray();
         const byAccount = new Map(invitees.map(player => [player.accountId, player]));
         const recipients = recipientIds.map(accountId => byAccount.get(accountId));
-        const recipient = recipients[0];
+        const recipient = withBot ? { _id: BOT_USER_ID, accountId: BOT_ACCOUNT_ID, username: 'Bot' } : recipients[0];
         if (!sender || recipients.some(player => !player)) throw new GameError(404, 'Player unavailable.');
         if (sender.banned) throw new GameError(403, 'Account banned.');
         if (recipients.some(player => player.banned)) throw new GameError(409, 'Player unavailable.');
@@ -281,17 +300,39 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         }
         const at = currentDate();
         const document = {
-          _id: new ObjectId(), clientRequestId: requestId, game, stake, status: 'pending', version: 1,
+          _id: new ObjectId(), clientRequestId: requestId, game, stake, opponentType, status: withBot ? 'playing' : 'pending', version: 1,
           senderUserId: sender._id, senderAccountId: sender.accountId, senderUsername: sender.username,
           recipientUserId: recipient._id, recipientAccountId: recipient.accountId, recipientUsername: recipient.username,
           board: game === 'tic-tac-toe' ? Array(9).fill(null) : null,
           choices: game === 'rock-paper-scissors' ? { sender: null, recipient: null } : null,
-          turnUserId: null, winnerUserId: null, escrowed: false, moves: [],
+          turnUserId: null, winnerUserId: null, escrowed: withBot, payoutReserved: withBot, moves: [],
           ...(game === 'dice' ? { payoutMode, participantUserIds: [sender._id, ...recipients.map(player => player._id)],
             players: [sender, ...recipients].map((player, index) => ({ userId: player._id, accountId: player.accountId, username: player.username, accepted: index === 0 })),
             dice: createDice([sender.accountId, ...recipientIds]) } : {}),
-          createdAt: at, updatedAt: at, expiresAt: new Date(at.getTime() + REQUEST_MS)
+          createdAt: at, updatedAt: at, expiresAt: new Date(at.getTime() + (withBot ? TURN_MS : REQUEST_MS))
         };
+        if (withBot) {
+          const reserved = sender.gamePayoutReserve ?? 0;
+          if (!Number.isSafeInteger(reserved) || reserved < 0 || sender.balance > Number.MAX_SAFE_INTEGER - stake - reserved) throw new GameError(409, 'Token balance too large.');
+          const debited = await users.updateOne({ _id: sender._id, balance: sender.balance }, {
+            $inc: { balance: -stake, gamePayoutReserve: stake * 2, activityRevision: 1 }
+          }, { session });
+          if (!debited.matchedCount) throw new GameError(409, 'Token balance changed.');
+          document.acceptedAt = at;
+          if (game === 'tic-tac-toe') {
+            document.xUserId = botPick(botReceipts, 'first-player', 2) === 0 ? sender._id : BOT_USER_ID;
+            document.turnUserId = sender._id;
+            if (sameId(document.xUserId, BOT_USER_ID)) {
+              const position = botPick(botReceipts, 'opening-square', 9);
+              document.board[position] = 'X';
+              document.moves.push({ id: 'bot:opening', userId: BOT_USER_ID, value: position, automatic: true });
+            }
+          } else {
+            const choice = CHOICES[botPick(botReceipts, 'rps-choice', CHOICES.length)];
+            document.choices.recipient = choice;
+            document.moves.push({ id: 'bot:choice', userId: BOT_USER_ID, value: choice, automatic: true });
+          }
+        }
         await games.insertOne(document, { session });
         return document;
       });
@@ -405,6 +446,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     if (typeof clientMoveId !== 'string' || !UUID.test(clientMoveId)) throw new GameError(400, 'Invalid move ID.');
     const moveId = clientMoveId.toLowerCase();
     let rolledDice;
+    const botReceipts = new Map();
     const match = await atomic(client, async session => {
       await lockActor(req.user._id, session);
       const saved = await privateMatch(id, req.user._id, session);
@@ -454,6 +496,16 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         else if (update.board.every(Boolean)) complete = true;
         update.turnUserId = otherId(saved, req.user._id);
         update.expiresAt = new Date(at.getTime() + TURN_MS);
+        if (botMatch(saved) && !complete) {
+          const empty = update.board.flatMap((square, index) => square === null ? [index] : []);
+          const botPosition = empty[botPick(botReceipts, `square:${update.board.join(',')}`, empty.length)];
+          const botSymbol = sameId(saved.xUserId, BOT_USER_ID) ? 'X' : 'O';
+          update.board[botPosition] = botSymbol;
+          update.moves.push({ id: `bot:${moveId}`, userId: BOT_USER_ID, value: botPosition, automatic: true });
+          if (lines.some(line => line.every(index => update.board[index] === botSymbol))) { winner = BOT_USER_ID; complete = true; }
+          else if (update.board.every(Boolean)) complete = true;
+          update.turnUserId = saved.senderUserId;
+        }
       } else {
         const role = sameId(saved.senderUserId, req.user._id) ? 'sender' : 'recipient';
         if (saved.choices[role]) throw new GameError(409, 'Choice already submitted.');

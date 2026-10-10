@@ -17,17 +17,18 @@
   const isInvited = game => game.sender.accountId !== games.identity && !!self(game);
   const needsAcceptance = game => isInvited(game) && (game.game !== 'dice' || !self(game).accepted);
   const gameType = () => el('gamesRequestForm').querySelector('input[name="gameType"]:checked').value;
+  const opponentType = () => gameType() !== 'dice' && el('gamesOpponentType').value === 'bot' ? 'bot' : 'player';
   const playerCount = () => Math.max(2, Math.min(4, Number(el('gamesPlayerCount').value) || 2));
   const current = (identity, identityRevision) => state.user?.accountId === identity && games.identity === identity && userIdentityRevision === identityRevision;
   const count = value => Number(value || 0).toLocaleString();
   const playerPicker = window.PepperPlayerPicker?.attach({
     input: el('gamesUsername'),
-    isEnabled: () => !!state.user && !accountBanned && pageKind === 'games' && !games.selectedId && !locked(),
+    isEnabled: () => !!state.user && !accountBanned && pageKind === 'games' && !games.selectedId && !locked() && opponentType() === 'player',
     renderAvatar: player => profileAvatar(player),
     search: async prefix => {
-      const identity = games.identity, revision = userIdentityRevision, navigation = routeRevision;
+      const identity = games.identity, revision = userIdentityRevision, navigation = routeRevision, draftRevision = games.draftRevision;
       const { players } = await api(`players?username=${encodeURIComponent(prefix)}`);
-      return current(identity, revision) && navigation === routeRevision && pageKind === 'games' ? players.filter(player => player.accountId !== identity && (gameType() !== 'dice' || !games.invitees.some(invitee => invitee.accountId === player.accountId))) : [];
+      return current(identity, revision) && navigation === routeRevision && pageKind === 'games' && draftRevision === games.draftRevision && opponentType() === 'player' ? players.filter(player => player.accountId !== identity && (gameType() !== 'dice' || !games.invitees.some(invitee => invitee.accountId === player.accountId))) : [];
     },
     onSelect: player => { games.pickedPlayer = player; message(el('gamesMessage'), ''); }
   });
@@ -55,6 +56,11 @@
     return { pending: 'Requested', playing: 'In progress', declined: 'Declined', cancelled: 'Cancelled', expired: 'Expired' }[game.status] || game.status;
   }
   function playerLink(player) {
+    if (player.isBot) {
+      const identity = document.createElement('span'); identity.className = 'player-identity games-bot-identity';
+      const icon = document.createElement('span'); icon.className = 'games-bot-avatar'; icon.textContent = '🤖'; icon.setAttribute('aria-hidden', 'true');
+      const name = document.createElement('span'); name.textContent = 'Bot'; identity.append(icon, name); return identity;
+    }
     const link = document.createElement('a'); link.href = profileHref(player.username); link.className = 'player-identity';
     const name = document.createElement('span'); name.textContent = player.username;
     link.append(profileAvatar(player), name, playerRoleBadges(player)); return link;
@@ -73,10 +79,18 @@
   }
   function renderDraft() {
     const dice = gameType() === 'dice';
+    if (dice) el('gamesOpponentType').value = 'player';
+    const bot = opponentType() === 'bot';
+    el('gamesOpponentOptions').hidden = dice;
+    el('gamesOpponentType').disabled = locked() || dice;
+    el('gamesUsernameLabel').hidden = bot;
+    el('gamesUsernameField').hidden = bot;
+    el('gamesUsername').disabled = locked() || bot;
+    el('gamesBotNote').hidden = !bot;
     el('gamesDiceOptions').hidden = !dice;
     el('gamesAddPlayer').hidden = !dice;
     el('gamesInvitees').hidden = !dice;
-    el('gamesUsername').required = !dice;
+    el('gamesUsername').required = !dice && !bot;
     el('gamesPayoutModeField').hidden = !dice || playerCount() === 2;
     el('gamesAddPlayer').disabled = locked() || games.invitees.length >= playerCount() - 1;
     const signature = JSON.stringify([games.identity, dice, playerCount(), locked(), games.invitees]);
@@ -205,7 +219,8 @@
     el('gamesStakeSummary').textContent = invalidRequest(game) ? 'Invalid bet' : `${count(game.stake)} tokens each`;
     el('gamesPot').textContent = invalidRequest(game) ? '' : `${count(game.pot ?? game.stake * participants(game).length)} token pot${game.game === 'dice' ? ' · ' + payoutLabel(game) : ''}`;
     const ended = game.status === 'completed';
-    el('gamesTurn').textContent = game.status === 'pending' ? 'Awaiting acceptance' : ended ? game.result === 'draw' ? 'Draw · stakes returned' : game.winnerAccountId === games.identity ? `You won ${count(game.stake * 2)} tokens` : 'Opponent won the pot' : game.status !== 'playing' ? status(game) : game.game === 'tic-tac-toe' ? game.turnAccountId === games.identity ? 'Your turn' : 'Opponent’s turn' : game.yourChoice ? 'Waiting for opponent' : 'Choose your move';
+    const opponentName = game.opponentType === 'bot' ? 'Bot' : 'Opponent';
+    el('gamesTurn').textContent = game.status === 'pending' ? 'Awaiting acceptance' : ended ? game.result === 'draw' ? 'Draw · stakes returned' : game.winnerAccountId === games.identity ? `You won ${count(game.stake * 2)} tokens` : `${opponentName} won the pot` : game.status !== 'playing' ? status(game) : game.game === 'tic-tac-toe' ? game.turnAccountId === games.identity ? 'Your turn' : `${opponentName}’s turn` : game.yourChoice ? 'Waiting for opponent' : 'Choose your move';
     if (game.game === 'dice') el('gamesTurn').textContent = game.status === 'pending' ? 'Waiting for players' : ended ? game.result === 'draw' ? 'Draw · stakes returned' : `${count(game.payouts?.[games.identity] ?? game.placements?.find(placement => placement.accountId === games.identity)?.payout)} tokens received` : game.status !== 'playing' ? status(game) : game.eligibleAccountIds?.includes(games.identity) ? 'Roll your dice' : 'Waiting for rolls';
     if (diceRolling(game)) el('gamesTurn').textContent = 'Rolling…';
     const showPlay = game.status === 'playing' || ended;
@@ -233,7 +248,7 @@
       }
       const yours = document.createElement('p'); yours.textContent = `You: ${choiceNames[game.yourChoice] || 'Choosing…'}`;
       const theirs = document.createElement('p'); const opponentChoice = game.choices?.[game.sender.accountId === games.identity ? 'recipient' : 'sender'];
-      theirs.textContent = `Opponent: ${choiceNames[opponentChoice] || (game.opponentChosen ? 'Ready' : ended ? 'No move' : 'Choosing…')}`;
+      theirs.textContent = `${opponentName}: ${choiceNames[opponentChoice] || (game.opponentChosen ? 'Ready' : ended ? 'No move' : 'Choosing…')}`;
       el('gamesReveal').append(yours, theirs);
     }
     renderDice(game, showPlay);
@@ -268,8 +283,9 @@
     el('gamesBalance').textContent = state.user ? `${count(state.user.balance)} tokens` : '';
     for (const input of el('gamesRequestForm').querySelectorAll('input, select')) input.disabled = locked();
     renderDraft();
-    if (locked() || games.selectedId || !state.user || pageKind !== 'games') playerPicker?.close();
-    el('gamesSend').disabled = locked(); el('gamesSend').textContent = games.action?.action === 'request' ? 'Sending…' : 'Send request';
+    if (locked() || games.selectedId || !state.user || pageKind !== 'games' || opponentType() === 'bot') playerPicker?.close();
+    const botRequest = games.action?.action === 'request' ? games.action.payload?.opponentType === 'bot' : opponentType() === 'bot';
+    el('gamesSend').disabled = locked(); el('gamesSend').textContent = games.action?.action === 'request' ? botRequest ? 'Starting…' : 'Sending…' : botRequest ? 'Start match' : 'Send request';
     el('gamesRefresh').disabled = busy() || games.loading;
     el('gamesRetry').hidden = !games.retry; el('gamesRetry').disabled = busy(); el('gamesBack').disabled = busy();
     const focused = document.activeElement?.closest('[data-game-action]');
@@ -286,7 +302,7 @@
     if (identity !== games.identity) {
       playerPicker?.reset();
       Object.assign(games, { identity, revision: games.revision + 1, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, notificationError: null, resignId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: games.draftRevision + 1 });
-      el('gamesRequestForm').reset(); message(el('gamesMessage'), '');
+      el('gamesRequestForm').reset(); el('gamesOpponentType').value = 'player'; message(el('gamesMessage'), '');
       if (identity) void load();
     }
     render();
@@ -306,7 +322,7 @@
       if (accountRevision === authRevision) updateUser(data.user);
       if (games.retry?.action === 'request') {
         const saved = games.entries.find(game => game.clientRequestId === games.retry.payload.clientRequestId && game.sender.accountId === identity);
-        if (saved) { games.retry = null; message(el('gamesMessage'), 'Request sent.', true); }
+        if (saved) { games.retry = null; message(el('gamesMessage'), saved.opponentType === 'bot' ? 'Match started.' : 'Request sent.', true); }
       }
     } catch (error) {
       if (!current(identity, identityRevision) || games.revision !== revision) return;
@@ -324,7 +340,8 @@
     if (!state.user || busy() || (games.retry && games.retry !== operation)) return;
     const identity = games.identity, identityRevision = userIdentityRevision, navigationRevision = routeRevision, accountRevision = authRevision;
     games.revision++; games.loading = false; games.action = operation; games.notificationError = null;
-    message(el('gamesMessage'), operation.action === 'request' ? 'Sending request…' : 'Saving…'); render();
+    const botRequest = operation.action === 'request' && operation.payload.opponentType === 'bot';
+    message(el('gamesMessage'), operation.action === 'request' ? botRequest ? 'Starting match…' : 'Sending request…' : 'Saving…'); render();
     try {
       const game = games.entries.find(entry => entry.id === operation.id);
       const animateRoll = game && diceRolling(game) && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -332,9 +349,9 @@
       const [data] = await Promise.all([api(operation.action === 'request' ? 'games' : `games/${encodeURIComponent(operation.id)}/${operation.action}`, { method: 'POST', body: JSON.stringify(operation.payload || {}) }), animation]);
       if (!current(identity, identityRevision)) return;
       remember(data.game); games.retry = null; games.resignId = null; if (accountRevision === authRevision) updateUser(data.user);
-      if (operation.action === 'request') { el('gamesRequestForm').reset(); games.invitees = []; games.pickedPlayer = null; games.draftRevision++; }
+      if (operation.action === 'request') { el('gamesRequestForm').reset(); el('gamesOpponentType').value = 'player'; games.invitees = []; games.pickedPlayer = null; games.draftRevision++; }
       if (['request', 'accept'].includes(operation.action) && pageKind === 'games' && navigationRevision === routeRevision) openGame(data.game.id);
-      message(el('gamesMessage'), operation.action === 'request' ? 'Request sent.' : operation.action === 'decline' ? 'Request declined.' : operation.action === 'cancel' ? 'Request cancelled.' : '', true);
+      message(el('gamesMessage'), operation.action === 'request' ? botRequest ? 'Match started.' : 'Request sent.' : operation.action === 'decline' ? 'Request declined.' : operation.action === 'cancel' ? 'Request cancelled.' : '', true);
     } catch (error) {
       if (!current(identity, identityRevision)) return;
       if (error.status === 401) { setUser(null); return; }
@@ -370,10 +387,14 @@
     event.preventDefault();
     playerPicker?.close();
     if (!state.user || locked()) return;
-    const username = el('gamesUsername').value.trim(), rawStake = el('gamesStake').value.trim(), stake = Number(rawStake), type = gameType();
-    if (type !== 'dice' && !username) { message(el('gamesMessage'), 'Enter a username.'); return; }
+    const username = el('gamesUsername').value.trim(), rawStake = el('gamesStake').value.trim(), stake = Number(rawStake), type = gameType(), bot = opponentType() === 'bot';
+    if (type !== 'dice' && !bot && !username) { message(el('gamesMessage'), 'Enter a username.'); return; }
     if (!rawStake || !validStake(stake)) { message(el('gamesMessage'), 'Bet at least 1 token.'); return; }
     if (stake > state.user.balance) { message(el('gamesMessage'), 'Not enough tokens.'); return; }
+    if (bot) {
+      await perform({ action: 'request', payload: { opponentType: 'bot', game: type, stake, clientRequestId: crypto.randomUUID() } });
+      return;
+    }
     if (type === 'dice') {
       const needed = playerCount() - 1 - games.invitees.length;
       if (needed !== 0) { message(el('gamesMessage'), `Add ${needed} more ${needed === 1 ? 'player' : 'players'}.`); return; }
@@ -419,7 +440,7 @@
     if (locked() || ['gamesUsername', 'gamesStake'].includes(event.target.id)) return;
     games.draftRevision++; games.pickedPlayer = null;
     games.invitees = games.invitees.slice(0, playerCount() - 1);
-    playerPicker?.close(); renderDraft();
+    playerPicker?.close(); render();
   });
   el('gamesUsername').addEventListener('input', () => { games.pickedPlayer = null; });
   el('gamesBack').addEventListener('click', () => { if (!busy()) { games.selectedId = null; games.resignId = null; render(); } });

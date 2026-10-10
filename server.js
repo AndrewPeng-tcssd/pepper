@@ -432,7 +432,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
 
   registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
-  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields, randomDice: options.randomDice });
+  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields, randomDice: options.randomDice, randomBot: options.randomBot });
   registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime, claimIntervalMs: CLAIM_INTERVAL_MS });
   const news = registerNews(app, { users, changelog, announcements, newsComments, announcementSeen }, {
     requireUser, rateLimit, moderation, now: currentTime, publicAnnouncement: entry => publicAnnouncementEntry(entry)

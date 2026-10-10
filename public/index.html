@@ -215,17 +215,19 @@
       <div id="gamesAccount" hidden>
         <div class="games-lobby" id="gamesLobby">
           <form class="games-request trading-card" id="gamesRequestForm">
-            <h2>Invite a player</h2>
+            <h2>Start a match</h2>
             <fieldset class="games-pick"><legend>Game</legend>
               <label><input type="radio" name="gameType" value="tic-tac-toe" checked><span class="games-pick-icon" aria-hidden="true">× ○</span><span>Tic-Tac-Toe</span></label>
               <label><input type="radio" name="gameType" value="rock-paper-scissors"><span class="games-pick-icon" aria-hidden="true">✊ ✋ ✌</span><span>Rock Paper Scissors</span></label>
               <label><input type="radio" name="gameType" value="dice"><span class="games-pick-icon" aria-hidden="true">⚄</span><span>Dice</span></label>
             </fieldset>
+            <div class="games-opponent-options" id="gamesOpponentOptions"><label for="gamesOpponentType">Opponent</label><select id="gamesOpponentType"><option value="player">Invite a player</option><option value="bot">Play a bot</option></select></div>
+            <p class="games-bot-note" id="gamesBotNote" hidden>Bots match your token bet and make random moves instantly. They are not player accounts.</p>
             <div class="games-dice-options" id="gamesDiceOptions" hidden>
               <div><label for="gamesPlayerCount">Players</label><select id="gamesPlayerCount"><option value="2">2 players</option><option value="3">3 players</option><option value="4">4 players</option></select></div>
               <div id="gamesPayoutModeField"><label for="gamesPayoutMode">Prizes</label><select id="gamesPayoutMode"><option value="shared">Shared</option><option value="single-winner">Single winner</option></select></div>
             </div>
-            <label for="gamesUsername">Username</label><div class="player-picker"><input id="gamesUsername" autocomplete="off" maxlength="24" spellcheck="false" required placeholder="Player username"></div>
+            <label for="gamesUsername" id="gamesUsernameLabel">Username</label><div class="player-picker" id="gamesUsernameField"><input id="gamesUsername" autocomplete="off" maxlength="24" spellcheck="false" required placeholder="Player username"></div>
             <button class="button" id="gamesAddPlayer" type="button" hidden>Add player</button><div class="games-invitees" id="gamesInvitees" hidden></div>
             <label for="gamesStake">Tokens each</label><input id="gamesStake" type="number" min="1" max="2251799813685247" step="1" value="1" required inputmode="numeric">
             <button class="button trading-primary" id="gamesSend" type="submit">Send request</button>
