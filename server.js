@@ -588,11 +588,41 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     res.json(await announcementsSnapshot());
   });
 
+  async function economyTotal() {
+    // Convert integers through long first: direct double-to-decimal conversion
+    // can round large, otherwise safe wallet balances to 15 significant digits.
+    const amount = field => ({ $toDecimal: { $toLong: { $ifNull: [field, 0] } } });
+    const pipeline = [
+      { $project: { tokens: amount('$balance') } },
+      { $unionWith: { coll: games.collectionName, pipeline: [
+        { $match: { escrowed: true, status: { $in: ['pending', 'playing'] } } },
+        { $project: { tokens: { $multiply: [amount('$stake'), { $cond: [
+          { $isArray: '$players' },
+          { $size: { $filter: { input: '$players', as: 'player', cond: { $ne: ['$$player.isBot', true] } } } },
+          { $cond: [{ $eq: ['$opponentType', 'bot'] }, 1, 2] }
+        ] }] } } }
+      ] } },
+      { $group: { _id: null, tokens: { $sum: '$tokens' } } },
+      { $project: { _id: 0, totalTokens: { $toString: '$tokens' } } }
+    ];
+    let totals;
+    try {
+      // Wallets and held bets must be read together, even during settlement.
+      totals = await users.aggregate(pipeline, { readConcern: { level: 'snapshot' } }).toArray();
+    } catch (error) {
+      if (![20, 72, 123, 303].includes(error.code) || !/snapshot|replica set/i.test(error.message)) throw error;
+      // Standalone databases still serve the leaderboard; game transactions
+      // cannot run there, so no game settlement can straddle this read.
+      totals = await users.aggregate(pipeline).toArray();
+    }
+    return totals[0]?.totalTokens ?? '0';
+  }
   app.get('/api/leaderboard', async (req, res) => {
-    const [leaders, totalPlayers] = await Promise.all([
+    const [leaders, totalPlayers, totalTokens] = await Promise.all([
       users.find({ banned: { $ne: true } }, { projection: { username: 1, accountId: 1, balance: 1, avatarVersion: 1, role: 1, banned: 1 } })
         .sort({ balance: -1, usernameKey: 1, _id: 1 }).limit(100).toArray(),
-      users.countDocuments({ banned: { $ne: true } })
+      users.countDocuments({ banned: { $ne: true } }),
+      economyTotal()
     ]);
     let rank = 0;
     let previousBalance;
@@ -604,7 +634,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       previousBalance = balance;
       entries.push({ rank, username: user.username, accountId: user.accountId, balance, avatarUrl: avatarUrl(user), ...await moderation.publicFields(user) });
     }
-    res.json({ entries, totalPlayers });
+    res.json({ entries, totalPlayers, totalTokens });
   });
 
   const publicMessage = (message, authors, availableMessageIds) => ({

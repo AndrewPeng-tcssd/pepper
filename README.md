@@ -60,7 +60,7 @@ Your own messages appear immediately while the server saves them. Other players 
 
 Moving between the site's pages keeps chat open, with the same messages, draft, reply selection, and scroll position. Navigation updates the main page without reloading the site; browser Back and Forward work too. Opening a new tab or manually refreshing still starts a new page.
 
-The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. It updates every 15 seconds while open, and each player appears with their picture and links to their profile. A green dot at the bottom-right of pictures in chat and the leaderboard shows players currently online. The account summary in the Account menu also opens your profile. Clicking your own profile picture opens its upload control in Settings.
+The public `/leaderboard` page ranks the top 100 players by their current token balance. Equal balances share a rank and appear alphabetically. The upper-right **Total tokens** shows all account balances plus real tokens bet in active games, including accounts outside the rankings. It updates every 15 seconds while open, and each player appears with their picture and links to their profile. A green dot at the bottom-right of pictures in chat and the leaderboard shows players currently online. The account summary in the Account menu also opens your profile. Clicking your own profile picture opens its upload control in Settings.
 
 ## Games
 

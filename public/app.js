@@ -9,7 +9,7 @@ let authRevision = 0;
 let userIdentityRevision = 0;
 let accountActionRevision = 0;
 let accountBanned = false;
-const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true, chatMessages: [], chatOutbox: [], chatReply: null, leaderboard: null, leaderboardSignature: null };
+const state = { user: null, profile: null, authMode: 'signup', turnstileToken: null, turnstileWidgetId: null, turnstileLoading: false, turnstileFailed: false, turnstileGeneration: 0, claimSubmitting: false, accountSubmitting: false, changelogSubmitting: false, changelogVisitorPreview: false, changelogEntries: null, changelogSignature: null, announcementSubmitting: false, announcementVisitorPreview: false, announcementEntries: null, announcementSignature: null, chatSignature: null, chatFollowLatest: true, chatMessages: [], chatOutbox: [], chatReply: null, leaderboard: null, leaderboardSignature: null, leaderboardRowsSignature: null };
 const chatInFlight = new Set();
 let chatRetryTimer;
 let chatRetryAt = 0;
@@ -2332,9 +2332,18 @@ async function loadProfile() {
 }
 
 function renderLeaderboard(data) {
-  const signature = JSON.stringify([data.entries, data.totalPlayers, state.user?.accountId || null]);
+  const rowsSignature = JSON.stringify([data.entries, data.totalPlayers, state.user?.accountId || null]);
+  const signature = JSON.stringify([rowsSignature, data.totalTokens ?? null]);
   if (signature === state.leaderboardSignature) return;
   state.leaderboardSignature = signature;
+  const total = $('leaderboardTotal'), amount = $('leaderboardTotalTokens');
+  if (total && amount) {
+    const valid = typeof data.totalTokens === 'string' && /^\d+$/.test(data.totalTokens);
+    total.hidden = !valid;
+    amount.textContent = valid ? BigInt(data.totalTokens).toLocaleString() : '';
+  }
+  if (rowsSignature === state.leaderboardRowsSignature) return;
+  state.leaderboardRowsSignature = rowsSignature;
   const focusedAccountId = document.activeElement?.closest('#leaderboardRows tr')?.dataset.accountId;
   const fragment = document.createDocumentFragment();
   for (const entry of data.entries) {

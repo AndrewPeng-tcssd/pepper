@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
-const { MongoMemoryReplSet } = require('mongodb-memory-server');
+const { MongoMemoryReplSet, MongoMemoryServer } = require('mongodb-memory-server');
 const { ObjectId } = require('mongodb');
 const { createApp, connectMongo, CLAIM_INTERVAL_MS, PRESENCE_TIMEOUT_MS } = require('../server');
 const { migrate } = require('../scripts/migrate-sqlite');
@@ -619,7 +619,7 @@ test('concurrent chat requests with one client message ID recover the same messa
 test('leaderboard exposes public saved balances with tied ranks and reflects claims and renames', async t => {
   const isolated = await changelogStore(t);
   const api = accountApi(t, isolated, { verifyTurnstile: async () => true, randomInt: () => 20 });
-  assert.deepEqual((await api('/api/leaderboard')).data, { entries: [], totalPlayers: 0 });
+  assert.deepEqual((await api('/api/leaderboard')).data, { entries: [], totalPlayers: 0, totalTokens: '0' });
   const password = '12345678';
   const players = {};
   for (const username of ['bravo', 'Alpha', 'zero_player', 'claim_player']) {
@@ -634,19 +634,19 @@ test('leaderboard exposes public saved balances with tied ranks and reflects cla
   const row = (username, rank, balance) => ({ rank, username, accountId: players[username].data.user.accountId, balance, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false });
   const initial = await api('/api/leaderboard');
   assert.equal(initial.status, 200);
-  assert.deepEqual(initial.data, { entries: [row('Alpha', 1, 20), row('bravo', 1, 20), row('claim_player', 3, 5), row('zero_player', 4, 0)], totalPlayers: 4 });
+  assert.deepEqual(initial.data, { entries: [row('Alpha', 1, 20), row('bravo', 1, 20), row('claim_player', 3, 5), row('zero_player', 4, 0)], totalPlayers: 4, totalTokens: '45' });
   for (const entry of initial.data.entries) assert.deepEqual(Object.keys(entry).sort(), ['accountId', 'avatarUrl', 'balance', 'banned', 'protectedAdmin', 'rank', 'role', 'username']);
   const claim = await api('/api/claim', { turnstileToken: 'test-token' }, players.claim_player.cookie);
   assert.equal(claim.status, 200);
   assert.equal(claim.data.awarded, 20);
   assert.equal(claim.data.user.balance, 25);
   assert.deepEqual((await api('/api/leaderboard')).data, {
-    entries: [row('claim_player', 1, 25), row('Alpha', 2, 20), row('bravo', 2, 20), row('zero_player', 4, 0)], totalPlayers: 4
+    entries: [row('claim_player', 1, 25), row('Alpha', 2, 20), row('bravo', 2, 20), row('zero_player', 4, 0)], totalPlayers: 4, totalTokens: '65'
   });
   const renamed = await api('/api/account/username', { username: 'zeta', currentPassword: password }, players.Alpha.cookie, 'PATCH');
   assert.equal(renamed.status, 200);
   assert.deepEqual((await api('/api/leaderboard')).data, {
-    entries: [row('claim_player', 1, 25), row('bravo', 2, 20), { ...row('Alpha', 2, 20), username: 'zeta' }, row('zero_player', 4, 0)], totalPlayers: 4
+    entries: [row('claim_player', 1, 25), row('bravo', 2, 20), { ...row('Alpha', 2, 20), username: 'zeta' }, row('zero_player', 4, 0)], totalPlayers: 4, totalTokens: '65'
   });
   await isolated.users.updateOne({ accountId: players.Alpha.data.user.accountId }, { $set: { avatarVersion: 'leaderboard-picture' } });
   assert.equal((await api('/api/leaderboard')).data.entries.find(entry => entry.username === 'zeta').avatarUrl,
@@ -669,11 +669,13 @@ test('leaderboard retains deterministic competition ranks, limits results to 100
     rank: sorted.findIndex(candidate => candidate.balance === player.balance) + 1,
     username: player.username, accountId: player.accountId, balance: player.balance, avatarUrl: '/favicon.svg', role: 'player', banned: false, protectedAdmin: false
   }));
-  const expected = { entries: expectedEntries, totalPlayers: 105 };
+  const expected = { entries: expectedEntries, totalPlayers: 105,
+    totalTokens: players.reduce((total, player) => total + BigInt(player.balance), 0n).toString() };
   const leaderboard = await api('/api/leaderboard');
   assert.equal(leaderboard.status, 200);
   assert.deepEqual(leaderboard.data, expected);
   assert.deepEqual(leaderboard.data.entries.slice(0, 4).map(entry => entry.rank), [1, 1, 1, 4]);
+  assert.equal(BigInt(leaderboard.data.totalTokens) - leaderboard.data.entries.reduce((total, entry) => total + BigInt(entry.balance), 0n), 2n);
   const reconnected = await connectMongo({ uri: mongo.getUri(), dbName: isolated.db.databaseName });
   t.after(() => reconnected.client.close());
   assert.deepEqual((await accountApi(t, reconnected)('/api/leaderboard')).data, expected);
@@ -687,6 +689,95 @@ test('leaderboard URLs serve the website directly', async () => {
     assert.match(response.headers.get('content-type'), /text\/html/);
     assert.match(await response.text(), /Pepper TCG/i);
   }
+});
+
+test('leaderboard economy includes banned wallets exactly beyond safe integer sums and excludes payout reserves', async t => {
+  const isolated = await changelogStore(t); const api = accountApi(t, isolated);
+  const balances = [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER - 1, 37, 0];
+  await isolated.users.insertMany(balances.map((balance, index) => ({
+    username: `economy_${index}`, usernameKey: `economy_${index}`, accountId: `PPR-${crypto.randomUUID().toUpperCase()}`,
+    balance, banned: index === 0, gamePayoutReserve: 4000
+  })));
+  const result = await api('/api/leaderboard');
+  assert.equal(result.status, 200); assert.equal(result.data.totalPlayers, 3);
+  assert.equal(result.data.entries.length, 3); assert.ok(result.data.entries.every(entry => entry.username !== 'economy_0'));
+  assert.equal(typeof result.data.totalTokens, 'string');
+  assert.equal(result.data.totalTokens, balances.reduce((sum, balance) => sum + BigInt(balance), 0n).toString());
+  assert.ok(BigInt(result.data.totalTokens) > BigInt(Number.MAX_SAFE_INTEGER));
+});
+
+test('leaderboard economy is zero for saved zero wallets and ignores terminal or unescrowed game stakes', async t => {
+  const isolated = await changelogStore(t); const api = accountApi(t, isolated);
+  await isolated.users.insertMany([0, 1].map(index => ({
+    username: `zero_economy_${index}`, usernameKey: `zero_economy_${index}`,
+    accountId: `PPR-${crypto.randomUUID().toUpperCase()}`, balance: 0, banned: index === 1
+  })));
+  await isolated.games.insertMany([
+    { status: 'pending', escrowed: false, stake: 25 },
+    { status: 'playing', escrowed: false, stake: 25 },
+    { status: 'completed', escrowed: true, stake: 25 },
+    { status: 'cancelled', escrowed: true, stake: 25 }
+  ].map(game => ({ ...game, senderUserId: new ObjectId(), clientRequestId: crypto.randomUUID(), game: 'rock-paper-scissors' })));
+  const result = await api('/api/leaderboard');
+  assert.equal(result.status, 200); assert.equal(result.data.totalPlayers, 1); assert.equal(result.data.totalTokens, '0');
+});
+
+test('leaderboard counts real game stakes once, excludes fictional bots, and reflects settled virtual winnings', async t => {
+  const isolated = await changelogStore(t); let diceRolls = [];
+  const api = accountApi(t, isolated, { randomBot: () => 0, randomDice: () => diceRolls.shift() ?? 1 });
+  const people = [];
+  for (const username of ['economy_host', 'economy_guest', 'economy_other']) {
+    const response = await api('/api/register', { username, password: '12345678' }); assert.equal(response.status, 201);
+    await isolated.users.updateOne({ accountId: response.data.user.accountId }, { $set: { balance: 100 } });
+    people.push({ ...response.data.user, cookie: response.cookie });
+  }
+  const [a, b] = people;
+  const total = async value => {
+    const result = await api('/api/leaderboard'); assert.equal(result.status, 200); assert.equal(result.data.totalTokens, value);
+  };
+  const create = async extra => {
+    const response = await api('/api/games', { game: 'rock-paper-scissors', stake: 10, clientRequestId: crypto.randomUUID(), ...extra }, a.cookie);
+    assert.equal(response.status, 201, JSON.stringify(response.data)); return response.data.game;
+  };
+  const move = async (actor, game, extra) => {
+    const response = await api(`/api/games/${game.id}/move`, { clientMoveId: crypto.randomUUID(), ...extra }, actor.cookie);
+    assert.equal(response.status, 200, JSON.stringify(response.data)); return response.data.game;
+  };
+  await total('300');
+  let game = await create({ recipientAccountId: b.accountId }); await total('300');
+  let accepted = await api(`/api/games/${game.id}/accept`, {}, b.cookie); assert.equal(accepted.status, 200); game = accepted.data.game;
+  assert.equal((await isolated.users.findOne({ accountId: a.accountId })).balance, 90); await total('300');
+  game = await move(a, game, { choice: 'rock' }); await total('300');
+  game = await move(b, game, { choice: 'rock' }); assert.equal(game.result, 'draw'); await total('300');
+
+  game = await create({ opponentType: 'bot' }); await total('300');
+  game = await move(a, game, { choice: 'paper' }); assert.equal(game.winnerAccountId, a.accountId); await total('310');
+  game = await create({ opponentType: 'bot' }); await total('310');
+  game = await move(a, game, { choice: 'scissors' }); assert.equal(game.winnerAccountId, 'BOT'); await total('300');
+
+  game = await create({ game: 'dice', opponentType: 'bot', botCount: 3 });
+  assert.equal(game.pot, 40); await total('300');
+  game = await move(a, game, { round: 1 }); assert.equal(game.result, 'draw'); await total('300');
+
+  game = await create({ game: 'dice', opponentType: 'mixed', botCount: 1, recipientAccountIds: [b.accountId] }); await total('300');
+  accepted = await api(`/api/games/${game.id}/accept`, {}, b.cookie); assert.equal(accepted.status, 200); game = accepted.data.game;
+  assert.equal(game.pot, 30); await total('300');
+  diceRolls = [6, 2]; game = await move(a, game, { round: 1 }); await total('300');
+  game = await move(b, game, { round: 1 }); assert.equal(game.status, 'completed'); await total('310');
+  assert.equal(await isolated.users.countDocuments(), 3);
+});
+
+test('standalone MongoDB can report exact leaderboard totals without game transactions', async t => {
+  const standalone = await MongoMemoryServer.create(); t.after(() => standalone.stop());
+  const isolated = await connectMongo({ uri: standalone.getUri(), dbName: `economy_${crypto.randomBytes(4).toString('hex')}` });
+  t.after(() => isolated.client.close()); const api = accountApi(t, isolated);
+  await isolated.users.insertMany([0, 1].map(index => ({
+    username: `standalone_economy_${index}`, usernameKey: `standalone_economy_${index}`,
+    accountId: `PPR-${crypto.randomUUID().toUpperCase()}`, balance: Number.MAX_SAFE_INTEGER
+  })));
+  const result = await api('/api/leaderboard'); assert.equal(result.status, 200);
+  assert.equal(result.data.totalTokens, (2n * BigInt(Number.MAX_SAFE_INTEGER)).toString());
+  assert.equal(result.data.entries.length, 2);
 });
 
 test('public profiles can be read anonymously and only include public account details', async () => {
