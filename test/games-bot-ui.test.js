@@ -93,9 +93,10 @@ async function addInvited(ui, entry) {
   await ui.api.addPlayer();
 }
 
-test('RPS and TTT keep their opponent choice while Dice exposes Fill with bots and human invitations', async () => {
+test('RPS keeps its bot choice, TTT requires a person, and Dice exposes Fill with bots', async () => {
   const ui = harness(player('local')); await tick();
-  choose(ui, 'tic-tac-toe');
+  assert.equal(ui.elements.get('gamesOpponentOptions').hidden, true);
+  choose(ui, 'rock-paper-scissors');
   assert.equal(ui.elements.get('gamesUsername').required, false);
   assert.equal(ui.elements.get('gamesUsername').disabled, true);
   assert.equal(ui.elements.get('gamesUsernameField').hidden, true);
@@ -116,11 +117,38 @@ test('RPS and TTT keep their opponent choice while Dice exposes Fill with bots a
   fill(ui);
   assert.equal(ui.elements.get('gamesSend').textContent, 'Start match');
   assert.equal(ui.elements.get('gamesFillBots').disabled, true);
-  choose(ui, 'rock-paper-scissors', 'player');
+  choose(ui, 'tic-tac-toe', 'bot');
+  assert.equal(ui.elements.get('gamesOpponentType').value, 'player');
+  assert.equal(ui.elements.get('gamesOpponentOptions').hidden, true);
+  assert.equal(ui.elements.get('gamesOpponentType').disabled, true);
+  assert.equal(ui.elements.get('gamesUsername').disabled, false);
+  assert.equal(ui.elements.get('gamesBotNote').hidden, true);
+  assert.equal(ui.elements.get('gamesSend').textContent, 'Send request');
+  assert.equal(ui.pickers[0].settings.isEnabled(), true);
   assert.equal(ui.elements.get('gamesUsername').required, true);
   assert.equal(ui.elements.get('gamesUsernameField').hidden, false);
+  choose(ui, 'rock-paper-scissors', 'player');
   assert.equal(ui.elements.get('gamesOpponentOptions').hidden, false);
   assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+});
+
+test('a stale hidden Bot selection cannot start Tic-Tac-Toe or omit its real invitee', async () => {
+  const local = player('local'), guest = player('guest');
+  const ui = harness(local, [], call => call.route === 'profiles/guest' ? { profile: guest }
+    : call.method === 'POST' ? { game: match(local, { game: 'tic-tac-toe', recipient: guest, opponentType: 'player', status: 'pending' }), user: local } : undefined);
+  await tick(); choose(ui, 'rock-paper-scissors', 'bot'); choose(ui, 'tic-tac-toe');
+  ui.elements.get('gamesOpponentType').value = 'bot';
+  await ui.api.requestGame({ preventDefault() {} });
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Enter a username.');
+  ui.elements.get('gamesUsername').value = 'guest'; ui.elements.get('gamesStake').value = '13';
+  await ui.api.requestGame({ preventDefault() {} }); await tick();
+  const posts = ui.calls.filter(call => call.method === 'POST'); assert.equal(posts.length, 1);
+  assert.equal(posts[0].payload.game, 'tic-tac-toe'); assert.equal(posts[0].payload.recipientAccountId, guest.accountId);
+  assert.equal(posts[0].payload.opponentType, undefined); assert.equal(posts[0].payload.botCount, undefined);
+  assert.equal(posts[0].payload.stake, 13);
+  assert.ok(ui.calls.some(call => call.route === 'profiles/guest'));
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Request sent.');
 });
 
 test('Dice bot requests fill two, three, and four player matches without recipient IDs', async () => {
@@ -333,8 +361,8 @@ test('Dice bot and mixed retries keep the original participants and prize mode',
   }
 });
 
-test('both bot games start directly without account lookup or recipient IDs', async () => {
-  for (const type of ['tic-tac-toe', 'rock-paper-scissors']) {
+test('RPS bot games start directly without account lookup or recipient IDs', async () => {
+  for (const type of ['rock-paper-scissors']) {
     const local = player('local');
     const ui = harness(local, [], call => call.method === 'POST' ? { game: match(local, { ...call.payload }), user: local } : undefined);
     await tick(); choose(ui, type); ui.elements.get('gamesStake').value = '17';
@@ -354,7 +382,7 @@ test('both bot games start directly without account lookup or recipient IDs', as
 });
 
 test('bot bets enforce whole tokens and the player balance before sending', async () => {
-  const ui = harness(player('local')); await tick(); choose(ui, 'tic-tac-toe');
+  const ui = harness(player('local')); await tick(); choose(ui, 'rock-paper-scissors');
   for (const stake of ['', '0', '-1', '1.5', '2251799813685248']) {
     ui.elements.get('gamesStake').value = stake;
     await ui.api.requestGame({ preventDefault() {} });
@@ -365,7 +393,7 @@ test('bot bets enforce whole tokens and the player balance before sending', asyn
   assert.ok(ui.calls.every(call => call.method === 'GET'));
 });
 
-test('Bot has no profile link, and an opening bot move leaves the player immediately able to play', async () => {
+test('historical TTT Bot has no profile link and its saved opening board remains playable', async () => {
   const local = player('local'), board = Array(9).fill(null); board[4] = 'X';
   const game = match(local, { xAccountId: 'BOT', board });
   const ui = harness(local, [game]); await tick(); ui.api.act('open', game.id);
@@ -420,7 +448,7 @@ test('a bot RPS response reveals both moves and the result immediately', async (
 test('an old bot response cannot reopen the match or change the next account', async () => {
   const local = player('local'), next = player('next'), response = deferred();
   const ui = harness(local, [], call => call.method === 'POST' ? response.promise : undefined);
-  await tick(); choose(ui, 'tic-tac-toe');
+  await tick(); choose(ui, 'rock-paper-scissors');
   const pending = ui.api.requestGame({ preventDefault() {} }); ui.setUser(next);
   response.resolve({ game: match(local), user: { ...local, balance: 90 } }); await pending; await tick();
   assert.equal(ui.context.state.user.accountId, next.accountId);

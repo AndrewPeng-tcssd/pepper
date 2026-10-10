@@ -36,7 +36,7 @@ async function fixture(t, { randomBot = () => 0, uri = mongo.getUri() } = {}) {
     });
     return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
   };
-  return { store, api, app, advance: milliseconds => { time += milliseconds; } };
+  return { store, api, app, now: () => time, advance: milliseconds => { time += milliseconds; } };
 }
 
 async function player(api, store, username, balance = 100) {
@@ -46,7 +46,7 @@ async function player(api, store, username, balance = 100) {
   await store.users.updateOne({ _id: saved._id }, { $set: { balance } });
   return { ...response.data.user, id: saved._id, cookie: response.cookie };
 }
-const terms = (extra = {}) => ({ opponentType: 'bot', game: 'tic-tac-toe', stake: 10, clientRequestId: crypto.randomUUID(), ...extra });
+const terms = (extra = {}) => ({ opponentType: 'bot', game: 'rock-paper-scissors', stake: 10, clientRequestId: crypto.randomUUID(), ...extra });
 async function start(api, actor, extra = {}) {
   const response = await api('/api/games', terms(extra), actor.cookie);
   assert.equal(response.status, 201, JSON.stringify(response.data));
@@ -59,6 +59,21 @@ const move = (api, actor, game, value, clientMoveId = crypto.randomUUID()) => ap
 const wallet = (store, actor) => store.users.findOne({ _id: actor.id });
 const document = (store, game) => store.games.findOne({ _id: new ObjectId(game.id) });
 
+async function legacyTtt(f, actor, extra = {}) {
+  const at = new Date(f.now());
+  const saved = {
+    _id: new ObjectId(), clientRequestId: crypto.randomUUID(), game: 'tic-tac-toe', opponentType: 'bot', stake: 10,
+    status: 'playing', version: 1, senderUserId: actor.id, senderAccountId: actor.accountId, senderUsername: actor.username,
+    recipientUserId: 'bot', recipientAccountId: 'BOT', recipientUsername: 'Bot', board: Array(9).fill(null), choices: null,
+    xUserId: actor.id, turnUserId: actor.id, winnerUserId: null, escrowed: true, payoutReserved: true, moves: [],
+    acceptedAt: at, createdAt: at, updatedAt: at, expiresAt: new Date(at.getTime() + TURN_MS), ...extra
+  };
+  await f.store.users.updateOne({ _id: actor.id }, { $inc: { balance: -saved.stake, gamePayoutReserve: 2 * saved.stake } });
+  await f.store.games.insertOne(saved);
+  const response = await f.api(`/api/games/${saved._id}`, undefined, actor.cookie);
+  assert.equal(response.status, 200); return response.data.game;
+}
+
 test('bot games reject unsupported types, invalid bot rosters, and invalid stakes without wallet changes', async t => {
   const { api, store } = await fixture(t);
   const a = await player(api, store, 'bot_validate_a');
@@ -66,6 +81,7 @@ test('bot games reject unsupported types, invalid bot rosters, and invalid stake
   const before = await wallet(store, a);
   assert.equal((await api('/api/games', terms())).status, 401);
   for (const extra of [
+    { game: 'tic-tac-toe' }, { game: 'tic-tac-toe', recipientAccountId: b.accountId },
     { game: 'dice', recipientAccountIds: [b.accountId] }, { game: 'dice', botCount: 4 }, { game: 'poker' },
     { game: 'dice', botCount: 0 }, { game: 'dice', botCount: 1.5 }, { game: 'dice', botCount: '1' },
     { opponentType: 'mixed' }, { opponentType: 'mixed', recipientAccountIds: [b.accountId] },
@@ -80,6 +96,21 @@ test('bot games reject unsupported types, invalid bot rosters, and invalid stake
   assert.equal((await api('/api/games', terms({ stake: 101 }), a.cookie)).status, 409);
   assert.equal(await store.games.countDocuments(), 0);
   assert.deepEqual(await wallet(store, a), before);
+  assert.equal(await store.users.countDocuments(), 2);
+});
+
+test('new Tic-Tac-Toe bot requests are rejected before randomness, escrow, or match storage', async t => {
+  const { random, calls } = randomSequence(); const f = await fixture(t, { randomBot: random }); const { api, store } = f;
+  const a = await player(api, store, 'ttt_no_bot_a'); const b = await player(api, store, 'ttt_no_bot_b');
+  const before = await wallet(store, a);
+  for (const extra of [{}, { stake: 1 }, { recipientAccountId: b.accountId },
+    { opponentType: 'mixed', botCount: 1, recipientAccountIds: [b.accountId] }]) {
+    const payload = terms({ game: 'tic-tac-toe', ...extra });
+    const responses = await Promise.all([api('/api/games', payload, a.cookie), api('/api/games', payload, a.cookie)]);
+    assert.deepEqual(responses.map(response => response.status), [400, 400]);
+  }
+  assert.deepEqual(calls, []); assert.equal(await store.games.countDocuments(), 0);
+  assert.deepEqual(await wallet(store, a), before); assert.equal((await wallet(store, b)).balance, 100);
   assert.equal(await store.users.countDocuments(), 2);
 });
 
@@ -119,8 +150,8 @@ test('omitted and explicit player opponents still create invitations without aut
   const { api, store } = await fixture(t);
   const a = await player(api, store, 'bot_default_a');
   const b = await player(api, store, 'bot_default_b');
-  for (const opponentType of [undefined, 'player']) {
-    const response = await api('/api/games', terms({ opponentType, recipientAccountId: b.accountId }), a.cookie);
+  for (const [game, opponentType] of [['tic-tac-toe', undefined], ['tic-tac-toe', 'player'], ['rock-paper-scissors', undefined], ['rock-paper-scissors', 'player']]) {
+    const response = await api('/api/games', terms({ game, opponentType, recipientAccountId: b.accountId }), a.cookie);
     assert.equal(response.status, 201);
     assert.equal(response.data.game.status, 'pending');
     assert.notEqual(response.data.game.recipient.isBot, true);
@@ -164,11 +195,18 @@ test('RPS hides the preselected random bot move, then immediately pays wins, los
   assert.equal(await store.users.countDocuments(), 1);
 });
 
-test('a human TTT starter gets an immediate random legal bot reply and a winning move stops the bot', async t => {
-  const { random, calls } = randomSequence(0, 2, 1);
-  const { api, store } = await fixture(t, { randomBot: random });
+test('a historical human-first TTT bot match can still finish with legal replies and pay the existing stake', async t => {
+  const { random, calls } = randomSequence(2, 1);
+  const f = await fixture(t, { randomBot: random }); const { api, store } = f;
   const a = await player(api, store, 'bot_ttt_human_first');
-  let game = await start(api, a);
+  let game = await legacyTtt(f, a);
+  const beforeReplay = await wallet(store, a);
+  const replay = await api('/api/games', terms({ game: 'tic-tac-toe', clientRequestId: game.clientRequestId }), a.cookie);
+  assert.equal(replay.status, 201); assert.deepEqual(replay.data.game, game);
+  assert.deepEqual(await wallet(store, a), beforeReplay); assert.equal(await store.games.countDocuments(), 1);
+  assert.deepEqual(calls, []);
+  assert.equal((await api('/api/games', terms({ game: 'tic-tac-toe' }), a.cookie)).status, 400);
+  assert.deepEqual(await wallet(store, a), beforeReplay); assert.equal(await store.games.countDocuments(), 1);
   assert.equal(game.xAccountId, a.accountId);
   assert.equal(game.turnAccountId, a.accountId);
   assert.deepEqual(game.board, Array(9).fill(null));
@@ -192,14 +230,15 @@ test('a human TTT starter gets an immediate random legal bot reply and a winning
   assert.equal(final.data.game.turnAccountId, null);
   assert.equal((await wallet(store, a)).balance, 110);
   assert.equal((await wallet(store, a)).gamePayoutReserve, 0);
-  assert.deepEqual(calls, [2, 8, 6]);
+  assert.deepEqual(calls, [8, 6]);
 });
 
-test('a bot TTT starter plays X immediately, takes only empty squares, and can win without a wallet', async t => {
-  const { random, calls } = randomSequence(1, 0, 0, 0);
-  const { api, store } = await fixture(t, { randomBot: random });
+test('a historical bot-first TTT match keeps its opening board and can settle without a bot wallet', async t => {
+  const { random, calls } = randomSequence(0, 0);
+  const f = await fixture(t, { randomBot: random }); const { api, store } = f;
   const a = await player(api, store, 'bot_ttt_bot_first');
-  let game = await start(api, a, { stake: 1 });
+  let game = await legacyTtt(f, a, { stake: 1, xUserId: 'bot', board: ['X', null, null, null, null, null, null, null, null],
+    moves: [{ id: 'bot:opening', userId: 'bot', value: 0, automatic: true }] });
   assert.equal(game.xAccountId, 'BOT');
   assert.equal(game.turnAccountId, a.accountId);
   assert.deepEqual(game.board, ['X', null, null, null, null, null, null, null, null]);
@@ -212,15 +251,15 @@ test('a bot TTT starter plays X immediately, takes only empty squares, and can w
   assert.deepEqual(final.data.game.board, ['X', 'X', 'X', 'O', 'O', null, null, null, null]);
   assert.equal((await wallet(store, a)).balance, 99);
   assert.equal((await wallet(store, a)).gamePayoutReserve, 0);
-  assert.deepEqual(calls, [2, 9, 7, 5]);
+  assert.deepEqual(calls, [7, 5]);
   assert.equal(await store.users.countDocuments(), 1);
 });
 
-test('a TTT draw returns the human stake and never attempts a final bot move on a full board', async t => {
-  const { random, calls } = randomSequence(0, 0, 1, 0, 0);
-  const { api, store } = await fixture(t, { randomBot: random });
+test('a historical TTT bot draw returns escrow and never moves on a full board', async t => {
+  const { random, calls } = randomSequence(0, 1, 0, 0);
+  const f = await fixture(t, { randomBot: random }); const { api, store } = f;
   const a = await player(api, store, 'bot_ttt_draw');
-  let game = await start(api, a);
+  let game = await legacyTtt(f, a);
   for (const position of [0, 2, 3, 7, 8]) {
     const response = await move(api, a, game, position);
     assert.equal(response.status, 200);
@@ -232,7 +271,31 @@ test('a TTT draw returns the human stake and never attempts a final bot move on 
   assert.deepEqual(game.board, ['X', 'O', 'X', 'X', 'O', 'O', 'O', 'X', 'X']);
   assert.equal((await wallet(store, a)).balance, 100);
   assert.equal((await wallet(store, a)).gamePayoutReserve, 0);
-  assert.deepEqual(calls, [2, 8, 6, 4, 2]);
+  assert.deepEqual(calls, [8, 6, 4, 2]);
+});
+
+test('historical TTT bot matches can still resign, time out, or refund when a real account closes', async t => {
+  for (const action of ['resign', 'timeout', 'ban', 'delete']) {
+    const f = await fixture(t); const { api, store } = f;
+    const a = await player(api, store, `legacy_ttt_${action}`);
+    const game = await legacyTtt(f, a);
+    assert.equal((await wallet(store, a)).balance, 90);
+    if (action === 'resign') assert.equal((await api(`/api/games/${game.id}/resign`, {}, a.cookie)).status, 200);
+    if (action === 'timeout') { f.advance(TURN_MS); await f.app.locals.games.expireGames(); }
+    if (action === 'ban') {
+      const admin = await player(api, store, 'legacy_ttt_admin'); await store.users.updateOne({ _id: admin.id }, { $set: { role: 'admin' } });
+      assert.equal((await api(`/api/moderation/players/${a.accountId}`, { banned: true }, admin.cookie, 'PATCH')).status, 200);
+    }
+    if (action === 'delete') assert.equal((await api('/api/account', { confirmation: 'DELETE', currentPassword: password }, a.cookie, 'DELETE')).status, 200);
+    const saved = await document(store, game);
+    assert.equal(saved.status, ['ban', 'delete'].includes(action) ? 'cancelled' : 'completed');
+    assert.equal(saved.escrowed, false); assert.equal(saved.payoutReserved, false); assert.equal(saved.recipientUsername, 'Bot');
+    if (action !== 'delete') {
+      assert.equal((await wallet(store, a)).balance, action === 'ban' ? 100 : 90);
+      assert.equal((await wallet(store, a)).gamePayoutReserve, 0);
+    } else assert.equal(await wallet(store, a), null);
+    assert.equal(await store.users.countDocuments({ accountId: 'BOT' }), 0);
+  }
 });
 
 test('bot start and move replays remain idempotent under concurrent requests and cannot change opponents', async t => {
@@ -246,9 +309,10 @@ test('bot start and move replays remain idempotent under concurrent requests and
   assert.equal(await store.games.countDocuments(), 1);
   assert.equal((await wallet(store, a)).balance, 90);
   assert.equal((await wallet(store, a)).gamePayoutReserve, 20);
-  for (const change of [{ stake: 11 }, { game: 'tic-tac-toe' }, { opponentType: 'player', recipientAccountId: b.accountId }]) {
+  for (const change of [{ stake: 11 }, { opponentType: 'player', recipientAccountId: b.accountId }]) {
     assert.equal((await api('/api/games', { ...payload, ...change }, a.cookie)).status, 409);
   }
+  assert.equal((await api('/api/games', { ...payload, game: 'tic-tac-toe' }, a.cookie)).status, 409);
   const game = started[0].data.game;
   const moveId = crypto.randomUUID();
   const completed = await Promise.all([move(api, a, game, 'paper', moveId), move(api, a, game, 'paper', moveId)]);
@@ -277,7 +341,7 @@ test('competing bot starts cannot overspend a human wallet', async t => {
 });
 
 test('bot opening randomness survives transaction retries and request replays', async t => {
-  const { random, calls } = randomSequence(1, 4);
+  const { random, calls } = randomSequence(1);
   const { api, store } = await fixture(t, { randomBot: random });
   const a = await player(api, store, 'bot_start_retry');
   const originalInsert = store.games.insertOne.bind(store.games);
@@ -294,23 +358,24 @@ test('bot opening randomness survives transaction retries and request replays', 
   const response = await api('/api/games', payload, a.cookie);
   assert.equal(response.status, 201);
   assert.equal(attempts, 2);
-  assert.deepEqual(calls, [2, 9]);
-  assert.deepEqual(response.data.game.board, [null, null, null, null, 'X', null, null, null, null]);
+  assert.deepEqual(calls, [3]);
+  assert.equal(response.data.game.opponentChosen, true); assert.equal(response.data.game.choices, null);
+  assert.equal((await document(store, response.data.game)).choices.recipient, 'paper');
   assert.deepEqual((await api('/api/games', payload, a.cookie)).data.game, response.data.game);
-  assert.deepEqual(calls, [2, 9]);
+  assert.deepEqual(calls, [3]);
   assert.equal((await wallet(store, a)).balance, 90);
   assert.equal((await wallet(store, a)).gamePayoutReserve, 20);
 });
 
-test('a retried human move retains the random bot reply and records each turn once', async t => {
-  const { random, calls } = randomSequence(0, 2);
+test('a retried RPS settlement retains the bot choice and records each move once', async t => {
+  const { random, calls } = randomSequence(0);
   const { api, store } = await fixture(t, { randomBot: random });
   const a = await player(api, store, 'bot_move_retry');
   const game = await start(api, a);
   const originalUpdate = store.games.updateOne.bind(store.games);
   let attempts = 0;
   t.mock.method(store.games, 'updateOne', async (...args) => {
-    if (args[1]?.$set?.board && ++attempts === 1) {
+    if (args[1]?.$set?.choices && ++attempts === 1) {
       const error = new MongoServerError({ message: 'Retry bot move', code: 112 });
       error.addErrorLabel('TransientTransactionError');
       throw error;
@@ -318,23 +383,23 @@ test('a retried human move retains the random bot reply and records each turn on
     return originalUpdate(...args);
   });
   const moveId = crypto.randomUUID();
-  const response = await move(api, a, game, 0, moveId);
+  const response = await move(api, a, game, 'paper', moveId);
   assert.equal(response.status, 200);
   assert.equal(attempts, 2);
-  assert.deepEqual(calls, [2, 8]);
-  assert.deepEqual(response.data.game.board, ['X', null, null, 'O', null, null, null, null, null]);
-  assert.deepEqual((await move(api, a, game, 0, moveId)).data.game, response.data.game);
+  assert.deepEqual(calls, [3]);
+  assert.deepEqual(response.data.game.choices, { sender: 'paper', recipient: 'rock' });
+  assert.deepEqual((await move(api, a, game, 'paper', moveId)).data.game, response.data.game);
   const saved = await document(store, game);
   assert.equal(saved.moves.filter(turn => turn.userId.toString() === a.id.toString()).length, 1);
   assert.equal(saved.moves.filter(turn => turn.userId === 'bot').length, 1);
-  assert.equal((await wallet(store, a)).balance, 90);
+  assert.equal((await wallet(store, a)).balance, 110);
 });
 
-test('resigning and timing out both bot game types lose the human stake exactly once', async t => {
+test('resigning and timing out bot RPS lose the human stake exactly once', async t => {
   const { api, store, app, advance } = await fixture(t);
   const a = await player(api, store, 'bot_forfeits');
   let expectedBalance = 100;
-  for (const gameType of ['tic-tac-toe', 'rock-paper-scissors']) {
+  for (const gameType of ['rock-paper-scissors']) {
     const resigned = await start(api, a, { game: gameType });
     const route = `/api/games/${resigned.id}/resign`;
     const responses = await Promise.all([api(route, {}, a.cookie), api(route, {}, a.cookie)]);

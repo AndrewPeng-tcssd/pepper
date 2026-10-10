@@ -19,6 +19,7 @@
   const needsAcceptance = game => isInvited(game) && (game.game !== 'dice' || !self(game).accepted);
   const gameType = () => el('gamesRequestForm').querySelector('input[name="gameType"]:checked').value;
   const opponentType = () => {
+    if (gameType() === 'tic-tac-toe') return 'player';
     if (gameType() !== 'dice') return el('gamesOpponentType').value === 'bot' ? 'bot' : 'player';
     const bots = games.invitees.filter(player => player.isBot).length;
     return bots === 0 ? 'player' : bots === games.invitees.length ? 'bot' : 'mixed';
@@ -94,9 +95,11 @@
     }
   }
   function renderDraft() {
-    const dice = gameType() === 'dice', bot = !dice && opponentType() === 'bot';
-    el('gamesOpponentOptions').hidden = dice;
-    el('gamesOpponentType').disabled = locked() || dice;
+    const dice = gameType() === 'dice', ticTacToe = gameType() === 'tic-tac-toe';
+    if (ticTacToe) el('gamesOpponentType').value = 'player';
+    const bot = !dice && opponentType() === 'bot';
+    el('gamesOpponentOptions').hidden = dice || ticTacToe;
+    el('gamesOpponentType').disabled = locked() || dice || ticTacToe;
     el('gamesUsernameLabel').hidden = bot;
     el('gamesUsernameField').hidden = bot;
     el('gamesUsername').disabled = locked() || bot;

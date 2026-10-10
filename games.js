@@ -315,6 +315,13 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         || (game === 'dice' && (saved.payoutMode !== payoutMode || saved.players.filter(player => player.isBot).length !== botCount)))) throw new GameError(409, 'Request terms already saved.');
       return saved;
     };
+    if (withBot && game === 'tic-tac-toe') {
+      // Recover an older saved request without allowing another bot match.
+      const saved = await replay();
+      if (!saved) throw new GameError(400, 'Invite a player for Tic-Tac-Toe.');
+      await respond(res, saved, req.user._id, 201);
+      return;
+    }
     const botReceipts = new Map();
     let match;
     try {
@@ -363,15 +370,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
           }, { session });
           if (!debited.matchedCount) throw new GameError(409, 'Token balance changed.');
           document.acceptedAt = at;
-          if (game === 'tic-tac-toe') {
-            document.xUserId = botPick(botReceipts, 'first-player', 2) === 0 ? sender._id : BOT_USER_ID;
-            document.turnUserId = sender._id;
-            if (sameId(document.xUserId, BOT_USER_ID)) {
-              const position = botPick(botReceipts, 'opening-square', 9);
-              document.board[position] = 'X';
-              document.moves.push({ id: 'bot:opening', userId: BOT_USER_ID, value: position, automatic: true });
-            }
-          } else if (game === 'rock-paper-scissors') {
+          if (game === 'rock-paper-scissors') {
             const choice = CHOICES[botPick(botReceipts, 'rps-choice', CHOICES.length)];
             document.choices.recipient = choice;
             document.moves.push({ id: 'bot:choice', userId: BOT_USER_ID, value: choice, automatic: true });
