@@ -31,7 +31,7 @@ const mixedDiceMatch = (sender, invited, count, extra = {}) => {
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 
 // Run production UI against small DOM and network boundaries, including all draft controls.
-function harness(user, entries = [], network) {
+function harness(user, entries = [], network, fixture = { botsEnabled: true }) {
   const elements = new Map(), calls = [], pickers = [], profileNames = [];
   let context;
   const radios = [{ value: 'tic-tac-toe', checked: true }, { value: 'rock-paper-scissors' }, { value: 'dice' }];
@@ -62,7 +62,7 @@ function harness(user, entries = [], network) {
       const call = { route, method: options.method || 'GET', payload: options.body ? JSON.parse(options.body) : null }; calls.push(call);
       const result = network ? await network(call) : undefined;
       if (result !== undefined) return result;
-      if (route === 'games' && call.method === 'GET') return { games: entries, user: context.state.user };
+      if (route === 'games' && call.method === 'GET') return { games: entries, user: context.state.user, ...(fixture.botsEnabled === undefined ? {} : { botsEnabled: fixture.botsEnabled }) };
       throw new Error(`Unexpected API call ${call.method} ${route}`);
     }
   };
@@ -92,6 +92,179 @@ async function addInvited(ui, entry) {
   ui.elements.get('gamesUsername').value = entry.username;
   await ui.api.addPlayer();
 }
+
+test('missing, false, and non-boolean bot capability keep all new bot controls off', async () => {
+  for (const botsEnabled of [undefined, false, null, 'true', 1]) {
+    const ui = harness(player('local'), [], undefined, { botsEnabled }); await tick();
+    assert.equal(ui.api.inspect().botsEnabled, false);
+    choose(ui, 'rock-paper-scissors', 'bot');
+    assert.equal(ui.elements.get('gamesOpponentOptions').hidden, true);
+    assert.equal(ui.elements.get('gamesOpponentType').disabled, true);
+    assert.equal(ui.elements.get('gamesOpponentType').value, 'player');
+    assert.equal(ui.elements.get('gamesBotOption').hidden, true);
+    assert.equal(ui.elements.get('gamesBotOption').disabled, true);
+    assert.equal(ui.elements.get('gamesUsername').required, true);
+    assert.equal(ui.elements.get('gamesUsernameField').hidden, false);
+    assert.equal(ui.pickers[0].settings.isEnabled(), true);
+    assert.equal(ui.elements.get('gamesSend').textContent, 'Send request');
+    choose(ui, 'dice'); changeCount(ui, 4);
+    assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+    assert.equal(ui.elements.get('gamesFillBots').disabled, true);
+    fill(ui); assert.deepEqual(draftIds(ui), []);
+    await ui.api.requestGame({ preventDefault() {} });
+    assert.equal(ui.elements.get('gamesMessage').textContent, 'Add 3 more players.');
+    assert.ok(ui.calls.every(call => call.method === 'GET'));
+  }
+});
+
+test('initial loading and failed loading stay off until an enabled response arrives', async () => {
+  const local = player('local'), response = deferred();
+  const ui = harness(local, [], call => call.method === 'GET' ? response.promise : undefined);
+  choose(ui, 'rock-paper-scissors', 'bot');
+  assert.equal(ui.api.inspect().botsEnabled, false);
+  assert.equal(ui.elements.get('gamesOpponentOptions').hidden, true);
+  choose(ui, 'dice'); fill(ui); assert.deepEqual(draftIds(ui), []);
+  response.resolve({ games: [], user: local, botsEnabled: true }); await tick();
+  assert.equal(ui.api.inspect().botsEnabled, true);
+  assert.equal(ui.elements.get('gamesFillBots').hidden, false);
+  assert.equal(ui.elements.get('gamesFillBots').disabled, false);
+  choose(ui, 'rock-paper-scissors', 'bot');
+  assert.equal(ui.elements.get('gamesOpponentOptions').hidden, false);
+  assert.equal(ui.elements.get('gamesBotOption').disabled, false);
+  assert.equal(ui.elements.get('gamesSend').textContent, 'Start match');
+  const failed = harness(local, [], call => { if (call.method === 'GET') throw new Error('Offline'); });
+  await tick(); choose(failed, 'dice');
+  assert.equal(failed.api.inspect().botsEnabled, false);
+  assert.equal(failed.elements.get('gamesFillBots').hidden, true);
+  assert.equal(failed.elements.get('gamesFillBots').disabled, true);
+});
+
+test('turning bots off or losing a refresh removes draft bots while preserving humans', async () => {
+  for (const failed of [false, true]) {
+    const local = player('local'), guest = player('guest'); let enabled = true, failRefresh = false;
+    const ui = harness(local, [], call => {
+      if (call.route === 'profiles/guest') return { profile: guest };
+      if (call.method === 'GET') {
+        if (failRefresh) throw new Error('Offline');
+        return { games: [], user: local, botsEnabled: enabled };
+      }
+    });
+    await tick(); choose(ui, 'dice'); changeCount(ui, 4); await addInvited(ui, guest); fill(ui);
+    assert.equal(draft(ui).filter(entry => entry.isBot).length, 2);
+    enabled = false; failRefresh = failed; await ui.api.load();
+    assert.equal(ui.api.inspect().botsEnabled, false);
+    assert.deepEqual(draftIds(ui), [guest.accountId]);
+    assert.equal(ui.elements.get('gamesInvitees').children.length, 1);
+    assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+    assert.equal(ui.elements.get('gamesAddPlayer').disabled, false);
+    assert.equal(ui.elements.get('gamesSend').textContent, 'Send request');
+    assert.equal(ui.pickers[0].settings.isEnabled(), true);
+    ui.elements.get('gamesOpponentType').value = 'bot'; choose(ui, 'rock-paper-scissors', 'bot');
+    assert.equal(ui.elements.get('gamesOpponentType').value, 'player');
+    assert.equal(ui.elements.get('gamesBotNote').hidden, true);
+  }
+});
+
+test('off mode ignores stale bot selections and draft entries and still allows human invitations', async () => {
+  const local = player('local'), first = player('first'), second = player('second');
+  const ui = harness(local, [], call => call.route === 'profiles/first' ? { profile: first }
+    : call.route === 'profiles/second' ? { profile: second }
+      : call.method === 'POST' ? { game: match(local, { game: call.payload.game, recipient: first, opponentType: 'player', status: 'pending' }), user: local } : undefined, {});
+  await tick(); choose(ui, 'rock-paper-scissors', 'player');
+  ui.elements.get('gamesOpponentType').value = 'bot';
+  await ui.api.requestGame({ preventDefault() {} });
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Enter a username.');
+  ui.elements.get('gamesUsername').value = 'first';
+  await ui.api.requestGame({ preventDefault() {} }); await tick();
+  const rps = ui.calls.find(call => call.method === 'POST');
+  assert.equal(rps.payload.recipientAccountId, first.accountId);
+  assert.equal(rps.payload.opponentType, undefined);
+  ui.api.inspect().selectedId = null;
+  choose(ui, 'dice'); changeCount(ui, 3); await addInvited(ui, first);
+  ui.api.inspect().invitees.push({ ...bot, accountId: 'draft-bot:stale' });
+  await ui.api.requestGame({ preventDefault() {} });
+  assert.deepEqual(draftIds(ui), [first.accountId]);
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Add 1 more player.');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
+  await addInvited(ui, second); await ui.api.requestGame({ preventDefault() {} }); await tick();
+  const dice = ui.calls.filter(call => call.method === 'POST')[1];
+  assert.deepEqual(dice.payload.recipientAccountIds, [first.accountId, second.accountId]);
+  assert.equal(dice.payload.opponentType, undefined); assert.equal(dice.payload.botCount, undefined);
+  for (const payload of [{ opponentType: 'bot' }, { opponentType: 'mixed', botCount: 1 }, { botCount: 1 }]) {
+    await ui.api.perform({ action: 'request', payload: { ...payload, game: 'dice', stake: 1, clientRequestId: crypto.randomUUID() } });
+  }
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 2);
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Bot matches are currently disabled.');
+});
+
+test('disabled unsaved bot retries are cleared so human requests can continue', async () => {
+  const local = player('local'); let enabled = true;
+  const ui = harness(local, [], call => {
+    if (call.method === 'GET') return { games: [], user: local, botsEnabled: enabled };
+    if (call.method === 'POST') { enabled = false; throw new Error('Response lost'); }
+  });
+  await tick(); choose(ui, 'dice'); changeCount(ui, 4); fill(ui);
+  await ui.api.requestGame({ preventDefault() {} }); await tick();
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
+  assert.equal(ui.api.inspect().botsEnabled, false); assert.equal(ui.api.inspect().retry, null);
+  assert.deepEqual(draftIds(ui), []);
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Bot matches are currently disabled.');
+  assert.equal(ui.elements.get('gamesAddPlayer').disabled, false);
+  assert.equal(ui.elements.get('gamesStake').disabled, false);
+});
+
+test('off mode reconciles a saved bot creation and permits its historical moves', async () => {
+  const local = player('local'); let enabled = true, saved = null;
+  const ui = harness(local, [], call => {
+    if (call.method === 'GET') return { games: saved ? [saved] : [], user: local, botsEnabled: enabled };
+    if (call.route === 'games' && call.method === 'POST') {
+      saved = match(local, { game: 'rock-paper-scissors', clientRequestId: call.payload.clientRequestId, opponentChosen: true });
+      enabled = false; throw new Error('Response lost');
+    }
+    if (call.method === 'POST') return { game: { ...saved, version: 2, status: 'completed', yourChoice: 'rock', choices: { sender: 'rock', recipient: 'scissors' }, result: 'win', winnerAccountId: local.accountId }, user: local };
+  });
+  await tick(); choose(ui, 'rock-paper-scissors', 'bot');
+  await ui.api.requestGame({ preventDefault() {} }); await tick();
+  assert.equal(ui.api.inspect().botsEnabled, false); assert.equal(ui.api.inspect().retry, null);
+  assert.equal(ui.api.inspect().entries[0].id, saved.id);
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Match started.');
+  ui.api.act('open', saved.id);
+  assert.equal(ui.elements.get('gamesChoices').children[0].disabled, false);
+  await ui.api.perform({ id: saved.id, action: 'move', payload: { choice: 'rock', clientMoveId: crypto.randomUUID() } });
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 2);
+  assert.equal(ui.elements.get('gamesReveal').children[1].textContent, 'Bot: Scissors');
+});
+
+test('historical mixed Dice invitations can still be accepted while bots are off', async () => {
+  const sender = player('sender'), local = player('local'), pending = mixedDiceMatch(sender, [local], 3);
+  const playing = { ...pending, version: 2, status: 'playing', players: pending.players.map(entry => ({ ...entry, accepted: true })), eligibleAccountIds: [local.accountId] };
+  const ui = harness(local, [pending], call => call.method === 'POST' ? { game: playing, user: local } : undefined, { botsEnabled: false });
+  await tick(); ui.api.act('open', pending.id);
+  const accept = ui.elements.get('gamesSessionActions').children.find(entry => entry.dataset.gameAction === 'accept');
+  assert.ok(accept); assert.equal(accept.disabled, false);
+  await ui.api.perform({ id: pending.id, action: 'accept' });
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 1);
+  assert.equal(ui.elements.get('gamesRollAction').children[0].disabled, false);
+  assert.ok(ui.elements.get('gamesRolls').children.some(row => row.children[0].children[1]?.textContent === 'Bot #1'));
+});
+
+test('account changes reset bot capability and stale enabled responses cannot restore it', async () => {
+  const local = player('local'), next = player('next'), oldResponse = deferred(), nextResponse = deferred(); let requests = 0;
+  const ui = harness(local, [], call => {
+    if (call.method !== 'GET') return;
+    if (++requests === 1) return { games: [], user: local, botsEnabled: true };
+    return requests === 2 ? oldResponse.promise : nextResponse.promise;
+  });
+  await tick(); assert.equal(ui.api.inspect().botsEnabled, true);
+  const oldLoad = ui.api.load(); ui.setUser(next);
+  assert.equal(ui.api.inspect().botsEnabled, false);
+  choose(ui, 'dice'); assert.equal(ui.elements.get('gamesFillBots').hidden, true);
+  oldResponse.resolve({ games: [], user: local, botsEnabled: true }); await oldLoad;
+  assert.equal(ui.api.inspect().botsEnabled, false);
+  nextResponse.resolve({ games: [], user: next, botsEnabled: false }); await tick();
+  assert.equal(ui.context.state.user.accountId, next.accountId);
+  assert.equal(ui.api.inspect().botsEnabled, false);
+});
 
 test('RPS keeps its bot choice, TTT requires a person, and Dice exposes Fill with bots', async () => {
   const ui = harness(player('local')); await tick();

@@ -75,6 +75,8 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   const currentTime = options.now || Date.now;
   const moderation = createModeration({ client, users, sessions, messages, verificationTokens, trades, games, siteSettings }, { now: currentTime });
   const randomInt = options.randomInt || crypto.randomInt;
+  const gameBotsEnabled = options.gameBotsEnabled === undefined
+    ? process.env.GAME_BOTS_ENABLED === 'true' : options.gameBotsEnabled === true;
   const emailSendingPaused = options.emailSendingPaused === undefined
     ? process.env.EMAIL_SENDING_PAUSED === 'true' : options.emailSendingPaused;
   const mailer = emailSendingPaused ? null : options.mailer === undefined ? createMailer() : options.mailer;
@@ -432,7 +434,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
   });
 
   registerTrading(app, { client, users, trades, tradeMessages, cardDefinitions, cardInstances }, { requireUser, rateLimit, signedInUser, publicPlayerFields: moderation.publicFields });
-  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields, randomDice: options.randomDice, randomBot: options.randomBot });
+  app.locals.games = registerGames(app, { client, users, games }, { requireUser, rateLimit, signedInUser, now: currentTime, publicPlayerFields: moderation.publicFields, randomDice: options.randomDice, randomBot: options.randomBot, botsEnabled: gameBotsEnabled });
   registerFriends(app, { users, friendships, friendMessages }, { requireUser, rateLimit, moderation, now: currentTime, claimIntervalMs: CLAIM_INTERVAL_MS });
   const news = registerNews(app, { users, changelog, announcements, newsComments, announcementSeen }, {
     requireUser, rateLimit, moderation, now: currentTime, publicAnnouncement: entry => publicAnnouncementEntry(entry)

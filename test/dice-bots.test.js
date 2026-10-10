@@ -17,7 +17,7 @@ async function fixture(t) {
   let time = Date.now();
   let rolls = [];
   let calls = 0;
-  const app = createApp(store, { mailer: null, now: () => time, verifyTurnstile: async () => true,
+  const app = createApp(store, { mailer: null, gameBotsEnabled: true, now: () => time, verifyTurnstile: async () => true,
     randomDice: () => {
       calls += 1;
       const value = rolls.shift();

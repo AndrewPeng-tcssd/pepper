@@ -112,7 +112,7 @@ async function cancelGamesForAccount(store, userId, session, now = new Date()) {
     { session, arrayFilters: [{ 'player.userId': userId }] });
 }
 
-function registerGames(app, store, { requireUser, rateLimit, signedInUser, publicPlayerFields = async () => ({ role: 'player', banned: false }), now = Date.now, randomDice = () => crypto.randomInt(1, 7), randomBot = length => crypto.randomInt(length) }) {
+function registerGames(app, store, { requireUser, rateLimit, signedInUser, publicPlayerFields = async () => ({ role: 'player', banned: false }), now = Date.now, randomDice = () => crypto.randomInt(1, 7), randomBot = length => crypto.randomInt(length), botsEnabled = false }) {
   const { client, users, games } = store;
   const currentDate = () => new Date(now());
   const otherId = (match, id) => sameId(match.senderUserId, id) ? match.recipientUserId : match.senderUserId;
@@ -276,7 +276,7 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
     if (!user) throw new GameError(401, 'Sign in required.');
     const unique = new Map();
     for (const match of [...active, ...history]) if (!unique.has(match._id.toString()) || unique.get(match._id.toString()).version < match.version) unique.set(match._id.toString(), match);
-    res.json({ games: await serialize([...unique.values()].sort((a, b) => b.updatedAt - a.updatedAt), req.user._id), user: await signedInUser(user) });
+    res.json({ games: await serialize([...unique.values()].sort((a, b) => b.updatedAt - a.updatedAt), req.user._id), user: await signedInUser(user), botsEnabled: botsEnabled === true });
   }));
   app.get('/api/games/:id', requireUser, route(async (req, res) => {
     const id = await prepare(req);
@@ -315,10 +315,11 @@ function registerGames(app, store, { requireUser, rateLimit, signedInUser, publi
         || (game === 'dice' && (saved.payoutMode !== payoutMode || saved.players.filter(player => player.isBot).length !== botCount)))) throw new GameError(409, 'Request terms already saved.');
       return saved;
     };
-    if (withBot && game === 'tic-tac-toe') {
-      // Recover an older saved request without allowing another bot match.
+    if ((withBot || mixed) && (botsEnabled !== true || game === 'tic-tac-toe')) {
+      // Recover a saved request even after bots have been disabled.
       const saved = await replay();
-      if (!saved) throw new GameError(400, 'Invite a player for Tic-Tac-Toe.');
+      if (!saved) throw new GameError(botsEnabled === true ? 400 : 403,
+        botsEnabled === true ? 'Invite a player for Tic-Tac-Toe.' : 'Bots are disabled.');
       await respond(res, saved, req.user._id, 201);
       return;
     }

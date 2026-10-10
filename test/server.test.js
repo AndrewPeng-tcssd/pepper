@@ -724,7 +724,7 @@ test('leaderboard economy is zero for saved zero wallets and ignores terminal or
 
 test('leaderboard counts real game stakes once, excludes fictional bots, and reflects settled virtual winnings', async t => {
   const isolated = await changelogStore(t); let diceRolls = [];
-  const api = accountApi(t, isolated, { randomBot: () => 0, randomDice: () => diceRolls.shift() ?? 1 });
+  const api = accountApi(t, isolated, { gameBotsEnabled: true, randomBot: () => 0, randomDice: () => diceRolls.shift() ?? 1 });
   const people = [];
   for (const username of ['economy_host', 'economy_guest', 'economy_other']) {
     const response = await api('/api/register', { username, password: '12345678' }); assert.equal(response.status, 201);

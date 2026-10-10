@@ -326,7 +326,7 @@ test('Dice roster rejects self, duplicates, and missing players; removing allows
   assert.equal(ui.elements.get('gamesMessage').textContent, 'Player already added.');
   assert.equal(ui.api.inspect().invitees.length, 1);
   await ui.api.requestGame({ preventDefault() {} });
-  assert.equal(ui.elements.get('gamesMessage').textContent, 'Add 1 more player, or fill with bots.');
+  assert.equal(ui.elements.get('gamesMessage').textContent, 'Add 1 more player.');
   assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
   const remove = ui.elements.get('gamesInvitees').children[0].children[1];
   ui.elements.get('gamesPage').dispatch('click', remove);

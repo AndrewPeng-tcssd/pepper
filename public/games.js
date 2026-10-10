@@ -6,7 +6,7 @@
   const choiceIcons = { rock: '✊', paper: '✋', scissors: '✌' };
   const payoutLabel = game => game.payoutMode === 'shared' ? 'Shared' : 'Single winner';
   const DICE_ROUND_PAUSE_MS = 2000;
-  const games = { identity: null, revision: 0, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: 0, diceView: null };
+  const games = { identity: null, revision: 0, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: 0, diceView: null, botsEnabled: false };
   const active = game => ['pending', 'playing'].includes(game.status);
   const validStake = stake => Number.isSafeInteger(stake) && stake >= 1 && stake <= Math.floor(Number.MAX_SAFE_INTEGER / 4);
   const invalidRequest = game => game.status === 'pending' && !validStake(game.stake);
@@ -19,12 +19,13 @@
   const needsAcceptance = game => isInvited(game) && (game.game !== 'dice' || !self(game).accepted);
   const gameType = () => el('gamesRequestForm').querySelector('input[name="gameType"]:checked').value;
   const opponentType = () => {
-    if (gameType() === 'tic-tac-toe') return 'player';
+    if (!games.botsEnabled || gameType() === 'tic-tac-toe') return 'player';
     if (gameType() !== 'dice') return el('gamesOpponentType').value === 'bot' ? 'bot' : 'player';
     const bots = games.invitees.filter(player => player.isBot).length;
     return bots === 0 ? 'player' : bots === games.invitees.length ? 'bot' : 'mixed';
   };
   const playerCount = () => Math.max(2, Math.min(4, Number(el('gamesPlayerCount').value) || 2));
+  const botCreation = operation => operation?.action === 'request' && (['bot', 'mixed'].includes(operation.payload?.opponentType) || operation.payload?.botCount > 0);
   const current = (identity, identityRevision) => state.user?.accountId === identity && games.identity === identity && userIdentityRevision === identityRevision;
   const count = value => Number(value || 0).toLocaleString();
   const playerPicker = window.PepperPlayerPicker?.attach({
@@ -94,24 +95,35 @@
       if (player.isBot) player.username = playerCount() === 2 ? 'Bot' : `Bot #${++botNumber}`;
     }
   }
+  function restrictBotDraft() {
+    if (games.botsEnabled) return;
+    el('gamesOpponentType').value = 'player';
+    const humans = games.invitees.filter(player => !player.isBot);
+    if (humans.length !== games.invitees.length) {
+      games.invitees = humans; games.pickedPlayer = null; games.draftRevision++;
+    }
+  }
   function renderDraft() {
+    restrictBotDraft();
     const dice = gameType() === 'dice', ticTacToe = gameType() === 'tic-tac-toe';
     if (ticTacToe) el('gamesOpponentType').value = 'player';
     const bot = !dice && opponentType() === 'bot';
-    el('gamesOpponentOptions').hidden = dice || ticTacToe;
-    el('gamesOpponentType').disabled = locked() || dice || ticTacToe;
+    el('gamesOpponentOptions').hidden = !games.botsEnabled || dice || ticTacToe;
+    el('gamesOpponentType').disabled = !games.botsEnabled || locked() || dice || ticTacToe;
+    el('gamesBotOption').hidden = !games.botsEnabled;
+    el('gamesBotOption').disabled = !games.botsEnabled;
     el('gamesUsernameLabel').hidden = bot;
     el('gamesUsernameField').hidden = bot;
     el('gamesUsername').disabled = locked() || bot;
     el('gamesBotNote').hidden = !bot && !(dice && games.invitees.some(player => player.isBot));
     el('gamesDiceOptions').hidden = !dice;
     el('gamesAddPlayer').hidden = !dice;
-    el('gamesFillBots').hidden = !dice;
+    el('gamesFillBots').hidden = !games.botsEnabled || !dice;
     el('gamesInvitees').hidden = !dice;
     el('gamesUsername').required = !dice && !bot;
     el('gamesPayoutModeField').hidden = !dice || playerCount() === 2;
     el('gamesAddPlayer').disabled = locked() || games.invitees.length >= playerCount() - 1;
-    el('gamesFillBots').disabled = locked() || games.invitees.length >= playerCount() - 1;
+    el('gamesFillBots').disabled = !games.botsEnabled || locked() || games.invitees.length >= playerCount() - 1;
     const signature = JSON.stringify([games.identity, dice, playerCount(), locked(), games.invitees]);
     if (signature === games.draftSignature) return;
     games.draftSignature = signature;
@@ -359,7 +371,7 @@
     if (identity !== games.identity) {
       clearDiceView();
       playerPicker?.reset();
-      Object.assign(games, { identity, revision: games.revision + 1, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, notificationError: null, resignId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: games.draftRevision + 1 });
+      Object.assign(games, { identity, revision: games.revision + 1, entries: [], selectedId: null, loading: false, loaded: false, action: null, retry: null, notificationId: null, notificationError: null, resignId: null, listSignature: null, sessionSignature: null, invitees: [], pickedPlayer: null, draftRevision: games.draftRevision + 1, botsEnabled: false });
       el('gamesRequestForm').reset(); el('gamesOpponentType').value = 'player'; message(el('gamesMessage'), '');
       if (identity) void load();
     }
@@ -372,6 +384,7 @@
     try {
       const data = await api('games');
       if (!current(identity, identityRevision) || games.revision !== revision) return;
+      games.botsEnabled = data.botsEnabled === true;
       const previous = games.entries;
       games.entries = data.games.map(game => newest(game, previous.find(entry => entry.id === game.id)));
       const selected = previous.find(game => game.id === games.selectedId);
@@ -381,10 +394,13 @@
       if (games.retry?.action === 'request') {
         const saved = games.entries.find(game => game.clientRequestId === games.retry.payload.clientRequestId && game.sender.accountId === identity);
         if (saved) { games.retry = null; message(el('gamesMessage'), saved.opponentType === 'bot' ? 'Match started.' : 'Request sent.', true); }
+        else if (!games.botsEnabled && botCreation(games.retry)) { games.retry = null; message(el('gamesMessage'), 'Bot matches are currently disabled.'); }
       }
     } catch (error) {
       if (!current(identity, identityRevision) || games.revision !== revision) return;
       if (error.status === 401) { setUser(null); return; }
+      games.botsEnabled = false;
+      if (botCreation(games.retry)) games.retry = null;
       games.loaded = true;
       if (pageKind === 'games') message(el('gamesMessage'), 'Refresh failed. Try again.');
     } finally {
@@ -397,6 +413,10 @@
   }
   async function perform(operation) {
     if (!state.user || busy() || (games.retry && games.retry !== operation) || (operation.action === 'move' && dicePaused(operation.id))) return;
+    if (!games.botsEnabled && botCreation(operation)) {
+      if (games.retry === operation) games.retry = null;
+      message(el('gamesMessage'), 'Bot matches are currently disabled.'); render(); return;
+    }
     const identity = games.identity, identityRevision = userIdentityRevision, navigationRevision = routeRevision, accountRevision = authRevision;
     games.revision++; games.loading = false; games.action = operation; games.notificationError = null;
     const botRequest = operation.action === 'request' && operation.payload.opponentType === 'bot';
@@ -444,7 +464,7 @@
   }
   function fillBots() {
     playerPicker?.close();
-    if (!state.user || locked() || gameType() !== 'dice' || games.invitees.length >= playerCount() - 1) return;
+    if (!state.user || !games.botsEnabled || locked() || gameType() !== 'dice' || games.invitees.length >= playerCount() - 1) return;
     while (games.invitees.length < playerCount() - 1) {
       games.invitees.push({ accountId: `draft-bot:${crypto.randomUUID()}`, username: 'Bot', isBot: true });
     }
@@ -455,13 +475,14 @@
     event.preventDefault();
     playerPicker?.close();
     if (!state.user || locked()) return;
+    restrictBotDraft();
     const username = el('gamesUsername').value.trim(), rawStake = el('gamesStake').value.trim(), stake = Number(rawStake), type = gameType(), bot = opponentType() === 'bot';
     if (type !== 'dice' && !bot && !username) { message(el('gamesMessage'), 'Enter a username.'); return; }
     if (!rawStake || !validStake(stake)) { message(el('gamesMessage'), 'Bet at least 1 token.'); return; }
     if (stake > state.user.balance) { message(el('gamesMessage'), 'Not enough tokens.'); return; }
     if (type === 'dice') {
       const needed = playerCount() - 1 - games.invitees.length;
-      if (needed !== 0) { message(el('gamesMessage'), `Add ${needed} more ${needed === 1 ? 'player' : 'players'}, or fill with bots.`); return; }
+      if (needed !== 0) { message(el('gamesMessage'), `Add ${needed} more ${needed === 1 ? 'player' : 'players'}${games.botsEnabled ? ', or fill with bots' : ''}.`); return; }
       const recipientAccountIds = games.invitees.filter(player => !player.isBot).map(player => player.accountId);
       const botCount = games.invitees.length - recipientAccountIds.length;
       const payload = { game: type, stake, clientRequestId: crypto.randomUUID(), ...(playerCount() > 2 ? { payoutMode: el('gamesPayoutMode').value } : {}) };

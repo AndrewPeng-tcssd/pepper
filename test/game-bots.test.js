@@ -26,7 +26,7 @@ async function fixture(t, { randomBot = () => 0, uri = mongo.getUri() } = {}) {
   const store = await connectMongo({ uri, dbName: `game_bots_${crypto.randomBytes(5).toString('hex')}` });
   t.after(() => store.client.close());
   let time = Date.now();
-  const app = createApp(store, { mailer: null, now: () => time, verifyTurnstile: async () => true, randomInt: () => 20, randomBot });
+  const app = createApp(store, { mailer: null, gameBotsEnabled: true, now: () => time, verifyTurnstile: async () => true, randomInt: () => 20, randomBot });
   const server = app.listen(0);
   t.after(() => new Promise(resolve => server.close(resolve)));
   const api = async (route, body, cookie, method = body === undefined ? 'GET' : 'POST') => {
