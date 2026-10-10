@@ -40,7 +40,7 @@ Read site news at `/announcements`. Administrators, senior moderators, and moder
 
 Announcements and changelog entries show their author's current name and picture in the top-right corner. Expand **Comments** to read replies, then use **Load more** for longer discussions. Signed-in players can post comments. Comment authors can delete their own replies; administrators and enabled moderators can moderate replies with the same staff protections as chat. Rate-limited comments stay pending and retry automatically.
 
-Unseen announcements appear in a popup when visiting the site. **Got it** dismisses the current announcement, and **View announcement** opens its full entry. Signed-in accounts remember acknowledged announcements across visits and devices. Guests remember them in the current browser.
+Unseen announcements appear in a popup when visiting the site. **Got it** dismisses the current announcement, and **View announcement** opens its full entry. Acknowledged announcements are remembered in the current browser, including when logging out or switching accounts. Another browser or device, or clearing the site's stored data, can show them again.
 
 ## Moderation
 

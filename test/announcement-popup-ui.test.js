@@ -8,9 +8,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const user = name => ({ accountId: `PPR-${name}`, username: name, balance: 100 });
 const entry = (id, order = 0) => ({ id, title: `Announcement ${id}`, description: `Details for ${id}`, createdAt: new Date(1700000000000 + order * 1000).toISOString(), author: { accountId: 'PPR-admin', username: 'admin', role: 'admin', avatarUrl: '/pepper.svg' } });
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+const deviceKey = 'pepper.announcements.device.seen';
+const storedSeen = ui => JSON.parse(ui.storage.get(deviceKey) || '[]');
+const assertPublicReadsOnly = ui => assert.ok(ui.calls.every(call => call.route === 'announcements' && call.method === 'GET'));
 
-function harness({ user: initialUser = null, entries = [], server = { entries, seen: new Map() }, storage = new Map(), network, authLoading = false } = {}) {
-  const elements = new Map(), timers = new Map(), calls = [], navigations = [], documentListeners = new Map(), windowListeners = new Map();
+function harness({ user: initialUser = null, entries = [], server = { entries, seen: new Map() }, storage = new Map(), network, authLoading = false, storageFault = null } = {}) {
+  const elements = new Map(), timers = new Map(), calls = [], navigations = [], storageWrites = [], documentListeners = new Map(), windowListeners = new Map();
   let clock = Date.now(), timerId = 0, context;
   const classes = new Set(authLoading ? ['auth-loading'] : []);
   const node = (id = '') => {
@@ -38,7 +41,13 @@ function harness({ user: initialUser = null, entries = [], server = { entries, s
   const boundary = {
     document, console, AbortController, state: { user: initialUser }, accountBanned: false, userIdentityRevision: 0, routeRevision: 0, pageKind: 'home',
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [clock])); } static now() { return clock; } },
-    localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+    localStorage: {
+      get length() { if (storageFault === 'all') throw new Error('Storage unavailable'); return storage.size; },
+      key(index) { if (storageFault === 'all') throw new Error('Storage unavailable'); return [...storage.keys()][index] ?? null; },
+      getItem(key) { if (storageFault === 'all') throw new Error('Storage unavailable'); return storage.get(key) ?? null; },
+      setItem(key, value) { if (storageFault) throw new Error('Storage unavailable'); storageWrites.push({ key, value }); storage.set(key, value); },
+      removeItem(key) { if (storageFault) throw new Error('Storage unavailable'); storage.delete(key); }
+    },
     window: {
       setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, at: clock + delay }); return id; },
       clearTimeout(id) { timers.delete(id); },
@@ -64,14 +73,14 @@ function harness({ user: initialUser = null, entries = [], server = { entries, s
     }
   };
   context = vm.createContext(boundary);
-  vm.runInContext(source.replace('window.PepperAnnouncementPopup = { syncUser, onRoute, syncEntries };', 'window.PepperAnnouncementPopup = { syncUser, onRoute, syncEntries, inspect: () => popup, load, sendSeen };'), context);
+  vm.runInContext(source.replace(/window\.PepperAnnouncementPopup = \{ ([^}]+) \};/, 'window.PepperAnnouncementPopup = { $1, inspect: () => popup, load };'), context);
   return {
-    api: context.window.PepperAnnouncementPopup, elements, document, context, server, storage, calls, navigations,
+    api: context.window.PepperAnnouncementPopup, elements, document, context, server, storage, calls, navigations, storageWrites,
     setUser: boundary.setUser,
     click: id => elements.get(id).dispatch('click'),
     route(route) { boundary.navigateTo(route); },
     event(type) { for (const callback of documentListeners.get(type) || []) callback(); },
-    windowEvent(type) { for (const callback of windowListeners.get(type) || []) callback(); },
+    windowEvent(type, event = {}) { for (const callback of windowListeners.get(type) || []) callback(event); },
     article(id) { const article = node(); article.dataset.entryId = id; elements.get('announcementEntries').append(article); return article; },
     async advance(milliseconds) {
       const end = clock + milliseconds;
@@ -95,7 +104,7 @@ test('first visits show the newest unseen announcement site-wide with the author
   assert.equal(author.href, '/profile/admin'); assert.equal(author.children[0].avatar.avatarUrl, '/pepper.svg');
   assert.equal(author.children[2].textContent, 'admin');
   assert.equal(ui.document.activeElement, ui.elements.get('announcementPopupDismiss'));
-  assert.deepEqual(ui.calls.map(call => call.route), ['announcements/unseen']);
+  assert.deepEqual(ui.calls.map(call => call.route), ['announcements']);
 });
 
 test('announcement popups retain the original author and show distinct editors', async () => {
@@ -108,43 +117,54 @@ test('announcement popups retain the original author and show distinct editors',
 });
 
 test('dismiss, Escape, and Close acknowledge only the displayed entry and advance the queue', async () => {
-  const reader = user('reader'), ui = harness({ user: reader, entries: [entry('oldest'), entry('middle', 1), entry('newest', 2)] }); await tick();
+  const ui = harness({ user: user('reader'), entries: [entry('oldest'), entry('middle', 1), entry('newest', 2)] }); await tick();
   ui.click('announcementPopupDismiss'); await tick();
   assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement middle');
-  assert.deepEqual([...ui.server.seen.get(reader.accountId)], ['newest']);
+  assert.deepEqual(storedSeen(ui), ['newest']);
   ui.elements.get('announcementPopup').dispatch('cancel'); await tick();
   assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement oldest');
   ui.click('announcementPopupClose'); await tick();
   assert.equal(ui.elements.get('announcementPopup').open, false);
-  assert.deepEqual([...ui.server.seen.get(reader.accountId)], ['newest', 'middle', 'oldest']);
-  assert.ok(ui.calls.filter(call => call.method === 'POST').every(call => call.body === '{}'));
+  assert.deepEqual(storedSeen(ui), ['middle', 'newest', 'oldest']);
+  assert.equal(ui.server.seen.size, 0); assertPublicReadsOnly(ui);
 });
 
-test('account acknowledgments survive reload through the database and leave unacknowledged entries unseen', async () => {
-  const reader = user('reader'), server = { entries: [entry('old'), entry('new', 1)], seen: new Map() };
-  const first = harness({ user: reader, server }); await tick(); first.click('announcementPopupDismiss'); await tick();
-  const next = harness({ user: reader, server }); await tick();
+test('account acknowledgments survive reload on the same device and leave unacknowledged entries unseen', async () => {
+  const reader = user('reader'), server = { entries: [entry('old'), entry('new', 1)], seen: new Map() }, storage = new Map();
+  const first = harness({ user: reader, server, storage }); await tick(); first.click('announcementPopupDismiss'); await tick();
+  const next = harness({ user: reader, server, storage }); await tick();
   assert.equal(next.elements.get('announcementPopupTitle').textContent, 'Announcement old');
-  assert.equal(server.seen.get(reader.accountId).has('old'), false);
+  assert.deepEqual(storedSeen(next), ['new']); assert.equal(server.seen.size, 0);
+  assertPublicReadsOnly(first); assertPublicReadsOnly(next);
 });
 
 test('guests persist only acknowledged IDs locally and never send seen requests', async () => {
   const storage = new Map(), entries = [entry('old'), entry('new', 1)];
   const first = harness({ entries, storage }); await tick(); first.click('announcementPopupDismiss'); await tick();
   assert.equal(first.calls.filter(call => call.method === 'POST').length, 0);
-  assert.deepEqual(JSON.parse(storage.get('pepper.announcements.guest.seen')), ['new']);
+  assert.deepEqual(storedSeen(first), ['new']);
   const next = harness({ entries, storage }); await tick();
   assert.equal(next.elements.get('announcementPopupTitle').textContent, 'Announcement old');
 });
 
-test('guest seen IDs do not leak into a signed-in account or another account', async () => {
+test('device acknowledgments survive signing in, switching accounts, and logging out', async () => {
   const first = user('first'), second = user('second'), ui = harness({ entries: [entry('news')] }); await tick();
   ui.click('announcementPopupDismiss'); await tick();
-  ui.setUser(first); await tick(); assert.equal(ui.elements.get('announcementPopup').open, true);
-  ui.click('announcementPopupDismiss'); await tick();
-  ui.setUser(second); await tick(); assert.equal(ui.elements.get('announcementPopup').open, true);
-  assert.equal(ui.server.seen.get(second.accountId), undefined);
+  ui.setUser(first); await tick(); assert.equal(ui.elements.get('announcementPopup').open, false);
+  ui.setUser(second); await tick(); assert.equal(ui.elements.get('announcementPopup').open, false);
   ui.setUser(null); await tick(); assert.equal(ui.elements.get('announcementPopup').open, false);
+  await ui.advance(31000); assert.equal(ui.elements.get('announcementPopup').open, false);
+  assert.deepEqual(storedSeen(ui), ['news']); assertPublicReadsOnly(ui);
+});
+
+test('a new browser sees announcements previously acknowledged by the account on another device', async () => {
+  const reader = user('reader'), server = { entries: [entry('news')], seen: new Map([[reader.accountId, new Set(['news'])]]) };
+  const first = harness({ user: reader, server }); await tick();
+  assert.equal(first.elements.get('announcementPopup').open, true);
+  first.click('announcementPopupDismiss'); await tick();
+  const next = harness({ user: reader, server }); await tick();
+  assert.equal(next.elements.get('announcementPopup').open, true);
+  assertPublicReadsOnly(first); assertPublicReadsOnly(next);
 });
 
 test('loading waits for authentication and modal dialogs without acknowledging hidden announcements', async () => {
@@ -180,37 +200,72 @@ test('stale account and route loads cannot populate or reopen the wrong popup', 
   assert.equal(next.elements.get('announcementPopupTitle').textContent, 'Announcement current');
 });
 
-test('rate-limited seen acknowledgments retry automatically without redisplaying the entry', async () => {
-  let attempts = 0;
-  const ui = harness({ user: user('reader'), entries: [entry('news')], network: call => {
-    if (call.method === 'POST' && ++attempts === 1) throw Object.assign(new Error('Too fast.'), { status: 429, retryAfterMs: 5000 });
-  } }); await tick(); ui.click('announcementPopupDismiss'); await tick();
+test('legacy guest and every account pending key migrate into the device acknowledgments', async () => {
+  const storage = new Map([
+    [deviceKey, JSON.stringify(['device'])],
+    ['pepper.announcements.guest.seen', JSON.stringify(['guest', 'duplicate'])],
+    ['pepper.announcements.pending.PPR-first', JSON.stringify(['first', 'duplicate'])],
+    ['pepper.announcements.pending.PPR-second', JSON.stringify(['second'])],
+    ['unrelated.preference', 'keep']
+  ]);
+  const entries = ['device', 'guest', 'first', 'second', 'duplicate', 'fresh'].map((id, order) => entry(id, order));
+  const ui = harness({ user: user('third'), storage, entries }); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement fresh');
+  assert.deepEqual(new Set(storedSeen(ui)), new Set(['device', 'guest', 'first', 'second', 'duplicate']));
+  assert.equal(storage.get('unrelated.preference'), 'keep');
+  ui.click('announcementPopupDismiss'); await tick(); ui.setUser(null); await tick();
+  assert.equal(ui.elements.get('announcementPopup').open, false); assertPublicReadsOnly(ui);
+});
+
+test('invalid legacy storage data cannot break popup loading or acknowledge valid entries', async () => {
+  const storage = new Map([
+    [deviceKey, '{invalid'],
+    ['pepper.announcements.guest.seen', JSON.stringify({ id: 'news' })],
+    ['pepper.announcements.pending.PPR-first', JSON.stringify([null, 4, 'seen'])],
+    ['pepper.announcements.pending.PPR-second', 'not json']
+  ]);
+  const ui = harness({ storage, entries: [entry('seen'), entry('news', 1)] }); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement news');
+  ui.click('announcementPopupDismiss'); await tick();
   assert.equal(ui.elements.get('announcementPopup').open, false);
-  await ui.api.load(); assert.equal(ui.elements.get('announcementPopup').open, false);
-  await ui.advance(4999); assert.equal(attempts, 1);
-  await ui.advance(1); assert.equal(attempts, 2); assert.equal(ui.server.seen.get('PPR-reader').has('news'), true);
+  assert.deepEqual(new Set(storedSeen(ui)), new Set(['seen', 'news'])); assertPublicReadsOnly(ui);
 });
 
-test('pending account acknowledgments survive reload and retry without affecting another account', async () => {
-  const storage = new Map(), server = { entries: [entry('news')], seen: new Map() };
-  const first = harness({ user: user('first'), server, storage, network: call => { if (call.method === 'POST') throw new Error('Offline'); } });
-  await tick(); first.click('announcementPopupDismiss'); await tick();
-  assert.deepEqual(JSON.parse(storage.get('pepper.announcements.pending.PPR-first')), ['news']);
-  const second = harness({ user: user('second'), server, storage }); await tick();
-  assert.equal(second.elements.get('announcementPopup').open, true); assert.equal(second.calls.filter(call => call.method === 'POST').length, 0);
-  const returning = harness({ user: user('first'), server, storage }); await tick();
-  assert.equal(returning.elements.get('announcementPopup').open, false); assert.equal(server.seen.get('PPR-first').has('news'), true);
-  assert.deepEqual(JSON.parse(storage.get('pepper.announcements.pending.PPR-first')), []);
+for (const storageFault of ['write', 'all']) test(`unavailable ${storageFault === 'write' ? 'storage writes' : 'storage'} preserves in-memory acknowledgments across account changes`, async () => {
+  const ui = harness({ user: user('first'), entries: [entry('news')], storageFault }); await tick();
+  assert.equal(ui.elements.get('announcementPopup').open, true);
+  ui.click('announcementPopupDismiss'); await tick();
+  ui.setUser(user('second')); await tick(); ui.setUser(null); await tick();
+  await ui.api.load(); await ui.advance(31000);
+  assert.equal(ui.elements.get('announcementPopup').open, false); assertPublicReadsOnly(ui);
 });
 
-test('an unresolved previous account acknowledgment cannot block or mutate a new account', async () => {
-  const pending = deferred();
-  const ui = harness({ user: user('first'), entries: [entry('news')], network: call => call.method === 'POST' && call.identity === 'PPR-first' ? pending.promise : undefined });
-  await tick(); ui.click('announcementPopupDismiss'); await tick();
-  ui.setUser(user('second')); await tick(); ui.click('announcementPopupDismiss'); await tick();
-  assert.equal(ui.server.seen.get('PPR-second').has('news'), true);
-  pending.resolve({ ok: true }); await tick();
-  assert.equal(ui.api.inspect().identity, 'PPR-second'); assert.equal(ui.api.inspect().pending.size, 0);
+test('another tab dismissal closes its matching popup and advances without acknowledging other entries', async () => {
+  const storage = new Map(), entries = [entry('old'), entry('new', 1)];
+  const first = harness({ storage, entries }), second = harness({ storage, entries, user: user('reader') }); await tick();
+  first.click('announcementPopupDismiss'); await tick();
+  second.windowEvent('storage', { key: deviceKey, newValue: storage.get(deviceKey), storageArea: second.context.localStorage }); await tick();
+  assert.equal(second.elements.get('announcementPopupTitle').textContent, 'Announcement old');
+  assert.deepEqual(storedSeen(second), ['new']);
+  second.click('announcementPopupDismiss'); await tick();
+  first.windowEvent('storage', { key: deviceKey, newValue: storage.get(deviceKey), storageArea: first.context.localStorage }); await tick();
+  assert.equal(first.elements.get('announcementPopup').open, false);
+  assert.deepEqual(new Set(storedSeen(first)), new Set(['new', 'old']));
+  assertPublicReadsOnly(first); assertPublicReadsOnly(second);
+});
+
+test('storage events merge existing device acknowledgments and ignore unrelated or malformed changes', async () => {
+  const storage = new Map([[deviceKey, JSON.stringify(['known'])]]);
+  const ui = harness({ storage, entries: [entry('known'), entry('old', 1), entry('new', 2)] }); await tick();
+  ui.windowEvent('storage', { key: 'unrelated.preference', newValue: JSON.stringify(['new']) }); await tick();
+  ui.windowEvent('storage', { key: deviceKey, newValue: '{invalid' }); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement new');
+  storage.set(deviceKey, JSON.stringify(['new']));
+  ui.windowEvent('storage', { key: deviceKey, newValue: JSON.stringify(['new']), storageArea: ui.context.localStorage }); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement old');
+  ui.click('announcementPopupDismiss'); await tick();
+  assert.deepEqual(new Set(storedSeen(ui)), new Set(['known', 'old', 'new']));
+  await ui.api.load(); assert.equal(ui.elements.get('announcementPopup').open, false); assertPublicReadsOnly(ui);
 });
 
 test('View announcement acknowledges one entry and focuses its article when the page loads', async () => {
@@ -219,7 +274,7 @@ test('View announcement acknowledges one entry and focuses its article when the 
   assert.deepEqual(ui.navigations, ['/announcements']); assert.equal(ui.elements.get('announcementPopup').open, false);
   const article = ui.article('new'); ui.api.syncEntries(ui.server.entries); await tick();
   assert.equal(ui.document.activeElement, article); assert.equal(article.scrolled, true);
-  assert.deepEqual([...ui.server.seen.get('PPR-reader')], ['new']);
+  assert.deepEqual(storedSeen(ui), ['new']); assertPublicReadsOnly(ui);
   ui.route('/games'); await tick(); assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement old');
 });
 
@@ -231,11 +286,32 @@ test('new announcements are discovered while visible and deleted entries leave t
   assert.equal(ui.elements.get('announcementPopup').open, false); assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
 });
 
-test('account full entry renders cannot bypass the server unseen filter or show the author their own post', async () => {
-  const reader = user('admin'), own = entry('own'), server = { entries: [own], seen: new Map([[reader.accountId, new Set(['own'])]]) };
-  const ui = harness({ user: reader, server }); await tick(); ui.api.syncEntries(server.entries); await tick();
+test('a newly published announcement can be acknowledged locally before the author receives its snapshot', async () => {
+  const own = entry('own'), ui = harness({ user: user('admin') }); await tick();
+  ui.api.acknowledgeEntry(own.id);
+  ui.server.entries = [own]; ui.api.syncEntries(ui.server.entries); await tick();
   assert.equal(ui.elements.get('announcementPopup').open, false);
-  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0);
+  assert.deepEqual(storedSeen(ui), ['own']);
+  ui.setUser(user('reader')); await tick(); assert.equal(ui.elements.get('announcementPopup').open, false);
+  assertPublicReadsOnly(ui);
+});
+
+test('an author on another device still sees their announcement until that browser acknowledges it', async () => {
+  const own = entry('own'), reader = user('admin'), server = { entries: [own], seen: new Map([[reader.accountId, new Set(['own'])]]) };
+  const ui = harness({ user: reader, server }); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement own');
+  ui.api.syncEntries(server.entries); await tick();
+  assert.equal(ui.elements.get('announcementPopup').open, true); assertPublicReadsOnly(ui);
+});
+
+test('acknowledging a published entry removes only that entry from the visible queue', async () => {
+  const ui = harness({ user: user('admin'), entries: [entry('old'), entry('own', 1)] }); await tick();
+  ui.api.acknowledgeEntry('own'); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement old');
+  assert.deepEqual(storedSeen(ui), ['own']);
+  ui.api.acknowledgeEntry(null); ui.api.acknowledgeEntry(2); ui.api.acknowledgeEntry(''); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement old');
+  assert.deepEqual(storedSeen(ui), ['own']); assertPublicReadsOnly(ui);
 });
 
 test('deleted and unknown authors are shown without invalid profile links', async () => {
@@ -246,7 +322,7 @@ test('deleted and unknown authors are shown without invalid profile links', asyn
   assert.equal(ui.elements.get('announcementPopupAuthor').textContent, 'Unknown author');
 });
 
-test('a stale unseen read cannot restore an announcement removed by a fresher parent snapshot', async () => {
+test('a stale public read cannot restore an announcement removed by a fresher parent snapshot', async () => {
   const pending = deferred(); let delayed = true;
   const ui = harness({ user: user('reader'), entries: [entry('deleted')], network: call => {
     if (call.method === 'GET' && delayed) { delayed = false; return pending.promise; }
@@ -267,4 +343,44 @@ test('fresh or repeated parent snapshots still discover newly published unseen a
   assert.equal(ui.elements.get('announcementPopup').open, true);
   ui.api.syncEntries(ui.server.entries); await tick();
   assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement published');
+});
+
+test('edited parent snapshots update the visible announcement without replaying acknowledged entries', async () => {
+  const ui = harness({ user: user('reader'), entries: [entry('old'), entry('new', 1)] }); await tick();
+  ui.click('announcementPopupDismiss'); await tick();
+  ui.server.entries = [{ ...entry('old'), title: 'Edited old announcement' }, { ...entry('new', 1), title: 'Edited seen announcement' }];
+  ui.api.syncEntries(ui.server.entries); await tick();
+  assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Edited old announcement');
+  ui.click('announcementPopupDismiss'); await tick();
+  ui.api.syncEntries(ui.server.entries); await tick();
+  assert.equal(ui.elements.get('announcementPopup').open, false);
+  assert.deepEqual(storedSeen(ui), ['new', 'old']); assertPublicReadsOnly(ui);
+});
+
+test('tabs merge stored acknowledgments before writing even if storage events have not arrived yet', async () => {
+  const storage = new Map(), entries = [entry('old'), entry('new', 1)];
+  const first = harness({ storage, entries }), second = harness({ storage, entries }); await tick();
+  first.api.acknowledgeEntry('old'); await tick();
+  second.click('announcementPopupDismiss'); await tick();
+  assert.deepEqual(new Set(storedSeen(second)), new Set(['old', 'new']));
+  second.setUser(user('reader')); await tick();
+  assert.equal(second.elements.get('announcementPopup').open, false); assertPublicReadsOnly(second);
+});
+
+test('equal acknowledgment sets in different insertion orders do not bounce storage writes between tabs', async () => {
+  const storage = new Map([[deviceKey, JSON.stringify(['second', 'first'])]]), entries = [entry('first'), entry('second', 1), entry('fresh', 2)];
+  const first = harness({ storage, entries }); await tick();
+  assert.equal(storage.get(deviceKey), JSON.stringify(['first', 'second']));
+  const second = harness({ storage, entries, user: user('reader') }); await tick();
+  first.storageWrites.length = 0; second.storageWrites.length = 0;
+  for (let round = 0; round < 4; round++) {
+    for (const ui of [first, second]) {
+      ui.windowEvent('storage', { key: deviceKey, newValue: storage.get(deviceKey), storageArea: ui.context.localStorage });
+      await tick();
+      assert.equal(ui.elements.get('announcementPopupTitle').textContent, 'Announcement fresh');
+    }
+  }
+  assert.deepEqual(first.storageWrites, []); assert.deepEqual(second.storageWrites, []);
+  assert.equal(storage.get(deviceKey), JSON.stringify(['first', 'second']));
+  assertPublicReadsOnly(first); assertPublicReadsOnly(second);
 });

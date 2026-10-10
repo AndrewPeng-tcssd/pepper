@@ -3,25 +3,46 @@
   const el = id => document.getElementById(id);
   const dialog = el('announcementPopup');
   if (!dialog) return;
+  const deviceKey = 'pepper.announcements.device.seen';
   const guestKey = 'pepper.announcements.guest.seen';
+  const pendingPrefix = 'pepper.announcements.pending.';
   const popup = {
     identity: null, identityRevision: -1, revision: 0, feedRevision: 0, navigation: -1, entries: [], currentId: null,
-    loaded: false, loadRequest: null, loadRetryAt: 0, seenRequest: null, seenRetryAt: 0,
-    acknowledged: new Set(), pending: new Set(), guestSeen: new Set(), ignoredCloses: 0,
+    loaded: false, loadRequest: null, loadRetryAt: 0, seen: new Set(), ignoredCloses: 0,
     focusId: null, viewing: false
   };
   const accountIdentity = () => state.user?.accountId || 'guest';
-  const pendingKey = identity => `pepper.announcements.pending.${identity}`;
   const available = () => !document.hidden && !document.body.classList.contains('auth-loading') && !accountBanned && !state.user?.banned;
   const current = operation => popup.identity === operation.identity && popup.revision === operation.revision && accountIdentity() === operation.identity && userIdentityRevision === operation.identityRevision;
   const validEntries = entries => (Array.isArray(entries) ? entries : []).filter(entry => entry && typeof entry.id === 'string' && typeof entry.title === 'string' && typeof entry.description === 'string');
   const newestFirst = (a, b) => (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0) || b.id.localeCompare(a.id);
-  function readIds(key) {
-    try { const ids = JSON.parse(localStorage.getItem(key) || '[]'); return new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string').slice(-1000) : []); }
+  function parseIds(value) {
+    try { const ids = JSON.parse(value || '[]'); return new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : []); }
     catch { return new Set(); }
   }
+  function readIds(key) {
+    try { return parseIds(localStorage.getItem(key)); } catch { return new Set(); }
+  }
   function writeIds(key, ids) {
-    try { localStorage.setItem(key, JSON.stringify([...ids].slice(-1000))); } catch { /* Memory state still prevents repeated popups during this visit. */ }
+    try {
+      const value = JSON.stringify([...ids].sort());
+      if (localStorage.getItem(key) !== value) localStorage.setItem(key, value);
+    } catch { /* Memory state still prevents repeated popups during this visit. */ }
+  }
+  function mergeSeen(ids) {
+    for (const id of ids) popup.seen.add(id);
+  }
+  function migrateSeen() {
+    mergeSeen(readIds(deviceKey));
+    mergeSeen(readIds(guestKey));
+    mergeSeen(readIds(`${pendingPrefix}${accountIdentity()}`));
+    try {
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (key?.startsWith(pendingPrefix)) mergeSeen(readIds(key));
+      }
+    } catch { /* The current visit can still retain any readable dismissals. */ }
+    if (popup.seen.size) writeIds(deviceKey, popup.seen);
   }
   function closeDialog() {
     if (!dialog.open) return;
@@ -63,8 +84,17 @@
     if (!dialog.open) { try { dialog.showModal(); el('announcementPopupDismiss').focus(); } catch { /* Retry once the current dialog finishes closing. */ } }
   }
   function filterEntries(entries) {
-    const seen = popup.identity === 'guest' ? popup.guestSeen : popup.acknowledged;
-    return [...new Map(validEntries(entries).filter(entry => !seen.has(entry.id) && !popup.pending.has(entry.id)).map(entry => [entry.id, entry])).values()].sort(newestFirst);
+    mergeSeen(readIds(deviceKey));
+    return [...new Map(validEntries(entries).filter(entry => !popup.seen.has(entry.id)).map(entry => [entry.id, entry])).values()].sort(newestFirst);
+  }
+  function removeSeenEntries() {
+    popup.entries = filterEntries(popup.entries);
+    if (popup.seen.has(popup.currentId)) { popup.currentId = null; closeDialog(); }
+  }
+  function acknowledgeEntry(id) {
+    if (typeof id !== 'string' || !id) return;
+    mergeSeen(readIds(deviceKey)); popup.seen.add(id); writeIds(deviceKey, popup.seen);
+    removeSeenEntries(); pump();
   }
   async function request(operation, path, options = {}) {
     operation.controller = new AbortController();
@@ -77,7 +107,7 @@
     const operation = { identity: popup.identity, revision: popup.revision, identityRevision: popup.identityRevision, navigation: routeRevision, feedRevision: popup.feedRevision };
     popup.loadRequest = operation;
     try {
-      const data = await request(operation, operation.identity === 'guest' ? 'announcements' : 'announcements/unseen');
+      const data = await request(operation, 'announcements');
       if (!current(operation) || operation.navigation !== routeRevision || operation.feedRevision !== popup.feedRevision) return;
       popup.entries = filterEntries(data.entries); popup.loaded = true; popup.loadRetryAt = 0; pump();
     } catch (error) {
@@ -86,45 +116,23 @@
       popup.loadRetryAt = Date.now() + 5000;
     } finally { if (popup.loadRequest === operation) popup.loadRequest = null; }
   }
-  async function sendSeen() {
-    if (!available() || popup.identity === 'guest' || !popup.pending.size || popup.seenRequest || Date.now() < popup.seenRetryAt) return;
-    const operation = { identity: popup.identity, revision: popup.revision, identityRevision: popup.identityRevision, id: popup.pending.values().next().value };
-    popup.seenRequest = operation;
-    try {
-      await request(operation, `announcements/${encodeURIComponent(operation.id)}/seen`, { method: 'POST', body: '{}' });
-      if (!current(operation)) return;
-      popup.pending.delete(operation.id); popup.acknowledged.add(operation.id); popup.seenRetryAt = 0;
-      writeIds(pendingKey(popup.identity), popup.pending);
-    } catch (error) {
-      if (!current(operation)) return;
-      if (error.status === 401) { setUser(null); return; }
-      if (error.status === 404 || error.status === 410) { popup.pending.delete(operation.id); writeIds(pendingKey(popup.identity), popup.pending); }
-      else { const delay = Number(error.retryAfterMs); popup.seenRetryAt = Date.now() + (error.status === 429 && Number.isFinite(delay) && delay > 0 ? delay : 5000); }
-    } finally {
-      if (popup.seenRequest === operation) popup.seenRequest = null;
-      if (current(operation) && popup.pending.size && !popup.seenRetryAt) void sendSeen();
-    }
-  }
   function acknowledge(view = false) {
     const entry = popup.entries.find(item => item.id === popup.currentId);
     if (!entry || !available() || popup.identity !== accountIdentity()) return;
-    if (popup.identity === 'guest') { popup.guestSeen.add(entry.id); writeIds(guestKey, popup.guestSeen); }
-    else { popup.acknowledged.add(entry.id); popup.pending.add(entry.id); writeIds(pendingKey(popup.identity), popup.pending); }
+    mergeSeen(readIds(deviceKey)); popup.seen.add(entry.id); writeIds(deviceKey, popup.seen);
     popup.entries = popup.entries.filter(item => item.id !== entry.id); popup.currentId = null; closeDialog();
     if (view) { popup.focusId = entry.id; popup.viewing = true; navigateTo('/announcements'); focusEntry(); }
-    void sendSeen(); pump();
+    removeSeenEntries(); pump();
   }
   function syncUser() {
     const identity = accountIdentity();
     if (identity !== popup.identity || userIdentityRevision !== popup.identityRevision) {
-      popup.loadRequest?.controller?.abort(); popup.seenRequest?.controller?.abort(); closeDialog();
+      popup.loadRequest?.controller?.abort(); closeDialog();
       Object.assign(popup, { identity, identityRevision: userIdentityRevision, revision: popup.revision + 1, navigation: routeRevision,
-        entries: [], currentId: null, loaded: false, loadRequest: null, loadRetryAt: 0, seenRequest: null, seenRetryAt: 0,
-        acknowledged: new Set(), pending: identity === 'guest' ? new Set() : readIds(pendingKey(identity)),
-        guestSeen: identity === 'guest' ? readIds(guestKey) : new Set(), focusId: null, viewing: false });
+        entries: [], currentId: null, loaded: false, loadRequest: null, loadRetryAt: 0, focusId: null, viewing: false });
     }
     if (!available()) { closeDialog(); return; }
-    if (!popup.loaded) void load(); void sendSeen(); pump();
+    removeSeenEntries(); if (!popup.loaded) void load(); pump();
   }
   function onRoute() {
     if (popup.navigation !== routeRevision) { popup.navigation = routeRevision; popup.loadRequest?.controller?.abort(); popup.loadRequest = null; }
@@ -135,11 +143,7 @@
     if (popup.identity !== accountIdentity() || popup.identityRevision !== userIdentityRevision) syncUser();
     // A read preceding this fresher snapshot cannot restore a deleted entry.
     popup.feedRevision++; popup.loadRequest?.controller?.abort(); popup.loadRequest = null;
-    if (popup.identity === 'guest') popup.entries = filterEntries(entries);
-    else {
-      const byId = new Map(validEntries(entries).map(entry => [entry.id, entry]));
-      popup.entries = filterEntries(popup.entries.filter(entry => byId.has(entry.id)).map(entry => byId.get(entry.id)));
-    }
+    popup.entries = filterEntries(entries);
     focusEntry(); pump(); if (available()) void load();
   }
   el('announcementPopupDismiss').addEventListener('click', () => acknowledge());
@@ -149,10 +153,19 @@
   dialog.addEventListener('close', () => { if (popup.ignoredCloses) popup.ignoredCloses--; else acknowledge(); });
   document.addEventListener('close', pump, true);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncUser(); void load(); } else closeDialog(); });
-  window.addEventListener('online', () => { popup.loadRetryAt = 0; popup.seenRetryAt = 0; syncUser(); void load(); });
+  window.addEventListener('online', () => { popup.loadRetryAt = 0; syncUser(); void load(); });
+  window.addEventListener('storage', event => {
+    if (event.key !== deviceKey && event.key !== null) return;
+    mergeSeen(readIds(deviceKey));
+    if (event.key === deviceKey && event.newValue) {
+      mergeSeen(parseIds(event.newValue)); writeIds(deviceKey, popup.seen);
+    }
+    removeSeenEntries(); pump();
+  });
   if (typeof MutationObserver !== 'undefined') new MutationObserver(() => { syncUser(); pump(); }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['open', 'class'] });
-  window.PepperAnnouncementPopup = { syncUser, onRoute, syncEntries };
+  window.PepperAnnouncementPopup = { syncUser, onRoute, syncEntries, acknowledgeEntry };
+  migrateSeen();
   syncUser();
-  window.setInterval(() => { syncUser(); void sendSeen(); }, 1000);
+  window.setInterval(syncUser, 1000);
   window.setInterval(() => { if (available()) void load(); }, 30000);
 })();

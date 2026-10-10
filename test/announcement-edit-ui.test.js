@@ -16,7 +16,7 @@ function appFunction(name) {
 }
 
 function harness({ user = person('admin', 'admin'), entries = [entry()], network, enabled = true } = {}) {
-  const elements = new Map(), calls = [], userChanges = [], commentMounts = [], popupSnapshots = [];
+  const elements = new Map(), calls = [], userChanges = [], commentMounts = [], popupSnapshots = [], popupAcknowledgments = [], popupEvents = [];
   let context, accountRevision = 0;
   const matches = (element, selector) => {
     const attribute = /\[data-([\w-]+)(?:="([^"]+)")?\]/.exec(selector);
@@ -73,7 +73,10 @@ function harness({ user = person('admin', 'admin'), entries = [entry()], network
     setUser(value) { userChanges.push(value); context.userIdentityRevision++; state.user = value; context.renderAnnouncementEditor(); },
     window: {
       PepperNewsComments: { reconcile() {}, mount(article, kind, value) { commentMounts.push({ article, kind, entry: value }); } },
-      PepperAnnouncementPopup: { syncEntries(values) { popupSnapshots.push(values); } }
+      PepperAnnouncementPopup: {
+        acknowledgeEntry(id) { popupAcknowledgments.push(id); popupEvents.push({ type: 'acknowledge', id }); },
+        syncEntries(values) { popupSnapshots.push(values); popupEvents.push({ type: 'sync', ids: values.map(value => value.id) }); }
+      }
     },
     api: async (route, options = {}) => {
       const call = { route, method: options.method || 'GET', body: options.body && JSON.parse(options.body) }; calls.push(call);
@@ -86,7 +89,7 @@ function harness({ user = person('admin', 'admin'), entries = [entry()], network
   vm.runInContext(appFunction('canEditAnnouncement') + '\nfunction canDeleteAnnouncement(entry) { return canEditAnnouncement(entry); }\n' + appFunction('newsEntryAuthor') + '\n' + source.slice(start, end) + '\nthis.editing = announcementEditing;', context);
   context.renderAnnouncements(entries);
   return {
-    context, state, elements, calls, userChanges, popupSnapshots, commentMounts,
+    context, state, elements, calls, userChanges, popupSnapshots, popupAcknowledgments, popupEvents, commentMounts,
     edit: id => context.beginAnnouncementEdit(id),
     submit: () => context.submitAnnouncement({ preventDefault() {} }),
     cancel: () => elements.get('announcementCancel').dispatch('click'),
@@ -150,6 +153,54 @@ test('Save sends a PATCH and retains the original author, date, and comments', a
   assert.equal(ui.context.editing.id, null);
   assert.equal(ui.state.announcementSubmitting, false);
   assert.equal(ui.elements.get('announcementFormMessage').textContent, 'Announcement saved.');
+  assert.deepEqual(ui.popupAcknowledgments, []);
+});
+
+test('publishing acknowledges the new announcement before syncing it to the popup', async () => {
+  const published = entry('published', person('admin', 'admin'));
+  const ui = harness({ network: call => call.method === 'POST' ? { entry: published } : { entries: [published, entry()] } });
+  ui.popupEvents.length = 0;
+  ui.draft(' New announcement ', ' New details '); await ui.submit(); await tick();
+  assert.equal(ui.calls[0].route, 'announcements'); assert.equal(ui.calls[0].method, 'POST');
+  assert.deepEqual(ui.calls[0].body, { title: 'New announcement', description: 'New details' });
+  assert.deepEqual(ui.popupAcknowledgments, ['published']);
+  assert.equal(ui.popupEvents[0].type, 'acknowledge'); assert.equal(ui.popupEvents[0].id, 'published');
+  assert.equal(ui.popupEvents[1].type, 'sync'); assert.ok(ui.popupEvents[1].ids.includes('published'));
+  assert.equal(ui.elements.get('announcementFormMessage').textContent, 'Announcement published.');
+});
+
+test('a publication completed after switching accounts still acknowledges it on the device', async () => {
+  const waiting = deferred();
+  const ui = harness({ network: call => call.method === 'POST' ? waiting.promise : undefined });
+  const snapshotsBefore = ui.popupSnapshots.length;
+  ui.draft('New announcement', 'New details'); const publishing = ui.submit();
+  const replacement = person('replacement', 'admin'); ui.setUser(replacement);
+  ui.draft('Replacement draft', 'Replacement details');
+  waiting.resolve({ entry: entry('published', person('admin', 'admin')) }); await publishing;
+  assert.deepEqual(ui.popupAcknowledgments, ['published']);
+  assert.equal(ui.popupSnapshots.length, snapshotsBefore);
+  assert.equal(ui.state.user, replacement);
+  assert.equal(ui.state.announcementEntries[0].id, 'news');
+  assert.equal(ui.elements.get('announcementTitle').value, 'Replacement draft');
+  assert.equal(ui.elements.get('announcementDescription').value, 'Replacement details');
+  assert.equal(ui.state.announcementSubmitting, false);
+});
+
+test('editing an announcement never acknowledges entries returned by the save', async () => {
+  const edited = { ...entry(), title: 'Edited title' }, other = entry('other');
+  const ui = harness({ network: () => ({ entry: other, entries: [edited, other] }) });
+  ui.edit('news'); ui.draft('Edited title', 'Edited details'); await ui.submit(); await tick();
+  assert.equal(ui.calls[0].method, 'PATCH');
+  assert.deepEqual(ui.popupAcknowledgments, []);
+  assert.ok(ui.popupSnapshots.some(values => values.some(value => value.id === 'other')));
+});
+
+test('failed publications do not acknowledge announcements', async () => {
+  const ui = harness({ network: call => { if (call.method === 'POST') throw Object.assign(new Error('Try again.'), { status: 500 }); } });
+  ui.draft('New announcement', 'New details'); await ui.submit();
+  assert.deepEqual(ui.popupAcknowledgments, []);
+  assert.equal(ui.elements.get('announcementFormMessage').textContent, 'Try again.');
+  assert.equal(ui.elements.get('announcementTitle').value, 'New announcement');
 });
 
 test('failed saves retain the draft and can retry without returning to publication', async () => {

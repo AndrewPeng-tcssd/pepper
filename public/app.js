@@ -1272,6 +1272,7 @@ async function submitAnnouncement(event) {
     const data = await api(editId ? `announcements/${encodeURIComponent(editId)}` : 'announcements', {
       method: editId ? 'PATCH' : 'POST', body: JSON.stringify({ title, description })
     });
+    if (!editId) window.PepperAnnouncementPopup?.acknowledgeEntry?.(data.entry?.id);
     if (!currentAnnouncementOperation(operation)) return;
     announcementRevision++;
     state.announcementEntries = Array.isArray(data.entries) ? data.entries : [data.entry, ...(state.announcementEntries || []).filter(entry => entry.id !== data.entry.id)];
@@ -1530,7 +1531,7 @@ $('deleteAccountForm').addEventListener('submit', async event => {
   } finally {
     $('deleteAccountPassword').value = '';
     deletingAccount = false;
-    setAccountSubmitting(false, actionRevision);
+                       setAccountSubmitting(false, actionRevision);
   }
 });
 
