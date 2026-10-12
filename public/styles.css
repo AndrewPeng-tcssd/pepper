@@ -216,6 +216,35 @@ input:focus { border-color: var(--accent); }
 .dev-status h2 { margin-bottom: 12px; font-size: 19px; }
 .dev-status p { margin: 0; color: var(--muted); font-size: 14px; }
 
+.halloween-pack { margin-top: 28px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.halloween-pack-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 28px; background: linear-gradient(120deg, #35184f, #502463); color: #fff6e8; }
+.halloween-pack-heading > div { flex: 1 1 260px; }
+.halloween-pack-heading h2 { margin-bottom: 12px; font-size: 30px; }
+.halloween-pack-heading p { max-width: 540px; margin: 0; color: #ead9f3; font-size: 14px; }
+.halloween-pack-heading .halloween-pack-eyebrow { margin-bottom: 10px; color: #ffc976; font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.pack-preview-badge { flex: none; padding: 8px 12px; border: 1px solid #ffd08c; border-radius: 99px; background: #ffe1b1; color: #452149; font-size: 12px; font-weight: 700; }
+.halloween-pack-contents { padding: 24px; }
+.pack-preview-hint { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+.pack-preview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 24px 18px; }
+.pack-preview-card { min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); text-decoration: none; }
+.pack-preview-card:hover { border-color: var(--accent); background: var(--button-hover); }
+.pack-preview-card img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.pack-preview-card h3 { margin: 12px 4px 6px; overflow-wrap: anywhere; font-size: 16px; line-height: 1.3; }
+.pack-preview-card p { margin: 0 4px 5px; color: var(--muted); font-size: 12px; }
+dialog.pack-card-dialog { width: min(680px, calc(100vw - 24px)); max-height: calc(100svh - 24px); }
+.pack-card-dialog .dialog-content { padding: 24px; }
+.pack-card-dialog .dialog-content h2 { margin-bottom: 8px; font-size: 23px; }
+.pack-card-dialog .dialog-content > p { margin: 0 0 18px; font-size: 12px; }
+.pack-card-dialog img { display: block; max-width: 100%; width: auto; height: auto; max-height: calc(100svh - 180px); margin: 0 auto; border-radius: 8px; }
+@media (max-width: 600px) {
+  .halloween-pack-heading { gap: 14px; padding: 22px; }
+  .halloween-pack-contents { padding: 16px; }
+  .pack-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 10px; }
+  .pack-preview-card { padding: 5px; }
+  .pack-preview-card h3 { margin: 10px 2px 5px; font-size: 13px; }
+  .pack-preview-card p { margin-right: 2px; margin-left: 2px; }
+}
+
 .overview-widgets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
 .overview-widget { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .overview-widget h2 { margin-bottom: 12px; font-size: 21px; }

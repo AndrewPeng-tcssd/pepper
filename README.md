@@ -1,6 +1,6 @@
 # Pepper TCG
 
-A private development version of the pepper trading card game website. Accounts, hourly token claims, balances, private trading sessions, and chat work now. Card artwork, packs, and paid token bundles are placeholders until those details are ready.
+A private development version of the pepper trading card game website. Accounts, hourly token claims, balances, private trading sessions, and chat work now. The Halloween pack has an artwork preview; pack opening, purchases, and paid token bundles remain unavailable.
 
 ## Run it locally
 
@@ -14,13 +14,15 @@ A private development version of the pepper trading card game website. Accounts,
    ```
 
    Use MongoDB Atlas or a MongoDB replica set so trades, games, moderation, publishing, and account deletion can update related records in one transaction. These operations require a replica set. Keep the real connection string private. `.env` is excluded by `.gitignore`.
-4. Run `npm start`, then open `http://localhost:3000` in Chrome. Overview (`/`) has the hourly token claim below the profile and pack animation test; you can also claim from `/profile`. The Packs page at `/packs` shows “Coming soon.” Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
+4. Run `npm start`, then open `http://localhost:3000` in Chrome. Overview (`/`) has the hourly token claim below the profile and pack animation test; you can also claim from `/profile`. The Packs page at `/packs` previews the Halloween pack's seven unique cards; select a card to enlarge it. Opening `public/index.html` directly from the folder can display the page, but accounts, tokens, and chat need the running server.
 
 ## Accounts
 
 New accounts use a username and password. No email address or email verification is needed, and sign-up logs you in immediately. Existing accounts keep their balances and can log in with their usernames and passwords. Existing accounts that already have an email can still use email login when email delivery is configured; that route sends a one-use verification link. Set `EMAIL_SENDING_PAUSED=true` to pause email login without affecting username login or new sign-ups. There is currently no password recovery, so keep your password safe.
 
 The site stores accounts, password hashes, balances, claim times, and sessions in MongoDB. Passwords need at least eight characters. To change the local website port, set `PORT` before starting the server.
+
+Registration allows five attempts and login allows ten attempts per IP address in separate five-second windows. A "Too many attempts" response includes the remaining wait, and retries do not extend it.
 
 Change your username or password at `/settings` using your current password. Changing your username also updates the name shown on your chat messages. Changing your password signs out your other sessions while keeping the current session signed in.
 
@@ -94,7 +96,7 @@ Requests and contribution changes do not reserve or move assets. The second conf
 
 Only the two players can view a session and its chat. The Trading page shows all active sessions and the latest 100 completed sessions. Private chat shows the latest 100 messages in order and remains readable after closing a session. Sessions, messages, and completed trades stay saved through server restarts and follow each player's current username. Retrying a message does not create a duplicate.
 
-Card trading uses catalog definitions and uniquely owned card copies saved in MongoDB. Inventory lists actual tradable copies, and contributions retain the card descriptions shown when selected. The framework does not issue demo cards to players. Packs still show “Coming soon,” and the animation test does not grant cards. Real pack issuance and purchases remain to be implemented.
+Card trading uses catalog definitions and uniquely owned card copies saved in MongoDB. Inventory lists actual tradable copies, and contributions retain the card descriptions shown when selected. The framework does not issue demo cards to players. The Halloween pack is preview only, and the animation test does not grant cards. Real pack issuance and purchases remain to be implemented.
 
 Existing pending offers become trade requests. Their sender's saved contribution stays hidden until the request is accepted, and the recipient then chooses their own contribution. Completed trade history stays intact.
 
@@ -137,7 +139,7 @@ The previous version kept accounts in `data/pepper.sqlite`. After adding `MONGOD
 - Overview shows your username, token balance, joined date, and last claim in a widget that links to your profile, beside the pack animation test.
 - A pack opening animation test on Overview (`/`). It reveals five blank cards and can be reset. It does not use tokens or save cards. Old links to `/packs/test` redirect to the demo on Overview.
 
-The Packs page at `/packs` currently displays “Coming soon.” There is currently no pack or payment checkout.
+The Packs page at `/packs` shows the Halloween pack with seven unique card images and click-to-enlarge previews. It is preview only: it cannot be purchased or opened, spends no tokens, and issues no cards. There is currently no pack or payment checkout.
 
 ## Before a public launch
 

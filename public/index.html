@@ -7,9 +7,10 @@
   <title>Pepper TCG</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">
   <script src="/theme.js?v=2"></script>
-  <link rel="stylesheet" href="/styles.css?v=56">
+  <link rel="stylesheet" href="/styles.css?v=57">
   <script src="/player-picker.js?v=1" defer></script>
   <script src="/app.js?v=53" defer></script>
+  <script src="/pack-preview.js?v=1" defer></script>
   <script src="/games.js?v=6" defer></script>
   <script src="/moderation.js?v=8" defer></script>
   <script src="/friends.js?v=3" defer></script>
@@ -205,7 +206,49 @@
 
     <section class="section-wrap packs-overview" id="packsPage" aria-labelledby="packsTitle" hidden>
       <h1 id="packsTitle">Packs</h1>
-      <p>Coming soon</p>
+      <article class="halloween-pack" aria-labelledby="halloweenPackTitle" data-pack-id="halloween" data-preview-only="true">
+        <div class="halloween-pack-heading">
+          <div>
+            <p class="halloween-pack-eyebrow">Seasonal pack</p>
+            <h2 id="halloweenPackTitle">Halloween pack</h2>
+            <p>7 cards to preview. Opening and purchasing are unavailable for now.</p>
+          </div>
+          <span class="pack-preview-badge">Preview only</span>
+        </div>
+        <div class="halloween-pack-contents">
+          <p class="pack-preview-hint">Select a card to see it up close.</p>
+          <div class="pack-preview-grid" id="halloweenCards" aria-label="Halloween pack cards">
+            <a class="pack-preview-card" href="/images/cards/halloween/dark-jalapeno.jpeg" target="_blank" rel="noopener" aria-label="Preview Dark Jalapeño" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/dark-jalapeno.jpeg" alt="Dark Jalapeño card artwork" width="989" height="1314" loading="lazy" decoding="async">
+              <h3>Dark Jalapeño</h3><p>Smoky</p>
+            </a>
+            <a class="pack-preview-card" href="/images/cards/halloween/suspicious-stew.jpeg" target="_blank" rel="noopener" aria-label="Preview Suspicious Stew" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/suspicious-stew.jpeg" alt="Suspicious Stew card artwork" width="882" height="1187" loading="lazy" decoding="async">
+              <h3>Suspicious Stew</h3><p>Flip a coin</p>
+            </a>
+            <a class="pack-preview-card" href="/images/cards/halloween/chilli-of-the-crypt.jpeg" target="_blank" rel="noopener" aria-label="Preview Chilli of the Crypt" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/chilli-of-the-crypt.jpeg" alt="Chilli of the Crypt card artwork" width="1017" height="1347" loading="lazy" decoding="async">
+              <h3>Chilli of the Crypt</h3><p>Smoky</p>
+            </a>
+            <a class="pack-preview-card" href="/images/cards/halloween/zombie-shishito.jpeg" target="_blank" rel="noopener" aria-label="Preview Zombie Shishito" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/zombie-shishito.jpeg" alt="Zombie Shishito card artwork" width="973" height="1301" loading="lazy" decoding="async">
+              <h3>Zombie Shishito</h3><p>Fresh</p>
+            </a>
+            <a class="pack-preview-card" href="/images/cards/halloween/the-mummy.jpeg" target="_blank" rel="noopener" aria-label="Preview The Mummy" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/the-mummy.jpeg" alt="The Mummy card artwork" width="1062" height="1426" loading="lazy" decoding="async">
+              <h3>The Mummy</h3><p>Fuego</p>
+            </a>
+            <a class="pack-preview-card" href="/images/cards/halloween/grim-reaper.jpeg" target="_blank" rel="noopener" aria-label="Preview Grim Reaper" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/grim-reaper.jpeg" alt="Grim Reaper card artwork" width="720" height="964" loading="lazy" decoding="async">
+              <h3>Grim Reaper</h3><p>Exotic</p>
+            </a>
+            <a class="pack-preview-card" href="/images/cards/halloween/ghastly-pepper.jpeg" target="_blank" rel="noopener" aria-label="Preview Ghastly Pepper" aria-haspopup="dialog" aria-controls="packCardDialog">
+              <img src="/images/cards/halloween/ghastly-pepper.jpeg" alt="Ghastly Pepper card artwork" width="1057" height="1412" loading="lazy" decoding="async">
+              <h3>Ghastly Pepper</h3><p>Fuego</p>
+            </a>
+          </div>
+        </div>
+      </article>
     </section>
 
     <section class="section-wrap games-overview" id="gamesPage" aria-labelledby="gamesTitle" hidden>
@@ -496,6 +539,15 @@
       <p class="announcement-popup-description" id="announcementPopupDescription"></p>
       <p class="form-message" id="announcementPopupMessage" role="status"></p>
       <div class="trading-actions"><button class="button" id="announcementPopupRead" type="button">View announcement</button><button class="button trading-primary" id="announcementPopupDismiss" type="button">Got it</button></div>
+    </div>
+  </dialog>
+
+  <dialog class="pack-card-dialog" id="packCardDialog" aria-labelledby="packCardTitle" aria-describedby="packCardNotice">
+    <div class="dialog-content">
+      <form method="dialog"><button class="dialog-close" type="submit" aria-label="Close card preview" autofocus>×</button></form>
+      <h2 id="packCardTitle">Card preview</h2>
+      <p id="packCardNotice">Halloween pack · Preview only</p>
+      <img id="packCardImage" alt="">
     </div>
   </dialog>
 
