@@ -22,6 +22,8 @@ New accounts use a username and password. No email address or email verification
 
 The site stores accounts, password hashes, balances, claim times, and sessions in MongoDB. Passwords need at least eight characters. To change the local website port, set `PORT` before starting the server.
 
+Registration allows five attempts and login allows ten attempts per IP address in separate five-second windows. A "Too many attempts" response includes the remaining wait, and retries do not extend it.
+
 Change your username or password at `/settings` using your current password. Changing your username also updates the name shown on your chat messages. Changing your password signs out your other sessions while keeping the current session signed in.
 
 Profile pictures default to a pepper and appear beside usernames in public and private chat, profiles, and the online-player list. Upload a PNG, JPEG, or WebP up to 2 MiB in Settings, or choose **Use default**. Uploaded pictures are resized to 256×256 WebP and stripped of metadata.

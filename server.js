@@ -16,6 +16,7 @@ const HOURLY_TOKEN_MIN = 10;
 const HOURLY_TOKEN_MAX = 20;
 const CLAIM_INTERVAL_MS = 60 * 60 * 1000;
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+const AUTH_RATE_LIMIT_WINDOW_MS = 5 * 1000;
 const PRESENCE_TIMEOUT_MS = 75 * 1000;
 const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
 const TURNSTILE_TEST_SECRET_KEY = '1x0000000000000000000000000000000AA';
@@ -225,7 +226,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
     return 'sent';
   }
 
-  app.post('/api/register', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
+  app.post('/api/register', rateLimit(5, AUTH_RATE_LIMIT_WINDOW_MS), async (req, res) => {
     const username = String(req.body?.username || '').trim();
     const password = String(req.body?.password || '');
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) return sendError(res, 400, 'Username must be 3–24 letters, numbers, or underscores.');
@@ -260,7 +261,7 @@ function createApp({ client, users, sessions, messages, verificationTokens, chan
       return sendError(res, 503, 'Email sign-in is temporarily paused. You can log in with your username.');
     }
     next();
-  }, rateLimit(10, 15 * 60 * 1000), async (req, res) => {
+  }, rateLimit(10, AUTH_RATE_LIMIT_WINDOW_MS), async (req, res) => {
     const identifier = String(req.body?.identifier || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
     const user = await users.findOne({ $or: [{ usernameKey: identifier }, { email: identifier }] });

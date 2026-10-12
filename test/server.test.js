@@ -49,6 +49,48 @@ function accountApi(t, accountStore = store, options = {}) {
   return (route, body, cookie, method) => request(route, body, cookie, method, accountBase);
 }
 
+for (const { name, route, max, failedStatus } of [
+  { name: 'registration', route: '/api/register', max: 5, failedStatus: 400 },
+  { name: 'login', route: '/api/login', max: 10, failedStatus: 401 }
+]) {
+  test(`${name} rate limit expires after five seconds without extending on retries`, async t => {
+    const isolated = await changelogStore(t);
+    let now = Date.now();
+    const api = accountApi(t, isolated, { now: () => now });
+    const username = `${name}_rate_limit`;
+    const password = '12345678';
+    if (route === '/api/login') {
+      assert.equal((await api('/api/register', { username, password })).status, 201);
+    }
+    const failedAttempt = route === '/api/register'
+      ? { username, password: 'short' }
+      : { identifier: 'unknown_rate_limit_user', password };
+    const validAttempt = route === '/api/register' ? { username, password } : { identifier: username, password };
+    for (let index = 0; index < max; index += 1) {
+      assert.equal((await api(route, failedAttempt)).status, failedStatus);
+    }
+    const limited = await api(route, validAttempt);
+    assert.equal(limited.status, 429);
+    assert.equal(limited.data.retryAfterMs, 5000);
+    assert.equal(limited.retryAfter, '5');
+    now += 1250;
+    const partialWait = await api(route, validAttempt);
+    assert.equal(partialWait.status, 429);
+    assert.equal(partialWait.data.retryAfterMs, 3750);
+    assert.equal(partialWait.retryAfter, '4');
+    now += 3749;
+    const boundary = await api(route, validAttempt);
+    assert.equal(boundary.status, 429);
+    assert.equal(boundary.data.retryAfterMs, 1);
+    assert.equal(boundary.retryAfter, '1');
+    now += boundary.data.retryAfterMs;
+    const accepted = await api(route, validAttempt);
+    assert.equal(accepted.status, route === '/api/register' ? 201 : 200);
+    assert.equal(accepted.data.user.username, username);
+    assert.ok(accepted.cookie);
+  });
+}
+
 test('eight-character sign-up, MongoDB balance, and hourly claim', async () => {
   const username = `gardener_${crypto.randomBytes(3).toString('hex')}`;
   const short = await request('/api/register', { username, password: '1234567' });
