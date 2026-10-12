@@ -8,7 +8,7 @@ class ModerationError extends Error {
   constructor(status, message, banned = false) { super(message); this.status = status; this.banned = banned; }
 }
 
-ttfunction createModeration(store, { now = Date.now } = {}) {
+function createModeration(store, { now = Date.now } = {}) {
   const { client, users, siteSettings, sessions, verificationTokens, messages, trades } = store;
   let ownerAccountId = null;
   async function owner() {
